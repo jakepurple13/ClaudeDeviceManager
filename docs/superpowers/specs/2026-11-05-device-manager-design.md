@@ -105,6 +105,21 @@ Keep the lists of `adb` subcommands and Gradle task patterns in one place so the
 
 A `CLAUDE.md` snippet tells every agent, subagents included, three things: run `cdm acquire --category …` before any device work, including wrapper scripts; run `cdm release` when done; and expect that `cdm acquire` may pause for a while. Settings shows the snippet with a Copy button and an "Append to ~/.claude/CLAUDE.md" button that asks for confirmation first.
 
+### Automatic install and uninstall (Jacob, 2026-11-05)
+
+The app installs itself into Claude Code only while it is running, so Claude never tries to reach it when it's closed.
+
+- **On startup**, after the server binds, the app:
+  - merges its hooks into `~/.claude/settings.json`, backing the file up first;
+  - installs `cdm` into `~/.local/bin`;
+  - adds the `CLAUDE.md` snippet.
+  All three steps are idempotent.
+- **On any clean exit** (window close, Cmd+Q, or SIGTERM through a shutdown hook), the app removes only its own hook entries. It does not restore the backup, so any other settings Jacob changed meanwhile are kept. It also removes the snippet block and deletes `~/.local/bin/cdm`.
+- **After a crash**, stale entries can be left behind. They are harmless: the hooks fail open, and `cdm` reports that the app isn't running. The next startup cleans them up.
+- **Backups** are pruned to the newest 5.
+- **Settings** shows the install state, with a Repair button. There is no opt-out in v1.
+- **Limit:** Claude Code reads hooks and `CLAUDE.md` when a session starts. A session started before the app launched won't use it until that session restarts. A session started while the app was running keeps its hooks after the app closes; they fail open, which is harmless.
+
 ### Allocation rules
 
 - There is one global queue, ordered first-come first-served. Jacob can reorder it.

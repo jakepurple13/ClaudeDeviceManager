@@ -588,6 +588,40 @@ The screens:
 
 ---
 
+### Task 11b: Install on startup, uninstall on exit
+
+**Files:**
+- Modify: `…/install/Installer.kt`; the startup and shutdown wiring (`Main.kt` / `ServerController` or a new `…/install/InstallLifecycle.kt`); the Settings screen and ViewModel
+- Test: `…/install/InstallerTest.kt`, `…/install/InstallLifecycleTest.kt`
+
+**Interfaces — Produces:**
+
+```kotlin
+// Installer additions
+fun uninstallHooks(): Result<Unit>      // removes only our marked hook entries (and events/groups left empty); no backup restore
+fun removeSnippet(): Result<Unit>       // removes the <!-- cdm:start -->…<!-- cdm:end --> block (and one surrounding blank line); no-op if absent
+fun uninstallCdm()                      // deletes ~/.local/bin/cdm if it is our script (content matches the resource)
+fun pruneBackups(keep: Int = 5)
+class InstallLifecycle(installer: Installer, …) { suspend fun onStarted(port: Int); fun onExit() }   // onExit idempotent, safe from a shutdown hook
+```
+
+The spec's "Automatic install and uninstall" section is the authority. On startup, after a successful bind, call `installHooks(port)`, `installCdm()`, `appendSnippet()` and `pruneBackups()`. After a port change and restart, re-install the hooks for the new port. On window close, Cmd+Q, or the JVM shutdown hook, call `onExit()` once: uninstall the hooks, remove the snippet, and delete `cdm`. Log failures and never block exit. Settings replaces the Install buttons with read-only status rows (hooks, `cdm`, snippet) and a "Repair" action. Copy stays.
+
+- [ ] **Step 1: Write failing tests** (temp home only):
+  - `uninstallRemovesOnlyOurs`: user hooks plus ours → after uninstall, the user hooks are byte-equal as JSON values, and no marked entries remain.
+  - `uninstallWhenNotInstalledIsNoop`
+  - `removeSnippetRestoresOriginalClaudeMd`: original content, then append, then remove → equals the original.
+  - `uninstallCdmOnlyDeletesOurScript`: a foreign `cdm` file is kept.
+  - `pruneKeepsNewestFive`
+  - `lifecycleInstallsThenUninstallsOnce`: `onExit` called twice → the second call is a no-op.
+  - `failedStartDoesNotInstall`
+- [ ] **Step 2:** Run `./gradlew :composeApp:jvmTest --tests '*Installer*' --tests '*InstallLifecycle*'`. Expected: FAIL.
+- [ ] **Step 3:** Implement and wire it.
+- [ ] **Step 4:** Run the full `./gradlew :composeApp:jvmTest`. Expected: PASS.
+- [ ] **Step 5: Commit** `feat: install integration on startup, remove on exit`.
+
+---
+
 ### Task 12: End-to-end check with real sessions and a device
 
 No new product code, unless this check finds a bug. Fix any bug through the owning task's tests.
