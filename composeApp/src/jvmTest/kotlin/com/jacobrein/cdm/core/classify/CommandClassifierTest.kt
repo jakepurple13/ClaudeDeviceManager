@@ -60,4 +60,34 @@ class CommandClassifierTest {
             CommandClassifier.addCdmIdentity("cdm status", HolderId("s1"), "/it's"),
         )
     }
+
+    @Test
+    fun tieBreaking() {
+        assertEquals(AdbDisconnect("A"), CommandClassifier.classify("adb disconnect A && adb disconnect A"))
+        assertEquals(AdbGlobalDangerous("disconnect"), CommandClassifier.classify("adb disconnect A && adb disconnect B"))
+        assertEquals(Device("OTHER", false, false), CommandClassifier.classify("adb shell ls && adb -s OTHER install x"))
+        assertEquals(Device(null, true, false), CommandClassifier.classify("adb shell ls && adb -d logcat"))
+        assertEquals(AdbGlobalSafe(true), CommandClassifier.classify("adb devices && adb connect X"))
+        assertEquals(AdbGlobalSafe(true), CommandClassifier.classify("adb connect X && adb devices"))
+    }
+
+    @Test
+    fun classifyAllPerSegment() {
+        assertEquals(
+            listOf(AdbDisconnect("A"), AdbDisconnect("B")),
+            CommandClassifier.classifyAll("adb disconnect A && adb disconnect B"),
+        )
+    }
+
+    @Test
+    fun androidSerialEnv() {
+        assertEquals(Device("X", false, false), CommandClassifier.classify("ANDROID_SERIAL=X adb shell ls"))
+        assertEquals(Device("Y", false, false), CommandClassifier.classify("ANDROID_SERIAL=X adb -s Y shell ls"))
+        assertEquals(Device("X", false, false), CommandClassifier.classify("export ANDROID_SERIAL=X; adb shell ls"))
+        assertEquals(Device("X", false, false), CommandClassifier.classify("export ANDROID_SERIAL=X; ./gradlew installDebug"))
+        assertEquals(
+            listOf(Other, Device("X", false, false)),
+            CommandClassifier.classifyAll("export ANDROID_SERIAL=X; adb shell ls"),
+        )
+    }
 }

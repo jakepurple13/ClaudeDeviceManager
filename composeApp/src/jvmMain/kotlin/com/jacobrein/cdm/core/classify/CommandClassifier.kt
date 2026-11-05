@@ -15,6 +15,7 @@ sealed interface CommandKind {
 object CommandClassifier {
     private val gradleDeviceTask = Regex("""^(:?[\w-]+:)*(install|uninstall|connected)\w*$""")
     private val assignment = Regex("""^[A-Za-z_][A-Za-z0-9_]*=.*""", RegexOption.DOT_MATCHES_ALL)
+    private const val SERIAL_VAR = "ANDROID_SERIAL="
     private val wrappers = setOf("sudo", "time", "env")
 
     /** Each command segment, trimmed, with leading VAR=value and sudo/time/env stripped. */
@@ -26,14 +27,44 @@ object CommandClassifier {
     fun firstWord(segment: String): String =
         words(segment).firstOrNull()?.substringAfterLast('/') ?: ""
 
-    fun classify(command: String): CommandKind {
-        var best: CommandKind = CommandKind.Other
-        for (seg in segments(command)) {
+    /** One kind per non-empty segment, in order. ANDROID_SERIAL assignments/exports fill in explicitSerial. */
+    fun classifyAll(command: String): List<CommandKind> {
+        var exported: String? = null
+        val out = mutableListOf<CommandKind>()
+        for ((s, e) in ranges(command)) {
+            val raw = command.substring(s, e)
+            val p = prefixLength(raw)
+            val seg = raw.substring(p).trim()
+            if (seg.isEmpty()) continue
+            val w = words(raw)
+            if (w.firstOrNull() == "export") {
+                w.drop(1).firstOrNull { it.startsWith(SERIAL_VAR) }?.let { exported = it.removePrefix(SERIAL_VAR) }
+            }
+            val inline = words(raw.substring(0, p)).lastOrNull { it.startsWith(SERIAL_VAR) }?.removePrefix(SERIAL_VAR)
             val k = classifySegment(seg)
-            if (rank(k) > rank(best)) best = k
+            val envSerial = inline ?: exported
+            out += if (k is CommandKind.Device && k.explicitSerial == null && envSerial != null) k.copy(explicitSerial = envSerial) else k
         }
-        return best
+        return out
     }
+
+    fun classify(command: String): CommandKind =
+        classifyAll(command).fold(CommandKind.Other as CommandKind, ::merge)
+
+    private fun merge(a: CommandKind, b: CommandKind): CommandKind {
+        if (rank(b) != rank(a)) return if (rank(b) > rank(a)) b else a
+        return when {
+            a is CommandKind.Device && b is CommandKind.Device ->
+                if (!specific(a) && specific(b)) b else a
+            a is CommandKind.AdbGlobalSafe && b is CommandKind.AdbGlobalSafe ->
+                CommandKind.AdbGlobalSafe(a.resetsTimer || b.resetsTimer)
+            a is CommandKind.AdbDisconnect && b is CommandKind.AdbDisconnect ->
+                if (a.address == b.address) a else CommandKind.AdbGlobalDangerous("disconnect")
+            else -> a
+        }
+    }
+
+    private fun specific(d: CommandKind.Device) = d.explicitSerial != null || d.usbFlag || d.emulatorFlag
 
     fun addCdmIdentity(command: String, holder: HolderId, cwd: String): String {
         val quoted = "'" + cwd.replace("'", "'\\''") + "'"
