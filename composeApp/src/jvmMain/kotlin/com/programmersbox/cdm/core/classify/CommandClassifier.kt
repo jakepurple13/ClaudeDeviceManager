@@ -10,15 +10,18 @@ sealed interface CommandKind {
     data class AdbDisconnect(val address: String) : CommandKind
     data class Device(val explicitSerial: String?, val usbFlag: Boolean, val emulatorFlag: Boolean) : CommandKind
     data object GradleNonDevice : CommandKind
+    /** `adb -t <id>`: picks a device by transport ID, which the app can't map to a held device. */
+    data object AdbTransportId : CommandKind
 }
 
 object CommandClassifier {
     private val gradleDeviceTask = Regex("""^(:?[\w-]+:)*(install|uninstall|connected)\w*$""")
     private val assignment = Regex("""^[A-Za-z_][A-Za-z0-9_]*=.*""", RegexOption.DOT_MATCHES_ALL)
     private const val SERIAL_VAR = "ANDROID_SERIAL="
-    private val wrappers = setOf("sudo", "time", "env")
+    private val serialAssignment =
+        Regex("""(?<![A-Za-z0-9_])ANDROID_SERIAL=("(?:[^"\\]|\\.)*"|'[^']*'|[^\s;&|()<>]*)""")
 
-    /** Each command segment, trimmed, with leading VAR=value and sudo/time/env stripped. */
+    /** Each command segment, trimmed, with leading `(`/`{`, VAR=value and exec wrappers (sudo, timeout, env, …) stripped. */
     fun segments(command: String): List<String> =
         ranges(command).map { (s, e) -> command.substring(s + prefixLength(command.substring(s, e)), e).trim() }
             .filter { it.isNotEmpty() }
@@ -54,6 +57,13 @@ object CommandClassifier {
         }
         return out
     }
+
+    /**
+     * Every `ANDROID_SERIAL=<value>` in the raw text, wherever it appears (inline, `export`, `env`, inside a subshell).
+     * A textual scan on purpose: it over-matches (`echo ANDROID_SERIAL=x`) rather than miss a re-targeting.
+     */
+    fun serialAssignments(command: String): List<String> =
+        serialAssignment.findAll(command).map { unquote(it.groupValues[1]) }.toList()
 
     fun classify(command: String): CommandKind =
         classifyAll(command).fold(CommandKind.Other as CommandKind, ::merge)
@@ -100,6 +110,7 @@ object CommandClassifier {
         CommandKind.GradleNonDevice -> 3
         is CommandKind.AdbGlobalSafe -> 2
         is CommandKind.Cdm -> 1
+        CommandKind.AdbTransportId -> 7
         CommandKind.Other -> 0
     }
 
@@ -123,11 +134,14 @@ object CommandClassifier {
         var emu = false
         var i = 0
         while (i < args.size && args[i].startsWith("-") && args[i] != "--version") {
-            when (args[i]) {
-                "-s" -> { serial = args.getOrNull(i + 1); i++ }
-                "-d" -> usb = true
-                "-e" -> emu = true
-                "-t", "-H", "-P", "-L" -> i++
+            val a = args[i]
+            when {
+                a == "-s" -> { serial = args.getOrNull(i + 1); i++ }
+                a.startsWith("-s") && !a.startsWith("--") -> serial = a.substring(2)
+                a == "-d" -> usb = true
+                a == "-e" -> emu = true
+                a.startsWith("-t") && !a.startsWith("--") || a.startsWith("--transport-id") -> return CommandKind.AdbTransportId
+                a == "-H" || a == "-P" || a == "-L" -> i++
             }
             i++
         }
@@ -221,14 +235,58 @@ object CommandClassifier {
         return out
     }
 
-    /** Length of the leading VAR=value / sudo / time / env prefix of a raw segment. */
+    /**
+     * Length of the leading prefix of a raw segment that only sets up how the real command runs: grouping `(` / `{`,
+     * VAR=value, and exec wrappers with their options (`sudo`, `time -p`, `env -i -u X`, `timeout -s SIG 30`,
+     * `nice -n 5`, `stdbuf -oL`, `nohup`, `command`, `exec`).
+     */
     private fun prefixLength(seg: String): Int {
-        var i = skipWs(seg, 0)
+        var i = skipGrouping(seg, 0)
         while (i < seg.length) {
             val e = tokenEnd(seg, i)
             val t = seg.substring(i, e)
-            if (assignment.matches(t) || t in wrappers) i = skipWs(seg, e) else break
+            if (assignment.matches(t)) {
+                i = skipWs(seg, e)
+                continue
+            }
+            val opts = wrapperOptions[t] ?: break
+            i = skipWs(seg, e)
+            // Options: dash tokens; some take a separate argument.
+            while (i < seg.length) {
+                val oe = tokenEnd(seg, i)
+                val o = seg.substring(i, oe)
+                if (!o.startsWith("-") || o == "-" && t != "env") break
+                i = skipWs(seg, oe)
+                if (o in opts.withArg) i = skipWs(seg, tokenEnd(seg, i))
+            }
+            // A positional argument before the command (timeout's DURATION).
+            repeat(opts.positional) { if (i < seg.length) i = skipWs(seg, tokenEnd(seg, i)) }
+            i = skipGrouping(seg, i)
         }
         return i
+    }
+
+    private fun skipGrouping(seg: String, from: Int): Int {
+        var i = skipWs(seg, from)
+        while (i < seg.length && (seg[i] == '(' || seg[i] == '{')) i = skipWs(seg, i + 1)
+        return i
+    }
+
+    private class WrapperOpts(val withArg: Set<String> = emptySet(), val positional: Int = 0)
+
+    private val wrapperOptions: Map<String, WrapperOpts> = run {
+        val timeout = WrapperOpts(setOf("-s", "-k", "--signal", "--kill-after"), positional = 1)
+        mapOf(
+            "sudo" to WrapperOpts(setOf("-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U")),
+            "time" to WrapperOpts(),
+            "env" to WrapperOpts(setOf("-u", "--unset", "-C", "--chdir", "-S", "--split-string", "-P")),
+            "timeout" to timeout,
+            "gtimeout" to timeout,
+            "nice" to WrapperOpts(setOf("-n", "--adjustment")),
+            "stdbuf" to WrapperOpts(setOf("-i", "-o", "-e")),
+            "nohup" to WrapperOpts(),
+            "command" to WrapperOpts(),
+            "exec" to WrapperOpts(setOf("-a")),
+        )
     }
 }

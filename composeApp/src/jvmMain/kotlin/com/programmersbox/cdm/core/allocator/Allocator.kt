@@ -64,11 +64,17 @@ class Allocator(
         return if (free != null) grant(holder, free) else GrabResult.NoneFree
     }
 
-    /** Returns the 1-based queue position, or 0 if the holder is blocked or already holds a device. */
+    /**
+     * Returns the 1-based queue position, or 0 if the holder is blocked or already holds a device.
+     * An already-queued holder keeps its place; its wanted categories are replaced with [wants].
+     */
     fun enqueue(holder: HolderId, wants: Set<Category>): Int {
         if (holder in blockedHolders || holds.containsValue(holder)) return 0
         val existing = queue.indexOf(holder)
-        if (existing >= 0) return existing + 1
+        if (existing >= 0) {
+            queueWants[holder] = wants
+            return existing + 1
+        }
         queue.add(holder)
         queueWants[holder] = wants
         statuses.remove(holder)

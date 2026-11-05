@@ -194,4 +194,75 @@ class HookDeciderTest {
         val r = bash("cdm status && adb shell ls")
         assertEquals(pinPrefix("w-usb") + "cdm status --holder s1:main --cwd '/w' && adb shell ls", r.cmd())
     }
+
+    // ---- final review #1: ANDROID_SERIAL on any command ----
+
+    @Test fun holderAssigningOtherSerialOnNonAdbCommandDenied() = runTest {
+        bash("adb shell ls") // holds W
+        for (c in listOf(
+            "ANDROID_SERIAL=p-usb ./run_tests.sh",
+            "export ANDROID_SERIAL=p-usb; scrcpy",
+            "(export ANDROID_SERIAL=p-usb; adb shell ls)",
+            "cd x && env ANDROID_SERIAL=p-usb ./gradlew assembleDebug",
+        )) {
+            assertTrue("you hold" in bash(c).reason(), c)
+        }
+        assertIs<HookReply.Rewrite>(bash("ANDROID_SERIAL=$wWifi ./run_tests.sh"))
+    }
+
+    @Test fun freshAssignmentOnNonAdbCommandGrabsThatDevice() = runTest {
+        assertEquals(pinPrefix("p-usb") + "ANDROID_SERIAL=p-usb ./run_tests.sh", bash("ANDROID_SERIAL=p-usb ./run_tests.sh").cmd())
+        assertEquals(p.key, assertIs<HolderStatus.Holding>(allocator.statusOf(h)).device)
+    }
+
+    @Test fun freshAssignmentToHeldDeviceNamesHolder() = runTest {
+        allocator.tryGrab(h2, setOf(Category.PHONE))
+        assertTrue("s2:main" in bash("export ANDROID_SERIAL=p-usb; scrcpy").reason())
+    }
+
+    // ---- final review #2: wrappers and -t ----
+
+    @Test fun wrappedWrongSerialWhileHoldingDenied() = runTest {
+        bash("adb shell ls")
+        for (c in listOf("timeout 30 adb -s p-usb shell ls", "nohup adb -s p-usb logcat", "(adb -s p-usb shell ls)", "env -i adb -s p-usb shell")) {
+            assertTrue("you hold" in bash(c).reason(), c)
+        }
+    }
+
+    @Test fun transportIdDeniedHoldingOrFresh() = runTest {
+        assertTrue("-t" in bash("adb -t 3 shell ls").reason())
+        assertEquals(HolderStatus.None, allocator.statusOf(h))
+        bash("adb shell ls")
+        assertTrue("-t" in bash("adb -t 3 shell ls").reason())
+    }
+
+    // ---- final review #3: fresh grab checks every segment ----
+
+    @Test fun freshGrabWithConflictingSecondSegmentDenied() = runTest {
+        // -d is ambiguous (two USB devices) so it can't be checked to land on p-usb.
+        assertIs<HookReply.Deny>(bash("adb -s p-usb shell x && adb -d install y"))
+        assertEquals(HolderStatus.None, allocator.statusOf(h))
+        assertIs<HookReply.Deny>(bash("adb -s p-usb shell x && adb -e install y"))
+        assertEquals(HolderStatus.None, allocator.statusOf(h))
+    }
+
+    @Test fun freshGrabUsbFlagPlusOtherSerialDenied() = runTest {
+        allocator.setDevices(listOf(p, wWifiOnly))
+        assertIs<HookReply.Deny>(bash("adb -d shell x; ANDROID_SERIAL=$wWifi ./t.sh"))
+        assertEquals(HolderStatus.None, allocator.statusOf(h))
+    }
+
+    // ---- final review #4, Ruling V ----
+
+    @Test fun acquireChainedWithDeviceWorkWhileHoldingNothingDenied() = runTest {
+        val r = bash("cdm acquire --category watch && adb shell ls").reason()
+        assertTrue("on its own first" in r, r)
+        assertEquals(HolderStatus.None, allocator.statusOf(h))
+        assertIs<HookReply.Rewrite>(bash("cdm acquire --category watch && cdm status"))
+    }
+
+    @Test fun acquireChainedWhileHoldingIsPinned() = runTest {
+        bash("adb shell ls")
+        assertIs<HookReply.Rewrite>(bash("cdm acquire && adb shell ls"))
+    }
 }

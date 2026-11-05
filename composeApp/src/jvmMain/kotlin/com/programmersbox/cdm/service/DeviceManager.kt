@@ -38,9 +38,12 @@ data class HolderInfo(
 sealed interface AcquireResult {
     data class Granted(val serial: String, val name: String) : AcquireResult
 
-    /** [position] is the 1-based queue position when waiting stopped; 0 if the holder was taken out of the queue. */
+    /** [position] is the 1-based queue position when waiting stopped. */
     data class TimedOut(val position: Int) : AcquireResult
     data object Blocked : AcquireResult
+
+    /** The holder was taken out of the queue while waiting (the user removed it, or its session ended). */
+    data object Removed : AcquireResult
 }
 
 /** The service's public API (Ruling B). UI tasks and the HTTP server depend on this, not on [DeviceManagerService]. */

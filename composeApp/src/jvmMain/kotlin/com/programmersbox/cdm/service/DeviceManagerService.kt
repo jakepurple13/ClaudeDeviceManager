@@ -192,6 +192,11 @@ class DeviceManagerService(
         book.touch(holder, cwd, null)
         val w = wants.ifEmpty { prefetchDefaultCategory(cwd).members() }
         val first = locked {
+            // Ruling W: asking for a category the current device doesn't fit gives that device back first.
+            (allocator.statusOf(holder) as? HolderStatus.Holding)?.let { st ->
+                val cat = allocator.snapshot().devices.firstOrNull { it.key == st.device }?.category
+                if (Category.ANY !in w && cat !in w) allocator.release(holder, ReleaseReason.SELF_RELEASE)
+            }
             when (val g = allocator.tryGrab(holder, w)) {
                 is GrabResult.Granted -> AcquireResult.Granted(g.serial, g.device.name)
                 GrabResult.Blocked -> AcquireResult.Blocked
@@ -230,7 +235,7 @@ class DeviceManagerService(
         }
         HolderStatus.Blocked -> AcquireResult.Blocked
         is HolderStatus.Queued -> AcquireResult.TimedOut(st.position)
-        else -> AcquireResult.TimedOut(0)
+        else -> AcquireResult.Removed
     }
 
     override suspend fun release(holder: HolderId) {

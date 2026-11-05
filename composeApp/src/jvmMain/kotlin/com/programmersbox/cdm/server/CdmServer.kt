@@ -129,6 +129,7 @@ fun Application.cdmModule(manager: DeviceManager, heartbeat: Duration = 5.second
                         is AcquireResult.Granted -> line("GRANTED ${r.serial} ${r.name}")
                         is AcquireResult.TimedOut -> line("TIMEOUT ${r.position}")
                         AcquireResult.Blocked -> line("BLOCKED")
+                        AcquireResult.Removed -> line("REMOVED")
                     }
                 }
             }

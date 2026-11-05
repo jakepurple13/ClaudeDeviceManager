@@ -165,4 +165,15 @@ class AllocatorQueueTest {
         assertEquals(h1, a.snapshot().holds[w.key])
         assertEquals(HolderStatus.Queued(1, watch), a.statusOf(h2))
     }
+
+    /** Final review #12: re-queueing with different wants updates them. */
+    @Test fun enqueueAgainUpdatesWants() {
+        val a = alloc()
+        a.tryGrab(h2, phone); a.tryGrab(h3, watch)
+        a.enqueue(h1, watch)
+        assertEquals(1, a.enqueue(h1, phone))
+        assertEquals(phone, assertIs<HolderStatus.Queued>(a.statusOf(h1)).wants)
+        a.release(h2, ReleaseReason.SELF_RELEASE)
+        assertEquals(p.key, assertIs<HolderStatus.Holding>(a.statusOf(h1)).device)
+    }
 }

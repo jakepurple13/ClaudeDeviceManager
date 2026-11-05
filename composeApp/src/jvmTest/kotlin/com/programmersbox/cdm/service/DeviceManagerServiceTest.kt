@@ -140,6 +140,30 @@ class DeviceManagerServiceTest {
         assertIs<HolderStatus.Queued>(s.status(h1))
     }
 
+    /** Ruling W: acquiring a category the current hold doesn't fit gives the hold back and grabs/queues for the new one. */
+    @Test fun acquireOtherCategoryReleasesCurrentHold() = runTest {
+        val s = started()
+        assertEquals(AcquireResult.Granted("p-usb", "Pixel 8"), s.acquire(h1, "/w", setOf(Category.PHONE), 1.minutes) {})
+        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch"), s.acquire(h1, "/w", watch, 1.minutes) {})
+        assertEquals(null, s.snapshot.value.holds[DeviceKey("P")])
+        // Same category again: keeps the hold.
+        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch"), s.acquire(h1, "/w", watch, 1.minutes) {})
+        // Wanted category taken: releases and queues.
+        s.acquire(h2, "/w", setOf(Category.PHONE), 1.minutes) {}
+        assertEquals(AcquireResult.TimedOut(1), s.acquire(h1, "/w", setOf(Category.PHONE), 1.seconds) {})
+        assertEquals(null, s.snapshot.value.holds[DeviceKey("W")])
+    }
+
+    /** Final review #11: being removed from the queue mid-wait is its own answer, not "timed out at 0". */
+    @Test fun removedFromQueueWhileWaiting() = runTest {
+        val s = started()
+        s.acquire(h2, "/w", watch, 1.minutes) {}
+        val r = async { s.acquire(h1, "/w", watch, 5.minutes) {} }
+        s.snapshot.first { h1 in it.queue }
+        s.removeFromQueue(h1)
+        assertEquals(AcquireResult.Removed, r.await())
+    }
+
     @Test fun releaseAndBlockPersistsAndAcquireRefuses() = runTest {
         val s = started()
         s.acquire(h1, "/w", watch, 1.minutes) {}

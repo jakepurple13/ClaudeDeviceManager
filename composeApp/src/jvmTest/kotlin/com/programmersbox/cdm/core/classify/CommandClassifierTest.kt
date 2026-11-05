@@ -90,4 +90,52 @@ class CommandClassifierTest {
             CommandClassifier.classifyAll("export ANDROID_SERIAL=X; adb shell ls"),
         )
     }
+
+    /** Final review #2: wrappers must not hide the inner adb/Gradle command or its -s. */
+    @Test
+    fun wrappersAreSeenThrough() {
+        val b = Device("B", false, false)
+        val cases = listOf(
+            "timeout 30 adb -s B shell ls",
+            "timeout -s KILL -k 5 30s adb -s B shell ls",
+            "timeout --signal=KILL 30 adb -s B shell ls",
+            "gtimeout 5 adb -s B shell ls",
+            "nohup adb -s B logcat",
+            "nice -n 10 adb -s B shell ls",
+            "nice -5 adb -s B shell ls",
+            "nice adb -s B shell ls",
+            "stdbuf -oL adb -s B logcat",
+            "stdbuf -o L adb -s B logcat",
+            "time -p adb -s B shell ls",
+            "env -i -u FOO X=1 adb -s B shell ls",
+            "env -uFOO adb -s B shell ls",
+            "command adb -s B shell ls",
+            "exec adb -s B shell ls",
+            "(adb -s B shell ls)",
+            "( adb -s B shell ls )",
+            "{ adb -s B shell ls; }",
+            "sudo -u me adb -s B shell ls",
+            "nohup nice -n 5 timeout 9 adb -s B shell ls",
+            "adb -sB shell ls",
+        )
+        for (c in cases) assertEquals(b, CommandClassifier.classify(c), c)
+        assertEquals(Device(null, false, false), CommandClassifier.classify("timeout 600 ./gradlew connectedCheck"))
+    }
+
+    @Test
+    fun transportIdIsItsOwnKind() {
+        for (c in listOf("adb -t 3 shell ls", "adb -t3 shell ls", "adb --transport-id 3 shell", "adb --transport-id=3 shell", "timeout 5 adb -t 3 shell")) {
+            assertEquals(AdbTransportId, CommandClassifier.classify(c), c)
+        }
+    }
+
+    @Test
+    fun serialAssignmentsFoundAnywhere() {
+        assertEquals(listOf("B"), CommandClassifier.serialAssignments("ANDROID_SERIAL=B ./run_tests.sh"))
+        assertEquals(listOf("B"), CommandClassifier.serialAssignments("export ANDROID_SERIAL=B; scrcpy"))
+        assertEquals(listOf("B"), CommandClassifier.serialAssignments("(export ANDROID_SERIAL=B; adb shell ls)"))
+        assertEquals(listOf("B C"), CommandClassifier.serialAssignments("export ANDROID_SERIAL='B C'; x"))
+        assertEquals(listOf("B"), CommandClassifier.serialAssignments("env ANDROID_SERIAL=\"B\" scrcpy"))
+        assertEquals(emptyList(), CommandClassifier.serialAssignments("MY_ANDROID_SERIAL=B x; echo \$ANDROID_SERIAL"))
+    }
 }

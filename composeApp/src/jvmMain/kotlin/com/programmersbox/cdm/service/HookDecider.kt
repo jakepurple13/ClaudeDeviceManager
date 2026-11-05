@@ -28,15 +28,26 @@ class HookDecider(
     suspend fun onBash(holder: HolderId, cwd: String, command: String): HookReply {
         val kinds = CommandClassifier.classifyAll(command)
         if (kinds.isEmpty()) return HookReply.NoOpinion
-        val req = Request(holder, cwd, command, kinds)
+        val req = Request(holder, cwd, command, kinds, CommandClassifier.serialAssignments(command))
 
         // Rule 1, cdm only: identity, never a pin (so the mirror's cdm-only rule can apply).
         if (kinds.all { it is CommandKind.Cdm }) return HookReply.Rewrite(req.body, command, RewriteKind.CDM)
 
         // Rule 3, checked over every segment.
-        val own = heldDevice(holder, allocator.snapshot())?.connectedSerials.orEmpty()
+        val held = heldDevice(holder, allocator.snapshot())
+        val own = held?.connectedSerials.orEmpty()
         if (kinds.any { it is CommandKind.AdbGlobalDangerous }) return HookReply.Deny(AFFECTS_OTHERS)
         if (kinds.any { it is CommandKind.AdbDisconnect && it.address !in own }) return HookReply.Deny(AFFECTS_OTHERS)
+        if (kinds.any { it == CommandKind.AdbTransportId }) return HookReply.Deny(TRANSPORT_ID)
+
+        // Ruling V: an acquire chained with other work would run that work before (or without) the grant.
+        if (held == null && kinds.any { it == CommandKind.Cdm("acquire") }) return HookReply.Deny(ACQUIRE_ALONE)
+
+        // ANDROID_SERIAL set anywhere in the command (any command, not only adb) beats the pin, so check it up front.
+        if (held != null && req.assigned.any { it !in own }) return HookReply.Deny(differentDevice(held))
+
+        // Holding nothing, an ANDROID_SERIAL=X on any command names a device just like `adb -s X`.
+        if (held == null && req.assigned.isNotEmpty()) return onDevice(req)
 
         return when (CommandClassifier.classify(command)) {
             is CommandKind.Device -> onDevice(req)
@@ -57,10 +68,28 @@ class HookDecider(
         return HookReply.NoOpinion
     }
 
-    private inner class Request(val holder: HolderId, val cwd: String, val command: String, val kinds: List<CommandKind>) {
+    private inner class Request(
+        val holder: HolderId,
+        val cwd: String,
+        val command: String,
+        val kinds: List<CommandKind>,
+        /** Every ANDROID_SERIAL=<value> in the raw command text. */
+        val assigned: List<String>,
+    ) {
         val body: String =
             if (kinds.any { it is CommandKind.Cdm }) CommandClassifier.addCdmIdentity(command, holder, cwd) else command
         val devices: List<CommandKind.Device> = kinds.filterIsInstance<CommandKind.Device>()
+
+        /** Every serial the command names: `adb -s`, and ANDROID_SERIAL assignments anywhere. */
+        val explicit: List<String> = (devices.mapNotNull { it.explicitSerial } + assigned).distinct()
+        val usb = devices.any { it.usbFlag }
+        val emu = devices.any { it.emulatorFlag }
+
+        /** True if any segment would run on a device other than [target] (-s / ANDROID_SERIAL / -d / -e). */
+        fun conflictsWith(target: AllocDevice, snap: AllocatorSnapshot): Boolean =
+            explicit.any { it !in target.connectedSerials } ||
+                (usb && !onlyOneWith(target, snap, ::isUsbSerial)) ||
+                (emu && !onlyOneWith(target, snap, ::isEmulatorSerial))
 
         fun finish(serial: String?): HookReply = when {
             serial != null -> HookReply.Rewrite(pinPrefix(serial) + body, command, RewriteKind.PIN)
@@ -95,17 +124,7 @@ class HookDecider(
                     "(for example `adb connect <address>`) and try again.",
             )
         }
-        for (d in req.devices) {
-            val wrong = (d.explicitSerial != null && d.explicitSerial !in serials) ||
-                (d.usbFlag && !onlyOneWith(held, snap, ::isUsbSerial)) ||
-                (d.emulatorFlag && !onlyOneWith(held, snap, ::isEmulatorSerial))
-            if (wrong) {
-                return HookReply.Deny(
-                    "This command targets a different device, but you hold ${label(held)}. " +
-                        "Drop the -s/-d/-e flag or ANDROID_SERIAL so it runs on your device, or run `cdm release` first.",
-                )
-            }
-        }
+        if (req.conflictsWith(held, snap)) return HookReply.Deny(differentDevice(held))
         allocator.recordDeviceActivity(req.holder)
         return req.finish(serials.first())
     }
@@ -136,9 +155,9 @@ class HookDecider(
 
     private suspend fun freshGrab(req: Request): HookReply {
         val snap = allocator.snapshot()
-        val explicit = req.devices.mapNotNull { it.explicitSerial }.distinct()
-        val usb = req.devices.any { it.usbFlag }
-        val emu = req.devices.any { it.emulatorFlag }
+        val explicit = req.explicit
+        val usb = req.usb
+        val emu = req.emu
 
         val target: AllocDevice
         val pin: String
@@ -183,6 +202,9 @@ class HookDecider(
             }
         }
 
+        // Every segment must land on the chosen device, not only the one that picked it.
+        if (req.conflictsWith(target, snap)) return HookReply.Deny(MORE_THAN_ONE)
+
         return when (val g = allocator.tryGrab(req.holder, emptySet(), target.key)) {
             is GrabResult.Granted -> req.finish(pin)
             is GrabResult.HeldByOther -> HookReply.Deny(
@@ -208,6 +230,10 @@ class HookDecider(
     private fun onlyOneWith(held: AllocDevice, snap: AllocatorSnapshot, pred: (String) -> Boolean) =
         held.connectedSerials.any(pred) && snap.devices.none { it.key != held.key && it.connectedSerials.any(pred) }
 
+    private fun differentDevice(held: AllocDevice) =
+        "This command targets a different device, but you hold ${label(held)}. " +
+            "Drop the -s/-d/-e flag or ANDROID_SERIAL so it runs on your device, or run `cdm release` first."
+
     private fun label(d: AllocDevice) = "${d.name} (${d.connectedSerials.firstOrNull() ?: d.key.hardwareSerial})"
 
     private fun noneFree(category: Category) =
@@ -227,6 +253,9 @@ class HookDecider(
 
     companion object {
         const val AFFECTS_OTHERS = "This affects other sessions' devices. Ask the user to do it."
+        const val TRANSPORT_ID =
+            "`adb -t` picks a device by transport ID, which Device Manager can't check. Use -s <serial> or no flag."
+        const val ACQUIRE_ALONE = "Run `cdm acquire …` on its own first, then your device commands."
         private const val MORE_THAN_ONE =
             "This command names more than one device. A holder can use only one device at a time."
 
