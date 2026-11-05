@@ -22,6 +22,7 @@
 - Holder key: `"<session_id>:<agent_id>"`, where `agent_id` defaults to `"main"`.
 - The pin prefix comes from one function, `pinPrefix(serial)`. Its starting value is `export ANDROID_SERIAL=<serial>; `. Task 0 may change it.
 - Package root: `com.jacobrein.cdm`. Gradle module: `composeApp`. Source: `composeApp/src/jvmMain/kotlin/com/jacobrein/cdm/`. Tests: `composeApp/src/jvmTest/kotlin/com/jacobrein/cdm/`. (Below, `…/` means those roots.)
+- Animation is required (spec, "Animation matters to Jacob"). Durations are 150–300 ms, `tween`/`spring` from Compose animation APIs. Every `LazyColumn`/`LazyRow` item uses `Modifier.animateItem()`. Conditional UI uses `AnimatedVisibility`. Swapped content uses `AnimatedContent`/`Crossfade`. Colors use `animateColorAsState`. Numbers and badges use `AnimatedContent` with a vertical slide. Animations never block input.
 - If a pinned version fails to resolve or doesn't work with the others, use the nearest compatible version and note it in the commit message.
 
 ## Review Focus
@@ -436,7 +437,7 @@ class Navigator(start: Route = Route.Overview) {
 }
 ```
 
-`AppNavigation` renders a `NavigationRail` (the Queue item gets a badge with the queue size from `DeviceManagerService.snapshot`) next to a `NavDisplay`. It uses `rememberListDetailSceneStrategy()`, list routes carry `ListDetailSceneStrategy.listPane()` metadata, detail routes carry `detailPane()`, and the entry decorators include `rememberViewModelStoreNavEntryDecorator()`. The theme follows the system dark/light setting, and the dark palette matches the mockups (`#1b1d22` background, `#262a33` cards, `#6b8cff` accent).
+`AppNavigation` renders a `NavigationRail` (the Queue item gets a badge with the queue size from `DeviceManagerService.snapshot`) next to a `NavDisplay`. It uses `rememberListDetailSceneStrategy()`, list routes carry `ListDetailSceneStrategy.listPane()` metadata, detail routes carry `detailPane()`, and the entry decorators include `rememberViewModelStoreNavEntryDecorator()`. `NavDisplay` sets `transitionSpec`/`popTransitionSpec`: switching between top-level routes uses a fade plus a 24 dp vertical slide (220 ms), and opening or closing a detail uses a fade plus a horizontal slide from the end (250 ms). The rail's selected indicator animates (the Material 3 default), and the badge count uses `AnimatedContent`. The theme follows the system dark/light setting, and the dark palette matches the mockups (`#1b1d22` background, `#262a33` cards, `#6b8cff` accent).
 
 - [ ] **Step 1: Write failing tests** in `NavigatorTest`:
   - `selectTopLevelResetsStack`: open `DeviceDetail(k)`, then `selectTopLevel(QUEUE)` → stack == `[Queue]`.
@@ -469,7 +470,16 @@ data class WaitReason(val device: String, val reason: String)   // "held by watc
 fun holderLabel(h: HolderId, cwd: String?, agentType: String?): String   // "gabb-messenger #a41f" or "… · general-purpose"
 ```
 
-The screens follow `prototype.html` and the spec's UI section. Overview has count tiles, the device list, Up next (top 3), and Activity (latest 20). Device detail has the category dropdown (Auto / Phone / Watch), the holder card with Release and "Release + block", recent commands, and the Don't-use toggle; switching it on while the device is in use opens a dialog asking "Release now" or "After current holder releases". The Queue list is drag-to-reorder with `sh.calvin.reorderable`, and the Queue detail shows the WaitReason list with Move to top, "Hand it <device> now" (one per eligible device), and Remove from queue. Register each ViewModel with `viewModelOf(::…)` (`DeviceDetailViewModel` and `QueueDetailViewModel` take their key as a parameter via `koinViewModel { parametersOf(key) }`).
+The screens follow `prototype.html` and the spec's UI section. Overview has count tiles, the device list, Up next (top 3), and Activity (latest 20). Device detail has the category dropdown (Auto / Phone / Watch), the holder card with Release and "Release + block", recent commands, and the Don't-use toggle; switching it on while the device is in use opens a dialog asking "Release now" or "After current holder releases". The Queue list is drag-to-reorder with `sh.calvin.reorderable`, and the Queue detail shows the WaitReason list with Move to top, "Hand it <device> now" (one per eligible device), and Remove from queue. Animations, required:
+- Device, queue, activity, and up-next rows use `Modifier.animateItem()`, with stable keys (`DeviceKey.hardwareSerial`, `HolderId.key`, activity id).
+- Count tiles and queue positions use `AnimatedContent` slide-and-fade.
+- Status dots and chips use `animateColorAsState`.
+- The holder card switches between held and free with `AnimatedContent`.
+- Don't-use dimming uses `animateFloatAsState` on alpha.
+- The don't-use dialog and "why it's waiting" rows use `AnimatedVisibility`.
+- Dragged queue rows elevate while dragging, using reorderable's `isDragging` with `animateDpAsState`.
+
+Register each ViewModel with `viewModelOf(::…)` (`DeviceDetailViewModel` and `QueueDetailViewModel` take their key as a parameter via `koinViewModel { parametersOf(key) }`).
 
 - [ ] **Step 1: Write failing tests:**
   - `UiModelsTest.timerLabelEditing`: holding with `editing = true`, last activity 1 min ago → `timerLabel == "editing · releases in 4m"`.
@@ -500,7 +510,7 @@ The screens follow `prototype.html` and the spec's UI section. Overview has coun
 The screens:
 - **Sessions** groups holders by `sessionId`, with the main agent first and then subagents. Each row shows the state (holding / waiting / idle / ended / blocked), with Unblock on blocked rows. Ended holders stay listed for 1 hour.
 - **Projects** lists each path with a category dropdown (Any / Phone / Watch / Phone+Watch).
-- **Settings** has port, idle minutes, and editing minutes (validated: port 1024–65535, minutes 1–240), hook status with Install/Repair, Install `cdm` (which shows a hint if `~/.local/bin` isn't on `PATH`), and the snippet with Copy and "Append to ~/.claude/CLAUDE.md" (that one asks for confirmation first). Changing the port restarts the server and marks the hooks `Outdated` until they're repaired.
+- **Settings** has port, idle minutes, and editing minutes (validated: port 1024–65535, minutes 1–240), hook status with Install/Repair, Install `cdm` (which shows a hint if `~/.local/bin` isn't on `PATH`), and the snippet with Copy and "Append to ~/.claude/CLAUDE.md" (that one asks for confirmation first). Changing the port restarts the server and marks the hooks `Outdated` until they're repaired. Animations follow the same rules as Task 10: session and project rows use `animateItem()`, subagent rows expand and collapse with `AnimatedVisibility`, and status changes in Settings crossfade.
 
 - [ ] **Step 1: Write failing tests:**
   - `SettingsViewModelTest.rejectsBadPort`: `onPortChanged("80")` → `uiState.portError != null`, and the repository is not updated.

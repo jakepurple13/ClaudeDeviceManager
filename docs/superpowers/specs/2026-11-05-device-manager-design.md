@@ -146,6 +146,13 @@ Clickable mockups from the brainstorming session are in `.superpowers/brainstorm
 
 The mockups use a dark theme. Following the system light/dark setting is fine.
 
+**Animation matters to Jacob.** Motion is a requirement, not polish:
+
+- Navigation transitions between rail sections and when a detail pane opens or closes. Use Navigation 3 transition specs.
+- List items animate when they appear, disappear, or move: devices connecting and disconnecting, holders joining and leaving the queue, reorders, and new activity entries.
+- State changes animate in place: status dots and chips change color, holder cards switch between held and free, count tiles and the queue badge change value, and the don't-use dimming fades.
+- Keep motion quick and calm, roughly 150–300 ms. Nothing should block input or slow down repeated actions.
+
 ## Tech constraints (Jacob's choices)
 
 - Compose Multiplatform, desktop/JVM target only.
