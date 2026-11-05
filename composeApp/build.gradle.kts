@@ -73,7 +73,7 @@ val needsAppRuntime: Boolean = gradle.startParameter.taskNames.any { requested -
 
 compose.desktop {
     application {
-        mainClass = "com.jacobrein.cdm.MainKt"
+        mainClass = "com.programmersbox.cdm.MainKt"
         // The custom title bar (Jewel DecoratedWindow) needs JetBrains Runtime, and Jewel 0.41 is Java 25 bytecode,
         // so the app runs on JBR 25 (auto-provisioned via foojay). Compilation and tests stay on the default JDK.
         // javaHome is a plain String, so resolve the toolchain only when a run or packaging task was requested.

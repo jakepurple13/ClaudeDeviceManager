@@ -21,7 +21,7 @@
 - Default timers: idle 15 min, editing 5 min. A queue spot is kept for 2 min after `cdm acquire` stops waiting. `cdm acquire` waits up to 570 s. `cdm` retries an unreachable app for 30 s.
 - Holder key: `"<session_id>:<agent_id>"`, where `agent_id` defaults to `"main"`.
 - The pin prefix comes from one function, `pinPrefix(serial)`, and its value is `export ANDROID_SERIAL=<serial>; `. Task 0 confirmed this form executes.
-- Package root: `com.jacobrein.cdm`. Gradle module: `composeApp`. Source: `composeApp/src/jvmMain/kotlin/com/jacobrein/cdm/`. Tests: `composeApp/src/jvmTest/kotlin/com/jacobrein/cdm/`. (Below, `…/` means those roots.)
+- Package root: `com.programmersbox.cdm`. Gradle module: `composeApp`. Source: `composeApp/src/jvmMain/kotlin/com/programmersbox/cdm/`. Tests: `composeApp/src/jvmTest/kotlin/com/programmersbox/cdm/`. (Below, `…/` means those roots.)
 - Animation is required (spec, "Animation matters to Jacob"). Durations are 150–300 ms, `tween`/`spring` from Compose animation APIs. Every `LazyColumn`/`LazyRow` item uses `Modifier.animateItem()`. Conditional UI uses `AnimatedVisibility`. Swapped content uses `AnimatedContent`/`Crossfade`. Colors use `animateColorAsState`. Numbers and badges use `AnimatedContent` with a vertical slide. Animations never block input.
 - If a pinned version fails to resolve or doesn't work with the others, use the nearest compatible version and note it in the commit message.
 
