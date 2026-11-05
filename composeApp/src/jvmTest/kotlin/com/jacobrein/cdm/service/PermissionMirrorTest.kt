@@ -54,7 +54,7 @@ class PermissionMirrorTest {
         assertEquals(Decision.ALLOW, decide("ls -la | grep foo"))
         assertEquals(Decision.ASK, decide("find . -delete"))
         assertEquals(Decision.ASK, decide("find . -exec rm {} ;"))
-        assertEquals(Decision.ALLOW, decide("find . -name x"))
+        assertEquals(Decision.ASK, decide("find . -name x"))
     }
 
     @Test fun readOnlyBuiltinsWithWritesOrSubstitutionAsk() {
@@ -158,5 +158,32 @@ class PermissionMirrorTest {
         mirror = PermissionMirror(home, managedSettings = managed)
         settings(home, allow = listOf("Bash(adb:*)"))
         assertEquals(Decision.ASK, decide("adb shell ls"))
+    }
+
+    @Test fun shellSyntaxMakesSegmentsIneligible() {
+        settings(home, allow = listOf("Bash"))
+        assertAsk("find . \$'-delete'", "ls \$X", "cat {a,b}", "(rm -rf x)", "{ rm -rf x; }", "! rm x", "ls *")
+        assertEquals(Decision.ALLOW, decide("[ -f x ]"))
+        assertEquals(Decision.ALLOW, decide("echo '\$X *'"))
+    }
+
+    @Test fun keywordsAndExecWrappersNeverAllowEligible() {
+        settings(home, allow = listOf("Bash"), deny = listOf("Bash(rm:*)"))
+        assertAsk(
+            "if true; then rm -rf x; fi", "command rm x", "exec rm x", "eval rm x", "nohup rm x", "nice rm x",
+            "timeout 5 rm x", "bash -c 'rm x'", "xargs rm", "source f", ". f",
+        )
+    }
+
+    @Test fun denyMatchesBasenameOfFirstWord() {
+        settings(home, allow = listOf("Bash"), deny = listOf("Bash(rm:*)"))
+        assertAsk("/bin/rm x", "./rm x")
+    }
+
+    @Test fun removedBuiltinsNowAsk() = assertAsk("find . -name x", "sort f", "uniq f", "file f", "date", "rg x")
+
+    @Test fun printenvOnlyWithVarNames() {
+        assertEquals(Decision.ALLOW, decide("printenv HOME"))
+        assertAsk("printenv --help x/y")
     }
 }

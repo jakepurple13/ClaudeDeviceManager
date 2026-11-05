@@ -167,6 +167,8 @@ class DeviceManagerServiceTest {
         home.resolve(".claude/settings.json").toFile().writeText("{\"permissions\":{\"allow\":[\"Bash\"]}}")
         val s2 = DeviceManagerService(DeviceTracker(adb), configs, projects, settings, activity, blocked, PermissionMirror(home), clock = { now })
         s2.start(backgroundScope)
+        val plain = s2.preToolUse(HookInput("PreToolUse", "s9", null, null, "/w", "Bash", "echo hi"))
+        assertEquals(HookDecision(HookReply.NoOpinion, null), plain)
         val edit = s2.preToolUse(HookInput("PreToolUse", "s9", null, null, "/w", "Edit", null))
         assertEquals(HookDecision(HookReply.NoOpinion, null), edit)
     }

@@ -29,7 +29,7 @@ data class HookDecision(val reply: HookReply, val permission: Decision?)
 class PermissionMirror(
     private val home: Path,
     private val readOnlyBuiltins: Set<String> = DEFAULT_READ_ONLY,
-    private val managedSettings: Path = Path.of("/Library/Application Support/ClaudeCode/managed-settings.json"),
+    private val managedSettings: Path = defaultManagedSettings(),
 ) {
     private data class Cached(val modified: Long, val size: Long, val rules: PermissionRules)
 
@@ -55,7 +55,7 @@ class PermissionMirror(
         // Every form a deny/ask rule might be written against: as written, wrappers stripped, quotes removed.
         val forms = (raw + CommandClassifier.segments(original)).flatMap {
             listOf(it, CommandClassifier.unquotedWords(it).joinToString(" "))
-        }.distinct()
+        }.flatMap { listOf(it, withBasenameFirstWord(it)) }.distinct()
         if (forms.any { f -> rules.deny.any { it.matches(f) } }) return Decision.ASK
         if (permissionMode == "bypassPermissions") return Decision.ALLOW
         // A substitution runs code no segment rule has judged.
@@ -64,39 +64,39 @@ class PermissionMirror(
         if (kind == RewriteKind.CDM && raw.isNotEmpty() && raw.all { rawFirstWord(it) == "cdm" }) return Decision.ALLOW
         if (forms.any { f -> rules.ask.any { it.matches(f) } }) return Decision.ASK
         val ok = raw.isNotEmpty() && raw.all { s ->
-            !hasWrapperOrAssignment(s) && (rules.allow.any { it.matches(s) } || isReadOnly(s))
+            eligible(s) && (rules.allow.any { it.matches(s) } || isReadOnly(s))
         }
         return if (ok) Decision.ALLOW else Decision.ASK
+    }
+
+    private fun withBasenameFirstWord(f: String): String {
+        val t = f.trimStart()
+        val first = t.substringBefore(' ')
+        return if ('/' in first) first.substringAfterLast('/') + t.removePrefix(first) else f
     }
 
     private fun rawFirstWord(segment: String) = segment.trimStart().substringBefore(' ').substringBefore('\t')
 
     private fun hasRedirect(segment: String) = REDIRECT.containsMatchIn(segment.replace(HARMLESS_REDIRECT, ""))
 
-    /** A leading VAR=value or sudo/time/env: the real command is hidden behind it, so it never auto-allows. */
-    private fun hasWrapperOrAssignment(segment: String): Boolean {
-        val w = segment.trim().split(Regex("\\s+"))
-        val first = w.first()
-        if (ASSIGNMENT.matches(first)) return true
-        return first in WRAPPERS && !(first == "env" && w.size == 1)
+    /** True if [segment] may be auto-allowed at all: no expansion, grouping, redirect or exec-wrapper syntax. */
+    private fun eligible(segment: String): Boolean {
+        val words = segment.trim().split(Regex("\\s+"))
+        val first = words.first()
+        if (ASSIGNMENT.matches(first)) return false
+        if (first in NEVER_ELIGIBLE && !(first == "env" && words.size == 1)) return false
+        var text = segment.replace(HARMLESS_REDIRECT, "").replace(SINGLE_QUOTED, "''")
+        if (first == "[") text = text.trimStart().removePrefix("[")
+        return text.none { it in FORBIDDEN_CHARS }
     }
 
     private fun isReadOnly(segment: String): Boolean {
-        if ('\\' in segment) return false
         val words = CommandClassifier.unquotedWords(segment)
         val first = words.firstOrNull() ?: return false
         if (first !in readOnlyBuiltins || rawFirstWord(segment) != first) return false
-        val args = words.drop(1)
-        val flags = args.filter { it.startsWith("-") }
-        fun shortHas(vararg c: Char) = flags.any { !it.startsWith("--") && it.drop(1).any { ch -> ch in c } }
         return when (first) {
-            "find" -> args.none { it in FIND_WRITERS }
-            "sort" -> !shortHas('o', 'T') && flags.none { it.startsWith("--output") || it.startsWith("--compress-program") || it.startsWith("--temporary-directory") }
-            "uniq" -> args.count { !it.startsWith("-") } <= 1
-            "rg" -> flags.none { it.startsWith("--pre") || it.startsWith("--hostname-bin") }
-            "file" -> !shortHas('C', 'm') && flags.none { it.startsWith("--compile") || it.startsWith("--magic-file") }
-            "date" -> !shortHas('s') && flags.none { it.startsWith("--set") } && args.none { !it.startsWith("-") && !it.startsWith("+") }
-            "env", "printenv" -> args.isEmpty()
+            "env" -> words.size == 1
+            "printenv" -> words.drop(1).all { VAR_NAME.matches(it) }
             else -> true
         }
     }
@@ -130,14 +130,25 @@ class PermissionMirror(
 
     companion object {
         val DEFAULT_READ_ONLY = setOf(
-            "cd", "ls", "cat", "head", "tail", "pwd", "echo", "grep", "rg", "wc", "which", "file", "stat", "du", "df",
-            "find", "sort", "uniq", "tr", "cut", "date", "env", "printenv", "true", "false", "test", "[",
+            "cd", "ls", "cat", "head", "tail", "pwd", "echo", "grep", "wc", "which", "stat", "du", "df",
+            "tr", "cut", "true", "false", "test", "[", "env", "printenv",
         )
-        private val WRAPPERS = setOf("sudo", "time", "env")
-        private val FIND_WRITERS = setOf("-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls")
+        private val NEVER_ELIGIBLE = setOf(
+            "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "case", "esac", "function", "select",
+            "command", "exec", "eval", "nohup", "nice", "timeout", "stdbuf", "xargs", "time", "sudo", "env",
+            "bash", "sh", "zsh", "dash", "ksh", "fish", "source", ".",
+        )
+        private val FORBIDDEN_CHARS = setOf('$', '\\', '`', '{', '}', '(', ')', '*', '?', '[', '!', '<', '>')
+        private val SINGLE_QUOTED = Regex("'[^']*'")
+        private val VAR_NAME = Regex("^[A-Za-z_][A-Za-z0-9_]*$")
         private val SUBSTITUTION = Regex("""\$\(|`|<\(|>\(""")
         private val REDIRECT = Regex("[<>]")
         private val HARMLESS_REDIRECT = Regex("""\d?>&\d|\d?>\s?/dev/null""")
         private val ASSIGNMENT = Regex("""^[A-Za-z_][A-Za-z0-9_]*=.*""")
+
+        fun defaultManagedSettings(): Path =
+            if (System.getProperty("os.name").orEmpty().contains("Mac", ignoreCase = true)) {
+                Path.of("/Library/Application Support/ClaudeCode/managed-settings.json")
+            } else Path.of("/etc/claude-code/managed-settings.json")
     }
 }
