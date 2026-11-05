@@ -26,6 +26,7 @@ open class FakeManager : DeviceManager {
         { _, _, _, _, _ -> AcquireResult.Blocked }
     var statusImpl: (HolderId) -> HolderStatus = { HolderStatus.None }
     var lastWants: Set<Category>? = null
+    var lastTimeout: Duration? = null
     val released = mutableListOf<HolderId>()
 
     override val snapshot: StateFlow<AllocatorSnapshot> = MutableStateFlow(AllocatorSnapshot(emptyList(), emptyMap(), emptyList(), emptyMap()))
@@ -37,6 +38,7 @@ open class FakeManager : DeviceManager {
     override suspend fun sessionEnd(sessionId: String) { ended += sessionId }
     override suspend fun acquire(holder: HolderId, cwd: String, wants: Set<Category>, timeout: Duration, onPosition: suspend (Int) -> Unit): AcquireResult {
         lastWants = wants
+        lastTimeout = timeout
         return acquireImpl(holder, cwd, wants, timeout, onPosition)
     }
     override suspend fun release(holder: HolderId) { released += holder }

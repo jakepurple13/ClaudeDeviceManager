@@ -40,7 +40,8 @@ class ServerStatus {
     fun clear() { _error.value = null }
 }
 
-const val DEFAULT_ACQUIRE_TIMEOUT_SEC = 570L
+/** Under Claude Code's default 2-minute Bash timeout (Ruling Y); `cdm` sends its own value anyway. */
+const val DEFAULT_ACQUIRE_TIMEOUT_SEC = 110L
 
 fun defaultPortFile(): Path = Path(System.getProperty("user.home"), ".claude-device-manager", "port")
 

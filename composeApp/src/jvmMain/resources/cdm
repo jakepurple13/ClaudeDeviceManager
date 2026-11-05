@@ -4,7 +4,8 @@ set -uo pipefail
 
 PORT_FILE="${CDM_PORT_FILE:-$HOME/.claude-device-manager/port}"
 RETRY_SECONDS="${CDM_RETRY_SECONDS:-30}"
-ACQUIRE_TIMEOUT="${CDM_ACQUIRE_TIMEOUT:-570}"
+# Under Claude Code's default 2-minute Bash timeout; "Still queued" tells the agent to call again.
+ACQUIRE_TIMEOUT="${CDM_ACQUIRE_TIMEOUT:-110}"
 
 cmd="${1:-}"
 [ $# -gt 0 ] && shift
@@ -32,18 +33,21 @@ not_running() {
   exit 0
 }
 
-# Prints the port, retrying while the port file or app is missing.
-deadline=$((SECONDS + RETRY_SECONDS))
-port=""
-while :; do
-  [ -f "$PORT_FILE" ] && port="$(tr -d '[:space:]' < "$PORT_FILE")"
-  if [ -n "$port" ] && [ "$(curl -s --max-time 2 "http://127.0.0.1:$port/cdm/ping" 2>/dev/null | tr -d '[:space:]')" = "cdm-ok" ]; then
-    break
-  fi
-  [ "$SECONDS" -ge "$deadline" ] && not_running
-  sleep 1
-done
-base="http://127.0.0.1:$port/cdm"
+# Sets $port and $base, retrying for RETRY_SECONDS while the port file or app is missing. Returns 1 if it never answers.
+connect() {
+  local deadline=$((SECONDS + RETRY_SECONDS))
+  while :; do
+    port=""
+    [ -f "$PORT_FILE" ] && port="$(tr -d '[:space:]' < "$PORT_FILE")"
+    if [ -n "$port" ] && [ "$(curl -s --max-time 2 "http://127.0.0.1:$port/cdm/ping" 2>/dev/null | tr -d '[:space:]')" = "cdm-ok" ]; then
+      base="http://127.0.0.1:$port/cdm"
+      return 0
+    fi
+    [ "$SECONDS" -ge "$deadline" ] && return 1
+    sleep 1
+  done
+}
+connect || not_running
 
 # curl -G turns --data-urlencode pairs into a properly escaped query string.
 q=(-G --data-urlencode "holder=$holder" --data-urlencode "cwd=$cwd")
@@ -59,17 +63,29 @@ case "$cmd" in
     label="${wanted:-device}"
     label="${label//,/ or }"
     [ "$label" = "any" ] && label="device"
-    while IFS= read -r line; do
-      case "$line" in
-        .) ;; # heartbeat
-        QUEUED\ *) echo "Waiting for a $label device… position ${line#QUEUED }" ;;
-        GRANTED\ *) rest="${line#GRANTED }"; say_grant "${rest%% *}" "${rest#* }"; exit 0 ;;
-        TIMEOUT\ *) echo "Still queued at position ${line#TIMEOUT }. Run \`cdm acquire\` again to keep waiting."; exit 0 ;;
-        BLOCKED) echo "You're blocked in Claude Device Manager. Ask the user to unblock you."; exit 1 ;;
-      esac
-    done < <(curl -sN --no-buffer -X POST "${q[@]}" --data-urlencode "category=$wanted" --data-urlencode "timeoutSec=$ACQUIRE_TIMEOUT" "$base/acquire")
-    # Stream ended without a verdict: the app went away mid-wait.
-    not_running
+    acquire_end=$((SECONDS + ACQUIRE_TIMEOUT))
+    last_pos=""
+    while :; do
+      left=$((acquire_end - SECONDS))
+      [ "$left" -lt 1 ] && left=1
+      while IFS= read -r line; do
+        case "$line" in
+          .) ;; # heartbeat
+          QUEUED\ *)
+            pos="${line#QUEUED }"
+            [ "$pos" != "$last_pos" ] && echo "Waiting for a $label device… position $pos"
+            last_pos="$pos"
+            ;;
+          GRANTED\ *) rest="${line#GRANTED }"; say_grant "${rest%% *}" "${rest#* }"; exit 0 ;;
+          TIMEOUT\ *) echo "Still queued at position ${line#TIMEOUT }. Run \`cdm acquire\` again to keep waiting."; exit 0 ;;
+          BLOCKED) echo "You're blocked in Claude Device Manager. Ask the user to unblock you."; exit 1 ;;
+          REMOVED) echo "The user removed you from the device queue. Ask them before trying again."; exit 1 ;;
+        esac
+      done < <(curl -sN --no-buffer -X POST "${q[@]}" --data-urlencode "category=$wanted" --data-urlencode "timeoutSec=$left" "$base/acquire")
+      # Stream ended without a verdict: the app went away mid-wait. Its queue grace keeps our spot, so
+      # reconnect (retrying for RETRY_SECONDS) and wait again; give up only if it never comes back.
+      connect || not_running
+    done
     ;;
   release)
     out="$(curl -s -X POST "${q[@]}" "$base/release")" || not_running

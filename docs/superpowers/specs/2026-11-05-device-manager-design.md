@@ -103,11 +103,11 @@ Keep the lists of `adb` subcommands and Gradle task patterns in one place so the
 
 - Grants a free device of a matching category at once, if one exists.
 - Otherwise joins the queue and long-polls the app. It prints its position each time it changes ("waiting for watch, position 2"). It returns as soon as a device is granted and prints the serial and name.
-- Gives up after about 9.5 minutes, under Bash's 10-minute limit. It prints "Still queued at position N. Run `cdm acquire` again to keep waiting." The holder keeps its queue spot for 2 minutes so it can re-call.
+- Gives up after about 110 seconds, under Claude Code's default 2-minute Bash timeout (final review, Ruling Y). It prints "Still queued at position N. Run `cdm acquire` again to keep waiting." The holder keeps its queue spot for 2 minutes so it can re-call.
 - Refuses at once if the holder is blocked.
 - **Switching category** (final review, Ruling W): if the holder already holds a device whose category doesn't fit the requested one, that device is released (as a self-release) and the holder grabs or queues for the requested category. A device that fits is kept.
 - If Jacob removes the holder from the queue while it waits, it prints "The user removed you from the device queue. Ask them before trying again." and exits 1.
-- If the app goes away while it's waiting, it retries the connection for 30 s. Then it exits 0 with "Device Manager not running; proceeding without a device lock."
+- If the app goes away while it's waiting, it retries the connection for 30 s. If the app comes back in that time, it re-joins the wait (the app's 2-minute queue grace kept its spot) for the time left. Otherwise it exits 0 with "Device Manager not running; proceeding without a device lock."
 
 `cdm release` gives the device back. `cdm status` prints what the holder has, or its queue position.
 
