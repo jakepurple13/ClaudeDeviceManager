@@ -43,6 +43,15 @@ class QueueViewModelTest {
     }
 
     @Test
+    fun dragEndingWhereItStartedSendsNothing() {
+        val vm = vm()
+        vm.onMove(from = c, to = b) // [a, c, b]
+        vm.onMove(from = c, to = b) // back to [a, b, c]
+        vm.onDragEnd()
+        assertEquals(emptyList(), manager.moves)
+    }
+
+    @Test
     fun moveResolvesByKeyAgainstRenderedOrderWhileSnapshotLags() {
         val vm = vm()
         vm.onMove(from = c, to = a)

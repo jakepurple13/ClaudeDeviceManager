@@ -31,14 +31,15 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
 @Composable
 fun QueueScreen(selected: HolderId?, onOpen: (HolderId) -> Unit, vm: QueueViewModel = koinViewModel()) {
     // The view model owns the rendered order (one source); reorderable waits for the layout to catch up after onMove.
-    val rows by vm.rows.collectAsStateWithLifecycle()
+    val loaded by vm.rows.collectAsStateWithLifecycle()
+    val rows = loaded.orEmpty()
     val listState = rememberLazyListState()
     val reorder = rememberReorderableLazyListState(listState) { from, to ->
         vm.onMove(HolderId.parse(from.key as String), HolderId.parse(to.key as String))
     }
     Column(Modifier.fillMaxSize().padding(12.dp)) {
         SectionLabel("Waiting · drag to reorder")
-        AnimatedLine(rows.isEmpty()) { Muted("Nobody is waiting for a device.") }
+        AnimatedLine(loaded?.isEmpty() == true) { Muted("Nobody is waiting for a device.") }
         LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(4.dp)) {
             items(rows, key = { it.holder.key }) { row ->
                 ReorderableItem(reorder, key = row.holder.key) { isDragging ->

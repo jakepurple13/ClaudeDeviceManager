@@ -33,4 +33,19 @@ class AnimatedRowsTest {
         assertEquals(1, count(this, "Galaxy Watch 6"))
         assertEquals(1, count(this, "Gabb Watch 3"))
     }
+
+    private data class Reason(val device: String, val text: String)
+
+    @Test
+    fun changedItemUnderSameKeyRerenders() = runComposeUiTest {
+        val items = mutableStateOf(listOf(Reason("Gabb Watch 3", "held by watch-launcher #77c2")))
+        setContent { AnimatedRows(items.value, key = { it.device }) { Text("${it.device} — ${it.text}") } }
+        waitForIdle()
+        assertEquals(1, count(this, "Gabb Watch 3 — held by watch-launcher #77c2"))
+
+        items.value = listOf(Reason("Gabb Watch 3", "marked don't use"))
+        waitForIdle()
+        assertEquals(1, count(this, "Gabb Watch 3 — marked don't use"))
+        assertEquals(0, count(this, "Gabb Watch 3 — held by watch-launcher #77c2"))
+    }
 }

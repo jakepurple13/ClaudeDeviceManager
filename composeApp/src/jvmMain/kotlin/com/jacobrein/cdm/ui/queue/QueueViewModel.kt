@@ -23,8 +23,9 @@ class QueueViewModel(private val actions: UiActions, sources: UiSources) : ViewM
      */
     private val shown = MutableStateFlow<List<HolderId>?>(null)
 
-    /** The holder being dragged; set by the first step of a drag, cleared when it ends. */
+    /** The holder being dragged and where it started; set by the first step of a drag, cleared when it ends. */
     private var dragged: HolderId? = null
+    private var dragStart = -1
 
     init {
         actions.manager.snapshot
@@ -34,7 +35,8 @@ class QueueViewModel(private val actions: UiActions, sources: UiSources) : ViewM
             .launchIn(viewModelScope)
     }
 
-    val rows: StateFlow<List<QueueRow>> = combine(sources.world, shown) { w, p ->
+    /** Null until the first emission, so the screen doesn't flash its empty state on open. */
+    val rows: StateFlow<List<QueueRow>?> = combine(sources.world, shown) { w, p ->
         val rows = queueRows(w)
         if (p == null) {
             rows
@@ -42,7 +44,7 @@ class QueueViewModel(private val actions: UiActions, sources: UiSources) : ViewM
             val byHolder = rows.associateBy { it.holder }
             p.mapIndexedNotNull { i, h -> byHolder[h]?.copy(position = i + 1) }
         }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** A drag step: [from] moves to where [to] is in the order on screen. Nothing reaches the service yet. */
     fun onMove(from: HolderId, to: HolderId) {
@@ -50,15 +52,22 @@ class QueueViewModel(private val actions: UiActions, sources: UiSources) : ViewM
         val i = current.indexOf(from)
         val j = current.indexOf(to)
         if (i < 0 || j < 0 || i == j) return
-        dragged = from
+        if (dragged != from) {
+            dragged = from
+            dragStart = i
+        }
         shown.value = current.toMutableList().apply { add(j, removeAt(i)) }
     }
 
-    /** The drag ended: one service call puts the dragged holder where it was dropped. */
+    /** The drag ended: one service call puts the dragged holder where it was dropped (none if it's back home). */
     fun onDragEnd() {
         val holder = dragged ?: return
         dragged = null
         val index = shown.value?.indexOf(holder)?.takeIf { it >= 0 } ?: return
+        if (index == dragStart) {
+            shown.update { p -> if (p == actions.manager.snapshot.value.queue) null else p }
+            return
+        }
         actions.run { moveInQueue(holder, index) }
     }
 }

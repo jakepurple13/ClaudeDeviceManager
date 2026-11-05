@@ -8,13 +8,17 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 
 private class RowEntry<T>(val key: Any, item: T) {
-    var item: T = item
+    /** Snapshot state, so a changed item under the same key re-renders even when the row's lambda is skipped. */
+    var item: T by mutableStateOf(item)
     val visible = MutableTransitionState(false).apply { targetState = true }
 }
 
