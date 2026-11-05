@@ -1,7 +1,10 @@
 package com.jacobrein.cdm
 
-import androidx.compose.ui.window.Window
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.application
+import androidx.compose.ui.window.rememberWindowState
 import com.jacobrein.cdm.data.SettingsRepository
 import com.jacobrein.cdm.di.appModules
 import com.jacobrein.cdm.server.CdmServer
@@ -13,7 +16,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import com.jacobrein.cdm.ui.nav.AppNavigation
+import com.jacobrein.cdm.ui.window.AppWindow
+import com.jacobrein.cdm.ui.window.TitleBarStatus
+import com.jacobrein.cdm.ui.window.windowChrome
+import java.awt.Dimension
 import org.koin.core.context.startKoin
+
+private const val APP_TITLE = "Claude Device Manager"
 
 fun main() {
     val koin = startKoin { modules(appModules()) }.koin
@@ -31,14 +41,21 @@ fun main() {
     }
     // Cmd+Q / SIGTERM skip the window-close path; stop() is idempotent and deletes the port file.
     Runtime.getRuntime().addShutdownHook(Thread { server.stop() })
+    val chrome = windowChrome()
     application {
-        Window(
+        AppWindow(
             onCloseRequest = {
                 server.stop()
                 appScope.cancel()
                 exitApplication()
             },
-            title = "Claude Device Manager",
-        ) {}
+            title = APP_TITLE,
+            chrome = chrome,
+            state = rememberWindowState(size = DpSize(1100.dp, 720.dp)),
+            titleBar = { TitleBarStatus(APP_TITLE) },
+        ) {
+            LaunchedEffect(Unit) { window.minimumSize = Dimension(800, 560) }
+            AppNavigation()
+        }
     }
 }

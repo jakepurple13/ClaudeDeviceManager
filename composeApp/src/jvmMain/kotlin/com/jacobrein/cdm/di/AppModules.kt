@@ -16,7 +16,10 @@ import com.jacobrein.cdm.service.DeviceManager
 import com.jacobrein.cdm.service.DeviceManagerService
 import com.jacobrein.cdm.service.PermissionMirror
 import kotlin.io.path.Path
+import com.jacobrein.cdm.ui.nav.Navigator
+import com.jacobrein.cdm.ui.nav.ShellViewModel
 import org.koin.core.module.Module
+import org.koin.core.module.dsl.viewModel
 import org.koin.dsl.bind
 import org.koin.dsl.module
 
@@ -40,5 +43,7 @@ fun appModules(): List<Module> = listOf(
         single { ServerStatus() }
         single { Installer(Path(System.getProperty("user.home"))) }
         single { DeviceManagerService(get(), get(), get(), get(), get(), get(), get()) } bind DeviceManager::class
+        single { Navigator() }
+        viewModel { ShellViewModel(get()) }
     },
 )

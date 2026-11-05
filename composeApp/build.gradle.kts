@@ -32,6 +32,7 @@ kotlin {
             implementation(libs.coroutines.swing)
             implementation(libs.serialization.json)
             implementation(libs.reorderable)
+            implementation(libs.jewel.decorated.window)
         }
         jvmTest.dependencies {
             implementation(libs.kotlin.test)
@@ -53,9 +54,37 @@ room3 {
     schemaDirectory("$projectDir/schemas")
 }
 
+// Jewel's icon libraries pull in IntelliJ's coroutines fork: same classes, missing newer methods. If both jars ship,
+// the fork can win on the classpath and crash on cancel. Substitute the real coroutines at the catalog version.
+configurations.configureEach {
+    resolutionStrategy.dependencySubstitution {
+        substitute(module("org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core-jvm"))
+            .using(module("org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:${libs.versions.coroutines.get()}"))
+    }
+}
+
+// Run / packaging tasks (run, runDistributable, package*, create*Distributable, *RuntimeImage, ...), matched on the
+// requested task names with any ":project:" prefix dropped. Only these need the JBR 25 runtime.
+val needsAppRuntime: Boolean = gradle.startParameter.taskNames.any { requested ->
+    val name = requested.substringAfterLast(':')
+    listOf("run", "package", "Distributable", "RuntimeImage", "suggestRuntimeModules", "prepareAppResources")
+        .any { name.contains(it, ignoreCase = true) }
+}
+
 compose.desktop {
     application {
         mainClass = "com.jacobrein.cdm.MainKt"
+        // The custom title bar (Jewel DecoratedWindow) needs JetBrains Runtime, and Jewel 0.41 is Java 25 bytecode,
+        // so the app runs on JBR 25 (auto-provisioned via foojay). Compilation and tests stay on the default JDK.
+        // javaHome is a plain String, so resolve the toolchain only when a run or packaging task was requested.
+        if (needsAppRuntime) {
+            javaHome = javaToolchains.launcherFor {
+                languageVersion.set(JavaLanguageVersion.of(25))
+                vendor.set(JvmVendorSpec.JETBRAINS)
+            }.get().metadata.installationPath.asFile.absolutePath
+        }
+        // JDK 25 warns when JNI libraries (skiko, sqlite-bundled) load without this.
+        jvmArgs += "--enable-native-access=ALL-UNNAMED"
         nativeDistributions {
             targetFormats(TargetFormat.Dmg)
             packageName = "Claude Device Manager"
