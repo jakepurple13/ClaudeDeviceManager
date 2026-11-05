@@ -12,6 +12,7 @@ import com.programmersbox.cdm.data.DeviceConfigEntity
 import com.programmersbox.cdm.data.DeviceConfigRepository
 import com.programmersbox.cdm.data.SettingDao
 import com.programmersbox.cdm.data.SettingEntity
+import com.programmersbox.cdm.data.PinnedPermission
 import com.programmersbox.cdm.data.ProjectRepository
 import com.programmersbox.cdm.data.SettingsRepository
 import com.programmersbox.cdm.data.inMemoryDatabase
@@ -233,6 +234,55 @@ class DeviceManagerServiceTest {
         assertEquals(HookDecision(HookReply.NoOpinion, null), plain)
         val edit = s2.preToolUse(HookInput("PreToolUse", "s9", null, null, "/w", "Edit", null))
         assertEquals(HookDecision(HookReply.NoOpinion, null), edit)
+    }
+
+    private fun allowRule(rule: String) {
+        java.nio.file.Files.createDirectories(home.resolve(".claude"))
+        home.resolve(".claude/settings.json").toFile().writeText("{\"permissions\":{\"allow\":[\"$rule\"]}}")
+    }
+
+    private suspend fun TestScope.pinnedPermissionFor(mode: PinnedPermission, cmd: String = "adb shell ls"): HookDecision {
+        projects.setDefault("/w", Category.WATCH)
+        settings.update { it.copy(pinnedPermission = mode) }
+        val d = started().preToolUse(bash(cmd))
+        assertIs<HookReply.Rewrite>(d.reply)
+        return d
+    }
+
+    @Test fun pinnedMirrorAsksWithoutAllowRule() = runTest {
+        assertEquals(Decision.ASK, pinnedPermissionFor(PinnedPermission.MIRROR).permission)
+    }
+
+    @Test fun pinnedAlwaysAllowAllowsWithoutAllowRule() = runTest {
+        assertEquals(Decision.ALLOW, pinnedPermissionFor(PinnedPermission.ALWAYS_ALLOW).permission)
+    }
+
+    @Test fun pinnedAlwaysAskAsksWithoutAllowRule() = runTest {
+        assertEquals(Decision.ASK, pinnedPermissionFor(PinnedPermission.ALWAYS_ASK).permission)
+    }
+
+    @Test fun pinnedMirrorAllowsWithAllowRule() = runTest {
+        allowRule("Bash(adb:*)")
+        assertEquals(Decision.ALLOW, pinnedPermissionFor(PinnedPermission.MIRROR).permission)
+    }
+
+    @Test fun pinnedAlwaysAskAsksEvenWithAllowRule() = runTest {
+        allowRule("Bash(adb:*)")
+        assertEquals(Decision.ASK, pinnedPermissionFor(PinnedPermission.ALWAYS_ASK).permission)
+    }
+
+    @Test fun cdmOnlyRewriteStaysAllowedUnderAlwaysAsk() = runTest {
+        val d = pinnedPermissionFor(PinnedPermission.ALWAYS_ASK, "cdm status")
+        assertEquals(RewriteKind.CDM, assertIs<HookReply.Rewrite>(d.reply).kind)
+        assertEquals(Decision.ALLOW, d.permission)
+    }
+
+    @Test fun nonRewriteHasNoPermissionInAnyMode() = runTest {
+        settings.update { it.copy(pinnedPermission = PinnedPermission.ALWAYS_ALLOW) }
+        val s = started()
+        assertEquals(HookDecision(HookReply.NoOpinion, null), s.preToolUse(bash("echo hi")))
+        settings.update { it.copy(pinnedPermission = PinnedPermission.ALWAYS_ASK) }
+        assertEquals(HookDecision(HookReply.NoOpinion, null), s.preToolUse(bash("echo hi", session = "s2")))
     }
 
     @Test fun subagentStopReleasesAndEndedHoldersDropAfterAnHour() = runTest {

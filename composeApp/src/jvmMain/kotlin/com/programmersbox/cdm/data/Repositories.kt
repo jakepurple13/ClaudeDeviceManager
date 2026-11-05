@@ -18,7 +18,19 @@ data class DeviceConfig(
 
 data class Project(val path: String, val defaultCategory: Category)
 
-data class AppSettings(val port: Int = 47823, val idleMinutes: Int = 15, val editingMinutes: Int = 5)
+/**
+ * The permission answer for a command the hook pinned to a device (see PermissionMirror). [MIRROR] applies the
+ * user's own Claude Code rules to the original command; [ALWAYS_ALLOW] and [ALWAYS_ASK] override them. Claude Code
+ * still enforces its own deny rules even when the hook says allow.
+ */
+enum class PinnedPermission { MIRROR, ALWAYS_ALLOW, ALWAYS_ASK }
+
+data class AppSettings(
+    val port: Int = 47823,
+    val idleMinutes: Int = 15,
+    val editingMinutes: Int = 5,
+    val pinnedPermission: PinnedPermission = PinnedPermission.MIRROR,
+)
 
 data class ActivityEntry(
     val id: Long,
@@ -78,6 +90,7 @@ class SettingsRepository(private val dao: SettingDao) {
         dao.put(SettingEntity(PORT, n.port.toString()))
         dao.put(SettingEntity(IDLE, n.idleMinutes.toString()))
         dao.put(SettingEntity(EDITING, n.editingMinutes.toString()))
+        dao.put(SettingEntity(PINNED, n.pinnedPermission.name))
     }
 
     private fun List<SettingEntity>.toSettings(): AppSettings {
@@ -87,6 +100,7 @@ class SettingsRepository(private val dao: SettingDao) {
             m[PORT]?.toIntOrNull() ?: d.port,
             m[IDLE]?.toIntOrNull() ?: d.idleMinutes,
             m[EDITING]?.toIntOrNull() ?: d.editingMinutes,
+            m[PINNED]?.let { v -> PinnedPermission.entries.firstOrNull { it.name == v } } ?: d.pinnedPermission,
         )
     }
 
@@ -94,6 +108,7 @@ class SettingsRepository(private val dao: SettingDao) {
         const val PORT = "port"
         const val IDLE = "idleMinutes"
         const val EDITING = "editingMinutes"
+        const val PINNED = "pinnedPermission"
     }
 }
 

@@ -3,6 +3,7 @@ package com.programmersbox.cdm.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.programmersbox.cdm.data.AppSettings
+import com.programmersbox.cdm.data.PinnedPermission
 import com.programmersbox.cdm.data.SettingsRepository
 import com.programmersbox.cdm.install.InstallLifecycle
 import com.programmersbox.cdm.install.IntegrationState
@@ -41,6 +42,10 @@ data class SettingsState(
     val repairResult: ActionResult? = null,
     val snippet: String = "",
     val copied: Boolean = false,
+    /** The pinned-command permission mode shown; applied on selection, not with Save. */
+    val pinnedPermission: PinnedPermission = PinnedPermission.MIRROR,
+    /** Set when storing a pinned-command mode failed. */
+    val pinnedResult: ActionResult? = null,
 ) {
     /** The fields differ from what's stored. */
     val dirty: Boolean get() = loaded && (port != "${saved.port}" || idle != "${saved.idleMinutes}" || editing != "${saved.editingMinutes}")
@@ -73,15 +78,19 @@ class SettingsViewModel(
     val uiState: StateFlow<SettingsState> = state.asStateFlow()
     private var copiedJob: Job? = null
 
+    /** A selected mode not yet seen back from the DB, so a stale emission doesn't flick the radio back. */
+    @Volatile private var pendingPinned: PinnedPermission? = null
+
     init {
         viewModelScope.launch {
             settings.settings.collect { s ->
-                val wasLoaded = state.value.loaded
+                if (pendingPinned == s.pinnedPermission) pendingPinned = null
+                val pinned = pendingPinned ?: s.pinnedPermission
                 state.update { st ->
                     // Fill the fields on first load, and after a save; never over the user's unsaved edits.
                     if (!st.loaded || !st.dirty) {
-                        st.copy(loaded = true, saved = s, port = "${s.port}", idle = "${s.idleMinutes}", editing = "${s.editingMinutes}", portError = null, idleError = null, editingError = null)
-                    } else st.copy(saved = s)
+                        st.copy(loaded = true, saved = s, port = "${s.port}", idle = "${s.idleMinutes}", editing = "${s.editingMinutes}", portError = null, idleError = null, editingError = null, pinnedPermission = pinned)
+                    } else st.copy(saved = s, pinnedPermission = pinned)
                 }
             }
         }
@@ -107,7 +116,7 @@ class SettingsViewModel(
         val ee = minutesError(st.editing)
         state.update { it.copy(portError = pe, idleError = ie, editingError = ee) }
         if (pe != null || ie != null || ee != null || st.saving || !st.loaded) return
-        val new = AppSettings(st.port.trim().toInt(), st.idle.trim().toInt(), st.editing.trim().toInt())
+        val new = st.saved.copy(port = st.port.trim().toInt(), idleMinutes = st.idle.trim().toInt(), editingMinutes = st.editing.trim().toInt())
         // "030" -> "30", so a value equal to the stored one doesn't leave the form dirty forever.
         state.update { it.copy(port = "${new.port}", idle = "${new.idleMinutes}", editing = "${new.editingMinutes}") }
         val changed = new != st.saved
@@ -126,6 +135,23 @@ class SettingsViewModel(
                 result = ActionResult(false, "Could not save settings: ${e.message ?: e}")
             } finally {
                 state.update { it.copy(saving = false, saveResult = result) }
+            }
+        }
+    }
+
+    /** Stores the pinned-command mode at once (no Save); the hook reads it on its next call. */
+    fun onPinnedPermissionSelected(mode: PinnedPermission) {
+        if (mode == state.value.pinnedPermission) return
+        pendingPinned = mode
+        state.update { it.copy(pinnedPermission = mode, pinnedResult = null) }
+        actions.launch {
+            try {
+                settings.update { it.copy(pinnedPermission = mode) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (pendingPinned == mode) pendingPinned = null
+                state.update { it.copy(pinnedPermission = it.saved.pinnedPermission, pinnedResult = ActionResult(false, "Could not save: ${e.message ?: e}")) }
             }
         }
     }

@@ -1,6 +1,7 @@
 package com.programmersbox.cdm.ui
 
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
+import com.programmersbox.cdm.data.PinnedPermission
 import com.programmersbox.cdm.data.SettingsRepository
 import com.programmersbox.cdm.install.InstallLifecycle
 import com.programmersbox.cdm.install.InstallStatus
@@ -67,6 +68,20 @@ class SettingsViewModelTest {
     private fun vm() = SettingsViewModel(testActions(manager), settings, lifecycle, server, status).also { vms += it }
 
     private suspend fun SettingsViewModel.loaded() = withTimeout(5_000) { uiState.first { it.loaded } }
+
+    @Test
+    fun pinnedPermissionDefaultsToMirrorAndSelectionPersists(): Unit = runBlocking {
+        val vm = vm()
+        vm.loaded()
+        assertEquals(PinnedPermission.MIRROR, vm.uiState.value.saved.pinnedPermission)
+        vm.onPinnedPermissionSelected(PinnedPermission.ALWAYS_ALLOW)
+        assertEquals(PinnedPermission.ALWAYS_ALLOW, vm.uiState.value.pinnedPermission)
+        withTimeout(5_000) { settings.settings.first { it.pinnedPermission == PinnedPermission.ALWAYS_ALLOW } }
+        assertTrue(server.restarts.isEmpty())
+        assertFalse(vm.uiState.value.dirty)
+        vm.onPinnedPermissionSelected(PinnedPermission.ALWAYS_ASK)
+        withTimeout(5_000) { settings.settings.first { it.pinnedPermission == PinnedPermission.ALWAYS_ASK } }
+    }
 
     @Test
     fun rejectsBadPort() = runBlocking {

@@ -15,6 +15,7 @@ import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
 import com.programmersbox.cdm.data.ActivityRepository
 import com.programmersbox.cdm.data.AppSettings
+import com.programmersbox.cdm.data.PinnedPermission
 import com.programmersbox.cdm.data.BlockedRepository
 import com.programmersbox.cdm.data.DeviceConfigRepository
 import com.programmersbox.cdm.data.ProjectRepository
@@ -67,6 +68,7 @@ class DeviceManagerService(
     private val started = AtomicBoolean(false)
 
     @Volatile private var timers = Timers()
+    @Volatile private var pinned = PinnedPermission.MIRROR
 
     /** Allocator events, persisted by the consumer launched in [start]. */
     private val events = Channel<AllocatorEvent>(Channel.UNLIMITED)
@@ -117,7 +119,10 @@ class DeviceManagerService(
         // UNDISPATCHED: the mutex is taken before start() returns, so no call sees the pre-load allocator.
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             locked {
-                safely("load settings") { settings.current() }?.let { timers = it.toTimers() }
+                safely("load settings") { settings.current() }?.let {
+                    timers = it.toTimers()
+                    pinned = it.pinnedPermission
+                }
                 allocator = newAllocator(safely("load blocked holders") { blockedRepo.all() } ?: emptySet())
                 decider = newDecider()
             }
@@ -131,7 +136,10 @@ class DeviceManagerService(
                     delay(settingsRetryDelay)
                     true
                 }
-                .collect { timers = it.toTimers() }
+                .collect {
+                    timers = it.toTimers()
+                    pinned = it.pinnedPermission
+                }
         }
         scope.launch { for (e in events) persist(e) }
         scope.launch {
@@ -169,7 +177,7 @@ class DeviceManagerService(
         if (deviceCommand != null && device != null) safely("record command") { activity.recordCommand(holder, device, deviceCommand, clock()) }
         // After the lock is released: reads settings files.
         val permission = (reply as? HookReply.Rewrite)?.let {
-            mirror.decide(it.original, it.kind, input.cwd, input.permissionMode)
+            pinnedOverride(it.kind, mirror.decide(it.original, it.kind, input.cwd, input.permissionMode))
         }
         return HookDecision(reply, permission)
     }
@@ -344,6 +352,16 @@ class DeviceManagerService(
 
     private fun isDeviceCommand(command: String) = CommandClassifier.classifyAll(command)
         .any { it is CommandKind.Device || it == CommandKind.GradleNonDevice }
+
+    /**
+     * The user's Pinned commands setting over the mirror's answer. ALWAYS_ASK leaves CDM-only rewrites to the
+     * mirror (Ruling E: cdm's own commands are allowed). Claude Code still enforces its deny rules on an allow.
+     */
+    private fun pinnedOverride(kind: RewriteKind, mirrored: Decision): Decision = when (pinned) {
+        PinnedPermission.MIRROR -> mirrored
+        PinnedPermission.ALWAYS_ALLOW -> Decision.ALLOW
+        PinnedPermission.ALWAYS_ASK -> if (kind == RewriteKind.PIN) Decision.ASK else mirrored
+    }
 
     private fun AppSettings.toTimers() = Timers(idle = idleMinutes.minutes, editing = editingMinutes.minutes)
 

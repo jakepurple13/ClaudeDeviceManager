@@ -52,6 +52,9 @@ class RepositoriesTest {
         assertEquals(AppSettings(47823, 15, 5), repo.current())
         repo.update { it.copy(idleMinutes = 30) }
         assertEquals(AppSettings(47823, 30, 5), repo.settings.first())
+        assertEquals(PinnedPermission.MIRROR, repo.current().pinnedPermission)
+        repo.update { it.copy(pinnedPermission = PinnedPermission.ALWAYS_ASK) }
+        assertEquals(AppSettings(47823, 30, 5, PinnedPermission.ALWAYS_ASK), repo.current())
         db.close()
     }
 

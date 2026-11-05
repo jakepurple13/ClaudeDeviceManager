@@ -71,6 +71,11 @@ While a holder has a device, **every** Bash command from that holder is rewritte
 - Deny rules are still enforced by Claude Code itself, and the mirror also never returns allow when a deny rule matches.
 - In auto mode, commands Jacob's rules don't cover get an ask prompt instead of going to auto mode's check. Jacob accepted that tradeoff.
 - `cdm` rewrites are allowed outright only when the whole command consists of `cdm` invocations. Otherwise they go through the mirror.
+- **Pinned commands setting (added 2026-11-05 at Jacob's request).** Settings has a "Pinned commands" section with three options. The choice is stored as `pinnedPermission` in the settings table and takes effect at once, with no Save. The mirror always runs, and this setting is applied to its answer afterwards, outside the allocator lock:
+  - **Follow my Claude permission rules (recommended)** (`MIRROR`, the default): the mirror's answer, as described above.
+  - **Always allow** (`ALWAYS_ALLOW`): allow every rewrite. Commands from a session holding a device skip Jacob's allow/ask rules and auto mode's check. Claude Code still enforces his deny rules on its own side, even when the hook says allow. The screen shows this warning while the option is selected.
+  - **Always ask** (`ALWAYS_ASK`): ask on every device-pin rewrite. `cdm`-only rewrites still get the mirror's answer (allowed when the whole command is `cdm`, Ruling E).
+  - Commands that aren't rewritten get no permission decision in any mode. Deny replies from the hook are unchanged.
 
 The prefix form is `export ANDROID_SERIAL=<serial>; `, the form the spike proved executes.
 

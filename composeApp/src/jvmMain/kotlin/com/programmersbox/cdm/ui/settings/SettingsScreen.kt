@@ -18,22 +18,28 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.programmersbox.cdm.data.PinnedPermission
 import com.programmersbox.cdm.install.PartState
 import com.programmersbox.cdm.ui.components.AnimatedLine
 import com.programmersbox.cdm.ui.components.AnimatedValue
@@ -50,6 +56,14 @@ import org.koin.compose.viewmodel.koinViewModel
 private val ErrorBg = Color(0xFF4A2A2A)
 private val ErrorFg = Color(0xFFFFB4B4)
 private val OkFg = Color(0xFF5FCF8A)
+private val WarnFg = Color(0xFFE0B84A)
+
+/** The Pinned commands options, in display order: title and one-line explanation. */
+private val PinnedOptions = listOf(
+    Triple(PinnedPermission.MIRROR, "Follow my Claude permission rules (recommended)", "Prompts only where your rules would."),
+    Triple(PinnedPermission.ALWAYS_ALLOW, "Always allow", "Pinned commands run without a prompt."),
+    Triple(PinnedPermission.ALWAYS_ASK, "Always ask", "Every pinned command needs your approval."),
+)
 
 @Composable
 fun SettingsScreen(vm: SettingsViewModel = koinViewModel()) {
@@ -88,6 +102,25 @@ fun SettingsScreen(vm: SettingsViewModel = koinViewModel()) {
                 }
             }
             ResultLine(s.saveResult)
+        }
+
+        SectionLabel("Pinned commands")
+        CardBox {
+            Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Muted("Commands rewritten to target a held device. Changes apply at once.", Modifier.padding(bottom = 4.dp))
+                PinnedOptions.forEach { (mode, title, detail) ->
+                    PinnedOption(title, detail, selected = s.pinnedPermission == mode) { vm.onPinnedPermissionSelected(mode) }
+                }
+            }
+            AnimatedLine(s.pinnedPermission == PinnedPermission.ALWAYS_ALLOW) {
+                Text(
+                    "Commands from a session holding a device skip your allow/ask rules and auto mode's check. Your deny rules still apply.",
+                    color = WarnFg,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+            ResultLine(s.pinnedResult)
         }
 
         SectionLabel("Claude Code integration")
@@ -131,6 +164,29 @@ fun SettingsScreen(vm: SettingsViewModel = koinViewModel()) {
                 }
                 Muted("Added to ~/.claude/CLAUDE.md while the app runs; copy it to use it elsewhere.")
             }
+        }
+    }
+}
+
+/** One radio option: the whole row is clickable; the title brightens when selected. */
+@Composable
+private fun PinnedOption(title: String, detail: String, selected: Boolean, onSelect: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
+            .padding(vertical = 2.dp, horizontal = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        RadioButton(selected = selected, onClick = null)
+        Column {
+            val titleColor by animateColorAsState(
+                if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                tween(200),
+            )
+            Text(title, color = titleColor, style = MaterialTheme.typography.bodyMedium)
+            Muted(detail)
         }
     }
 }
