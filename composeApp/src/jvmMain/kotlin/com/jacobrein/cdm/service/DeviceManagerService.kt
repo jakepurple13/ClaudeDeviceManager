@@ -21,6 +21,7 @@ import com.jacobrein.cdm.data.ProjectRepository
 import com.jacobrein.cdm.data.SettingsRepository
 import com.jacobrein.cdm.devices.DeviceTracker
 import com.jacobrein.cdm.devices.TrackedDevice
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Clock
 import kotlin.time.Duration
@@ -37,6 +38,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -58,6 +60,7 @@ class DeviceManagerService(
     private val clock: () -> Instant = { Clock.System.now() },
     private val scanInterval: Duration = 2.seconds,
     private val tickInterval: Duration = 5.seconds,
+    private val settingsRetryDelay: Duration = 1.seconds,
 ) : DeviceManager {
     private val mutex = Mutex()
     private val started = AtomicBoolean(false)
@@ -72,6 +75,15 @@ class DeviceManagerService(
     private var decider = newDecider()
 
     private val book = HolderBook(clock)
+
+    /**
+     * Project default categories, fetched before taking [mutex] (no DB reads under the lock on the
+     * hook path: a slow DB would time the 2 s hook out, and hooks fail open).
+     */
+    private val defaultCategories = ConcurrentHashMap<String, Category>()
+
+    /** Bumped (under [mutex]) on every UI config write, so a scan that read configs earlier skips its stale write. */
+    private var configVersion = 0L
     private val lastUpserted = HashMap<DeviceKey, Instant>()
 
     private val _snapshot = MutableStateFlow(allocator.snapshot())
@@ -85,8 +97,12 @@ class DeviceManagerService(
     private fun newAllocator(blocked: Set<HolderId>) =
         Allocator(clock = clock, blocked = blocked, timers = { timers }, onEvent = { events.trySend(it) })
 
-    private fun newDecider() = HookDecider(allocator, { timers }) { cwd ->
-        safely { projects.defaultCategoryFor(cwd) } ?: Category.ANY
+    private fun newDecider() = HookDecider(allocator, { timers }) { cwd -> defaultCategories[cwd] ?: Category.ANY }
+
+    private suspend fun prefetchDefaultCategory(cwd: String): Category {
+        val c = safely("read default category for $cwd") { projects.defaultCategoryFor(cwd) } ?: Category.ANY
+        defaultCategories[cwd] = c
+        return c
     }
 
     /** Loads the blocked set and settings, then scans every [scanInterval], ticks every [tickInterval], and persists events. */
@@ -95,18 +111,21 @@ class DeviceManagerService(
         // UNDISPATCHED: the mutex is taken before start() returns, so no call sees the pre-load allocator.
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             locked {
-                safely { settings.current() }?.let { timers = it.toTimers() }
-                allocator = newAllocator(safely { blockedRepo.all() } ?: emptySet())
+                safely("load settings") { settings.current() }?.let { timers = it.toTimers() }
+                allocator = newAllocator(safely("load blocked holders") { blockedRepo.all() } ?: emptySet())
                 decider = newDecider()
             }
         }
         scope.launch {
-            try {
-                settings.settings.collect { timers = it.toTimers() }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-            }
+            // Resubscribe after a DB error instead of losing timer updates for good.
+            settings.settings
+                .retryWhen { e, _ ->
+                    if (e is CancellationException) return@retryWhen false
+                    logFailure("observe settings", e)
+                    delay(settingsRetryDelay)
+                    true
+                }
+                .collect { timers = it.toTimers() }
         }
         scope.launch { for (e in events) persist(e) }
         scope.launch {
@@ -128,6 +147,7 @@ class DeviceManagerService(
 
     override suspend fun preToolUse(input: HookInput): HookReply {
         val holder = input.holder
+        if (input.toolName == "Bash" && input.command != null) prefetchDefaultCategory(input.cwd)
         val (reply, device) = locked {
             val r = when (input.toolName) {
                 "Bash" -> input.command?.let { decider.onBash(holder, input.cwd, it) } ?: HookReply.NoOpinion
@@ -140,7 +160,7 @@ class DeviceManagerService(
             input.toolName == "Bash" && reply !is HookReply.Deny && device != null && isDeviceCommand(it)
         }
         book.touch(holder, input.cwd, input.agentType, deviceCommand)
-        if (deviceCommand != null && device != null) safely { activity.recordCommand(holder, device, deviceCommand, clock()) }
+        if (deviceCommand != null && device != null) safely("record command") { activity.recordCommand(holder, device, deviceCommand, clock()) }
         return reply
     }
 
@@ -165,7 +185,7 @@ class DeviceManagerService(
         onPosition: suspend (Int) -> Unit,
     ): AcquireResult {
         book.touch(holder, cwd, null)
-        val w = wants.ifEmpty { setOf(safely { projects.defaultCategoryFor(cwd) } ?: Category.ANY) }
+        val w = wants.ifEmpty { setOf(prefetchDefaultCategory(cwd)) }
         val first = locked {
             when (val g = allocator.tryGrab(holder, w)) {
                 is GrabResult.Granted -> AcquireResult.Granted(g.serial, g.device.name)
@@ -224,13 +244,23 @@ class DeviceManagerService(
 
     override suspend fun handOff(key: DeviceKey, to: HolderId) = locked { allocator.handOff(key, to) }
 
-    override suspend fun setDontUse(key: DeviceKey, dontUse: Boolean, releaseNow: Boolean) = locked {
-        safely { deviceConfigs.setDontUse(key, dontUse) }
-        allocator.setDontUse(key, dontUse, releaseNow)
+    /** DB first, outside the lock; the allocator changes only if the write succeeded. */
+    override suspend fun setDontUse(key: DeviceKey, dontUse: Boolean, releaseNow: Boolean) {
+        safely("persist don't use for ${key.hardwareSerial}") { deviceConfigs.setDontUse(key, dontUse) } ?: return
+        locked {
+            configVersion++
+            allocator.setDontUse(key, dontUse, releaseNow)
+        }
     }
 
-    override suspend fun setCategory(key: DeviceKey, category: Category?) = locked {
-        safely { deviceConfigs.setCategory(key, category) }
+    /** DB first, outside the lock; the allocator changes only if the write succeeded. */
+    override suspend fun setCategory(key: DeviceKey, category: Category?) {
+        safely("persist category for ${key.hardwareSerial}") { deviceConfigs.setCategory(key, category) } ?: return
+        locked { applyCategory(key, category) }
+    }
+
+    private fun applyCategory(key: DeviceKey, category: Category?) {
+        configVersion++
         val detected = _tracked.value.firstOrNull { it.key == key }?.detectedCategory
         val effective = category ?: detected
         if (effective != null) {
@@ -247,18 +277,20 @@ class DeviceManagerService(
     // ---- internals ----
 
     private suspend fun scanOnce() {
-        val found = safely { tracker.scan() } ?: return
+        val found = safely("scan devices") { tracker.scan() } ?: return
         _tracked.value = found
         val now = clock()
         for (t in found) {
             val last = lastUpserted[t.key]
             if (last == null || now - last >= UPSERT_EVERY) {
-                safely { deviceConfigs.upsertSeen(t.key, now) }
+                safely("record device seen") { deviceConfigs.upsertSeen(t.key, now) }
                 lastUpserted[t.key] = now
             }
         }
+        val version = mutex.withLock { configVersion }
+        val configs = (safely("read device configs") { deviceConfigs.all.first() } ?: return).associateBy { it.key }
         locked {
-            val configs = safely { deviceConfigs.all.first() }.orEmpty().associateBy { it.key }
+            if (version != configVersion) return@locked // a UI write raced this read; the next scan picks it up
             val current = found.map { t ->
                 val c = configs[t.key]
                 AllocDevice(
@@ -279,10 +311,10 @@ class DeviceManagerService(
     }
 
     private suspend fun persist(e: AllocatorEvent) {
-        safely { activity.record(e) }
+        safely("record event $e") { activity.record(e) }
         when (e) {
-            is AllocatorEvent.Blocked -> safely { blockedRepo.add(e.holder) }
-            is AllocatorEvent.Unblocked -> safely { blockedRepo.remove(e.holder) }
+            is AllocatorEvent.Blocked -> safely("persist block of ${e.holder.key}") { blockedRepo.add(e.holder) }
+            is AllocatorEvent.Unblocked -> safely("persist unblock of ${e.holder.key}") { blockedRepo.remove(e.holder) }
             else -> Unit
         }
     }
@@ -306,11 +338,14 @@ class DeviceManagerService(
     }
 }
 
-/** Runs [f]; a failure (I/O, DB) yields null instead of crashing the service. Cancellation still propagates. */
-private suspend fun <T> safely(f: suspend () -> T): T? = try {
+/** Runs [f]; a failure (I/O, DB) is logged to stderr and yields null instead of crashing the service. Cancellation still propagates. */
+private suspend fun <T> safely(op: String, f: suspend () -> T): T? = try {
     f()
 } catch (e: CancellationException) {
     throw e
-} catch (_: Exception) {
+} catch (e: Exception) {
+    logFailure(op, e)
     null
 }
+
+private fun logFailure(op: String, e: Throwable) = System.err.println("cdm: $op failed: $e")

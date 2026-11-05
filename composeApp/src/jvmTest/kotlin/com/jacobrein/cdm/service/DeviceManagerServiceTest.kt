@@ -7,7 +7,11 @@ import com.jacobrein.cdm.core.model.HolderId
 import com.jacobrein.cdm.data.ActivityRepository
 import com.jacobrein.cdm.data.AppDatabase
 import com.jacobrein.cdm.data.BlockedRepository
+import com.jacobrein.cdm.data.DeviceConfigDao
+import com.jacobrein.cdm.data.DeviceConfigEntity
 import com.jacobrein.cdm.data.DeviceConfigRepository
+import com.jacobrein.cdm.data.SettingDao
+import com.jacobrein.cdm.data.SettingEntity
 import com.jacobrein.cdm.data.ProjectRepository
 import com.jacobrein.cdm.data.SettingsRepository
 import com.jacobrein.cdm.data.inMemoryDatabase
@@ -24,7 +28,10 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 
@@ -53,7 +60,11 @@ class DeviceManagerServiceTest {
 
     @AfterTest fun close() = db.close()
 
-    private suspend fun TestScope.started(scope: CoroutineScope = backgroundScope): DeviceManagerService {
+    private suspend fun TestScope.started(
+        scope: CoroutineScope = backgroundScope,
+        configs: DeviceConfigRepository = this@DeviceManagerServiceTest.configs,
+        settings: SettingsRepository = this@DeviceManagerServiceTest.settings,
+    ): DeviceManagerService {
         val s = DeviceManagerService(DeviceTracker(adb), configs, projects, settings, activity, blocked, clock = { now })
         s.start(scope)
         s.snapshot.first { it.devices.size == 2 }
@@ -187,6 +198,54 @@ class DeviceManagerServiceTest {
         assertEquals(AcquireResult.Granted("p-usb", "Pixel 8"), s.acquire(h1, "/w", watch, 1.minutes) {})
         s.handOff(DeviceKey("P"), h2)
         assertEquals(DeviceKey("P"), assertIs<HolderStatus.Holding>(s.status(h2)).device)
+    }
+
+    @Test fun settingsErrorDoesNotStopLaterTimerUpdates() = runTest {
+        val dao = object : SettingDao {
+            var subscriptions = 0
+            override fun observeAll() = flow {
+                subscriptions++
+                if (subscriptions == 1) {
+                    emit(emptyList())
+                    throw java.io.IOException("db hiccup")
+                }
+                emit(listOf(SettingEntity("idleMinutes", "1")))
+            }
+            override suspend fun getAll() = emptyList<SettingEntity>()
+            override suspend fun put(entity: SettingEntity) {}
+        }
+        val s = started(settings = SettingsRepository(dao))
+        s.acquire(h1, "/w", watch, 1.minutes) {}
+        now = t0 + 2.minutes
+        s.snapshot.first { it.holds.isEmpty() } // only the post-error emission sets idle = 1 min
+        assertTrue(dao.subscriptions >= 2)
+    }
+
+    @Test fun failedConfigWriteLeavesAllocatorUnchanged() = runTest {
+        val dao = object : DeviceConfigDao {
+            override fun observeAll() = flowOf(emptyList<DeviceConfigEntity>())
+            override suspend fun get(serial: String): DeviceConfigEntity? = null
+            override suspend fun put(entity: DeviceConfigEntity) = throw java.io.IOException("disk full")
+        }
+        val s = started(configs = DeviceConfigRepository(dao))
+        s.setDontUse(DeviceKey("W"), dontUse = true, releaseNow = true)
+        s.setCategory(DeviceKey("P"), Category.WATCH)
+        val devices = s.snapshot.value.devices
+        assertTrue(!devices.single { it.key == DeviceKey("W") }.dontUse)
+        assertEquals(Category.PHONE, devices.single { it.key == DeviceKey("P") }.category)
+    }
+
+    @Test fun cancelledAcquireDetachesWaiterButKeepsQueueSpot() = runTest {
+        val s = started()
+        s.acquire(h2, "/w", watch, 1.minutes) {}
+        val waiting = async { s.acquire(h1, "/w", watch, 5.minutes) {} }
+        s.snapshot.first { h1 in it.queue }
+        waiting.cancelAndJoin()
+        assertIs<HolderStatus.Queued>(s.status(h1))
+        // Detached: the 2 min queue grace runs out on the next tick. An attached waiter would stay queued.
+        now = t0 + 3.minutes
+        s.snapshot.first { h1 !in it.queue }
+        assertEquals(HolderStatus.None, s.status(h1))
     }
 
     /** Polls a Room-backed condition; Room answers on real threads. */

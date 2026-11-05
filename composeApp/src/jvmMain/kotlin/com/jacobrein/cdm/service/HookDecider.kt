@@ -159,11 +159,18 @@ class HookDecider(
             usb || emu -> {
                 val pred: (String) -> Boolean = if (usb) ::isUsbSerial else ::isEmulatorSerial
                 val what = if (usb) "USB-connected" else "emulator"
-                target = snap.devices.firstOrNull { d ->
-                    !d.dontUse && d.key !in snap.holds && d.connectedSerials.any(pred)
-                } ?: return HookReply.Deny(
-                    "No $what device is free. Run `cdm acquire --category ${defaultCategory(req.cwd).id}` to wait for one.",
-                )
+                val flag = if (usb) "-d" else "-e"
+                // Same sole-device rule as whileHolding: adb only resolves -d / -e when exactly one device matches.
+                val matching = snap.devices.filter { it.connectedSerials.any(pred) }
+                val acquire = "`cdm acquire --category ${defaultCategory(req.cwd).id}`"
+                when {
+                    matching.isEmpty() -> return HookReply.Deny("No $what device is connected. Run $acquire to wait for a device.")
+                    matching.size > 1 -> return HookReply.Deny(
+                        "Multiple $what devices are connected (${matching.joinToString { label(it) }}), so `adb $flag` " +
+                            "can't pick one. Use -s <serial> or run $acquire.",
+                    )
+                }
+                target = matching.single()
                 pin = target.connectedSerials.first(pred)
             }
             else -> {

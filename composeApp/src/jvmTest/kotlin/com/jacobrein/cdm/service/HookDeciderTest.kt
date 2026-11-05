@@ -111,9 +111,33 @@ class HookDeciderTest {
         assertEquals(HookReply.NoOpinion, bash("adb devices"))
     }
 
-    @Test fun usbFlagGrabsFreeUsbDevice() = runTest {
-        allocator.tryGrab(h2, setOf(Category.WATCH))
+    private val wWifiOnly = w.copy(connectedSerials = listOf(wWifi))
+
+    @Test fun usbFlagGrabsSoleUsbDeviceThenStaysAllowed() = runTest {
+        allocator.setDevices(listOf(p, wWifiOnly))
         assertEquals(pinPrefix("p-usb") + "adb -d shell ls", bash("adb -d shell ls").cmd())
+        assertEquals(p.key, assertIs<HolderStatus.Holding>(allocator.statusOf(h)).device)
+        // The same command again must not be called "a different device".
+        assertEquals(pinPrefix("p-usb") + "adb -d shell ls", bash("adb -d shell ls").cmd())
+    }
+
+    @Test fun usbFlagWithTwoUsbDevicesDeniedWhenFresh() = runTest {
+        val r = bash("adb -d shell ls").reason()
+        assertTrue("Multiple USB-connected devices" in r, r)
+        assertEquals(HolderStatus.None, allocator.statusOf(h))
+    }
+
+    @Test fun usbFlagSoleDeviceHeldByOtherNamesHolder() = runTest {
+        allocator.setDevices(listOf(p, wWifiOnly))
+        allocator.tryGrab(h2, setOf(Category.PHONE))
+        assertTrue("s2:main" in bash("adb -d shell ls").reason())
+    }
+
+    @Test fun holdingUsbFlagAllowedOnlyWhenSoleUsbDevice() = runTest {
+        bash("adb shell ls") // holds W (w-usb); P is also USB
+        assertTrue("you hold" in bash("adb -d shell ls").reason())
+        allocator.setDevices(listOf(w)) // P unplugged: W is the sole USB device
+        assertIs<HookReply.Rewrite>(bash("adb -d shell ls"))
     }
 
     @Test fun emulatorFlagWithNoEmulatorDenies() = runTest {
