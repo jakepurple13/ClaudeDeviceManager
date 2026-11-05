@@ -35,6 +35,9 @@ import com.jacobrein.cdm.ui.devices.DevicesScreen
 import com.jacobrein.cdm.ui.overview.OverviewScreen
 import com.jacobrein.cdm.ui.queue.QueueDetailScreen
 import com.jacobrein.cdm.ui.queue.QueueScreen
+import com.jacobrein.cdm.ui.projects.ProjectsScreen
+import com.jacobrein.cdm.ui.sessions.SessionsScreen
+import com.jacobrein.cdm.ui.settings.SettingsScreen
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.navigation3.ListDetailSceneStrategy
 import androidx.compose.material3.adaptive.navigation3.rememberListDetailSceneStrategy
@@ -143,9 +146,9 @@ fun AppNavigation(
                     entry<Route.QueueDetail>(metadata = ListDetailSceneStrategy.detailPane() + section(TopLevel.QUEUE)) {
                         DetailPane { QueueDetailScreen(it.holder, onClose = navigator::back) }
                     }
-                    entry<Route.Sessions>(metadata = section(TopLevel.SESSIONS)) { Placeholder("Sessions") }
-                    entry<Route.Projects>(metadata = section(TopLevel.PROJECTS)) { Placeholder("Projects") }
-                    entry<Route.Settings>(metadata = section(TopLevel.SETTINGS)) { Placeholder("Settings") }
+                    entry<Route.Sessions>(metadata = section(TopLevel.SESSIONS)) { SessionsScreen() }
+                    entry<Route.Projects>(metadata = section(TopLevel.PROJECTS)) { ProjectsScreen() }
+                    entry<Route.Settings>(metadata = section(TopLevel.SETTINGS)) { SettingsScreen() }
                 },
             )
         }
@@ -227,7 +230,7 @@ private fun DetailPane(content: @Composable () -> Unit) {
     ) { content() }
 }
 
-/** Stand-in screen: empty detail panes, and routes Task 11 fills in. */
+/** Stand-in for an empty detail pane. */
 @Composable
 private fun Placeholder(name: String) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

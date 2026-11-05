@@ -13,4 +13,9 @@ class UiActions(val manager: DeviceManager, private val appScope: CoroutineScope
     fun run(action: suspend DeviceManager.() -> Unit) {
         appScope.launch { manager.action() }
     }
+
+    /** Any other mutation (repositories, installer, server restart), on the same app-lifetime scope. */
+    fun launch(block: suspend () -> Unit) {
+        appScope.launch { block() }
+    }
 }

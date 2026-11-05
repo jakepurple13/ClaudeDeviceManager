@@ -7,9 +7,7 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.jacobrein.cdm.data.SettingsRepository
 import com.jacobrein.cdm.di.appModules
-import com.jacobrein.cdm.server.CdmServer
-import com.jacobrein.cdm.server.ServerStatus
-import com.jacobrein.cdm.service.DeviceManager
+import com.jacobrein.cdm.server.ServerController
 import com.jacobrein.cdm.service.DeviceManagerService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
@@ -33,14 +31,9 @@ fun main() {
     // Ruling L: start() first, then accept hooks.
     koin.get<DeviceManagerService>().start(appScope)
     val port = runBlocking { koin.get<SettingsRepository>().current().port }
-    val server = CdmServer(koin.get<DeviceManager>(), port)
-    try {
-        runBlocking { server.start() }
-    } catch (e: Throwable) {
-        // Port in use, second instance, ...: keep the UI up and surface the error.
-        System.err.println("cdm: server failed to start on port $port: $e")
-        koin.get<ServerStatus>().fail("Could not listen on 127.0.0.1:$port: ${e.message ?: e}")
-    }
+    // Port in use, second instance, ...: the controller keeps the UI up and puts the error in ServerStatus.
+    val server = koin.get<ServerController>()
+    runBlocking { server.start(port) }
     // Cmd+Q / SIGTERM skip the window-close path; stop() is idempotent and deletes the port file.
     Runtime.getRuntime().addShutdownHook(Thread { server.stop() })
     applyDevStartRoute(koin.get<Navigator>())

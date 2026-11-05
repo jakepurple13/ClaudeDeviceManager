@@ -11,6 +11,8 @@ import com.jacobrein.cdm.devices.AdbClient
 import com.jacobrein.cdm.devices.DeviceTracker
 import com.jacobrein.cdm.devices.ProcessAdbClient
 import com.jacobrein.cdm.install.Installer
+import com.jacobrein.cdm.server.ServerControl
+import com.jacobrein.cdm.server.ServerController
 import com.jacobrein.cdm.server.ServerStatus
 import com.jacobrein.cdm.service.DeviceManager
 import com.jacobrein.cdm.service.DeviceManagerService
@@ -34,6 +36,9 @@ import com.jacobrein.cdm.ui.devices.DevicesViewModel
 import com.jacobrein.cdm.ui.overview.OverviewViewModel
 import com.jacobrein.cdm.ui.queue.QueueDetailViewModel
 import com.jacobrein.cdm.ui.queue.QueueViewModel
+import com.jacobrein.cdm.ui.projects.ProjectsViewModel
+import com.jacobrein.cdm.ui.sessions.SessionsViewModel
+import com.jacobrein.cdm.ui.settings.SettingsViewModel
 import org.koin.dsl.bind
 import org.koin.dsl.module
 
@@ -58,6 +63,7 @@ fun appModules(): List<Module> = listOf(
         single { DeviceTracker(get()) }
         single { PermissionMirror(Path(System.getProperty("user.home"))) }
         single { ServerStatus() }
+        single { ServerController(get(), get()) } bind ServerControl::class
         single { Installer(Path(System.getProperty("user.home"))) }
         single { DeviceManagerService(get(), get(), get(), get(), get(), get(), get()) } bind DeviceManager::class
         single { Navigator() }
@@ -82,4 +88,7 @@ val uiModule: Module = module {
     viewModelOf(::QueueViewModel)
     viewModelOf(::DeviceDetailViewModel)
     viewModelOf(::QueueDetailViewModel)
+    viewModelOf(::SessionsViewModel)
+    viewModelOf(::ProjectsViewModel)
+    viewModelOf(::SettingsViewModel)
 }

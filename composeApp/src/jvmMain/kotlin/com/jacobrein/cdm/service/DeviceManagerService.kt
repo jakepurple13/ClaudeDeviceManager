@@ -190,7 +190,7 @@ class DeviceManagerService(
         onPosition: suspend (Int) -> Unit,
     ): AcquireResult {
         book.touch(holder, cwd, null)
-        val w = wants.ifEmpty { setOf(prefetchDefaultCategory(cwd)) }
+        val w = wants.ifEmpty { prefetchDefaultCategory(cwd).members() }
         val first = locked {
             when (val g = allocator.tryGrab(holder, w)) {
                 is GrabResult.Granted -> AcquireResult.Granted(g.serial, g.device.name)

@@ -97,6 +97,31 @@ class DeviceManagerServiceTest {
         assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch"), s.acquire(h1, "/w", emptySet(), 1.minutes) {})
     }
 
+    @Test fun phoneAndWatchProjectDefaultWantsBoth() = runTest {
+        projects.setDefault("/w", Category.PHONE_WATCH)
+        val s = started()
+        // The phone is taken, so a project that takes either kind gets the watch.
+        s.acquire(h2, "/other", setOf(Category.PHONE), 1.minutes) {}
+        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch"), s.acquire(h1, "/w", emptySet(), 1.minutes) {})
+    }
+
+    @Test fun phoneAndWatchProjectDefaultGrabsOnHook() = runTest {
+        projects.setDefault("/w", Category.PHONE_WATCH)
+        val s = started()
+        s.acquire(h2, "/other", setOf(Category.WATCH), 1.minutes) {}
+        s.preToolUse(bash("adb shell ls"))
+        assertEquals(DeviceKey("P"), (s.status(h1) as HolderStatus.Holding).device)
+    }
+
+    @Test fun phoneAndWatchQueuesForBoth() = runTest {
+        projects.setDefault("/w", Category.PHONE_WATCH)
+        val s = started()
+        s.acquire(h2, "/other", setOf(Category.ANY), 1.minutes) {}
+        s.acquire(HolderId("s3"), "/other", setOf(Category.ANY), 1.minutes) {}
+        assertEquals(AcquireResult.TimedOut(1), s.acquire(h1, "/w", emptySet(), 1.seconds) {})
+        assertEquals(setOf(Category.PHONE, Category.WATCH), (s.status(h1) as HolderStatus.Queued).wants)
+    }
+
     @Test fun acquireWaitsReportsPositionThenGrants() = runTest {
         val s = started()
         s.acquire(h2, "/w", watch, 1.minutes) {}

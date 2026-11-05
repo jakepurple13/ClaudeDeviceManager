@@ -15,6 +15,11 @@ import com.jacobrein.cdm.core.model.DeviceKey
 import com.jacobrein.cdm.data.ActivityRepository
 import com.jacobrein.cdm.data.DeviceConfigRepository
 import com.jacobrein.cdm.data.SettingsRepository
+import com.jacobrein.cdm.data.ProjectRepository
+import com.jacobrein.cdm.install.Installer
+import com.jacobrein.cdm.server.ServerControl
+import com.jacobrein.cdm.server.ServerStatus
+import java.nio.file.Files
 import com.jacobrein.cdm.di.APP_SCOPE
 import com.jacobrein.cdm.di.uiModule
 import kotlinx.coroutines.CoroutineScope
@@ -54,6 +59,11 @@ class AppNavigationTest {
                     single { DeviceConfigRepository(db.deviceConfigDao()) }
                     single { ActivityRepository(db.activityDao()) }
                     single { SettingsRepository(db.settingDao()) }
+                    single { ProjectRepository(db.projectDao()) }
+                    // A temp home: the Settings screen must never read or write the real ~/.claude.
+                    single { Installer(Files.createTempDirectory("cdm-nav-home")) }
+                    single { ServerStatus() }
+                    single<ServerControl> { object : ServerControl { override suspend fun restart(port: Int) = Unit } }
                 },
             )
         }
@@ -87,8 +97,7 @@ class AppNavigationTest {
         onNodeWithText("Settings").performClick()
         waitForIdle()
         assertEquals(listOf<Route>(Route.Settings), navigator.backStack.toList())
-        // Rail label plus the placeholder screen.
-        assertEquals(2, onAllNodesWithText("Settings").fetchSemanticsNodes().size)
+        waitUntil(timeoutMillis = 3_000) { onAllNodesWithText("Install cdm").fetchSemanticsNodes().isNotEmpty() }
 
         onNodeWithText("Devices").performClick()
         waitForIdle()

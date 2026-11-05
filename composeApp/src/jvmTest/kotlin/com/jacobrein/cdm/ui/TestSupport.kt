@@ -11,6 +11,7 @@ import com.jacobrein.cdm.data.SettingsRepository
 import com.jacobrein.cdm.data.inMemoryDatabase
 import com.jacobrein.cdm.server.FakeManager
 import com.jacobrein.cdm.service.DeviceManager
+import com.jacobrein.cdm.service.HolderInfo
 import kotlin.time.Instant
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -19,15 +20,24 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
+import kotlinx.coroutines.withTimeout
 
 /** A fake [DeviceManager] that records the UI actions. */
-class RecordingManager(override val snapshot: MutableStateFlow<AllocatorSnapshot>) : FakeManager() {
+class RecordingManager(
+    override val snapshot: MutableStateFlow<AllocatorSnapshot>,
+    override val holderInfo: MutableStateFlow<Map<HolderId, HolderInfo>> = MutableStateFlow(emptyMap()),
+) : FakeManager() {
     val moves = mutableListOf<Pair<HolderId, Int>>()
     val dontUseCalls = mutableListOf<Triple<DeviceKey, Boolean, Boolean>>()
     val releases = mutableListOf<Pair<DeviceKey, Boolean>>()
     val handOffs = mutableListOf<Pair<DeviceKey, HolderId>>()
     val removed = mutableListOf<HolderId>()
     val categories = mutableListOf<Pair<DeviceKey, Category?>>()
+    val unblocked = mutableListOf<HolderId>()
 
     override suspend fun moveInQueue(h: HolderId, index: Int) { moves += h to index }
     override suspend fun setDontUse(key: DeviceKey, dontUse: Boolean, releaseNow: Boolean) { dontUseCalls += Triple(key, dontUse, releaseNow) }
@@ -35,6 +45,7 @@ class RecordingManager(override val snapshot: MutableStateFlow<AllocatorSnapshot
     override suspend fun handOff(key: DeviceKey, to: HolderId) { handOffs += key to to }
     override suspend fun removeFromQueue(h: HolderId) { removed += h }
     override suspend fun setCategory(key: DeviceKey, category: Category?) { categories += key to category }
+    override suspend fun unblock(h: HolderId) { unblocked += h }
 }
 
 /** A clock that only moves when the test says so. */
@@ -66,3 +77,11 @@ fun testSources(manager: DeviceManager, clock: UiClock = FixedClock()): UiSource
 /** [UiActions] on a scope that runs launched actions at once unless the test passes its own. */
 @OptIn(ExperimentalCoroutinesApi::class)
 fun testActions(manager: DeviceManager, scope: CoroutineScope = CoroutineScope(UnconfinedTestDispatcher())) = UiActions(manager, scope)
+
+/**
+ * Cancels a view model's scope and waits for it, so none of its Room queries resume on a later test's Main
+ * dispatcher (which fails that test with "uncaught exceptions before the test started"). Call before resetMain.
+ */
+fun ViewModel.closeForTest() = runBlocking {
+    withTimeout(5_000) { viewModelScope.coroutineContext.job.cancelAndJoin() }
+}

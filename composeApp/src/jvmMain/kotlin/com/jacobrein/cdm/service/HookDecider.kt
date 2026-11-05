@@ -175,7 +175,7 @@ class HookDecider(
             }
             else -> {
                 val category = defaultCategory(req.cwd)
-                return when (val g = allocator.tryGrab(req.holder, setOf(category))) {
+                return when (val g = allocator.tryGrab(req.holder, category.members())) {
                     is GrabResult.Granted -> req.finish(g.serial)
                     GrabResult.Blocked -> HookReply.Deny(releasedByUser(blocked = true))
                     else -> HookReply.Deny(noneFree(category))
@@ -214,7 +214,7 @@ class HookDecider(
         if (category == Category.ANY) {
             "No device is free. Run `cdm acquire --category any` to wait for one."
         } else {
-            "No ${category.id} device is free. Run `cdm acquire --category ${category.id}` to wait for one."
+            "No ${category.id.replace(",", " or ")} device is free. Run `cdm acquire --category ${category.id}` to wait for one."
         }
 
     private fun releasedByUser(blocked: Boolean) =

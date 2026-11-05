@@ -37,6 +37,7 @@ class ServerStatus {
     private val _error = MutableStateFlow<String?>(null)
     val serverError: StateFlow<String?> = _error
     fun fail(message: String) { _error.value = message }
+    fun clear() { _error.value = null }
 }
 
 const val DEFAULT_ACQUIRE_TIMEOUT_SEC = 570L
