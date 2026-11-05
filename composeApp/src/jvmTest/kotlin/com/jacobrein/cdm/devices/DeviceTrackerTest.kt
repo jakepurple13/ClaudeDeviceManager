@@ -10,6 +10,7 @@ class FakeAdb(
     var devices: String,
     val hw: Map<String, String>,
     val watch: Map<String, String> = emptyMap(),
+    val models: Map<String, String> = emptyMap(),
 ) : AdbClient {
     val calls = mutableListOf<String>()
     override suspend fun devicesLong() = devices
@@ -17,11 +18,17 @@ class FakeAdb(
         calls += "$serial ${args.joinToString(" ")}"
         return when {
             "ro.serialno" in args -> hw.getValue(serial)
-            "ro.product.model" in args -> "Pixel 8"
+            "ro.product.model" in args -> models[serial] ?: "Pixel 8"
             "ro.build.version.release" in args -> "15"
-            "pm" in args -> watch[serial] ?: "false"
+            // real adb: has-feature prints output but exits 1 when feature absent
+            "pm" in args -> throw java.io.IOException("adb failed (1): ${watch[serial] ?: "false"}")
             else -> ""
         }
+    }
+
+    override suspend fun shellOutput(serial: String, vararg args: String): String {
+        calls += "$serial output ${args.joinToString(" ")}"
+        return if ("pm" in args) watch[serial] ?: "false" else shell(serial, *args)
     }
 }
 
@@ -76,5 +83,41 @@ class DeviceTrackerTest {
         val n = adb.calls.count { it.startsWith("A ") }
         assertEquals(listOf("A"), t.scan().map { it.key.hardwareSerial })
         assertEquals(n, adb.calls.count { it.startsWith("A ") })
+    }
+
+    @Test
+    fun phoneKeptWhenHasFeatureExitsNonZero() = runTest {
+        val adb = FakeAdb("List of devices attached\nP1 device\n", mapOf("P1" to "P1"))
+        val d = DeviceTracker(adb).scan().single()
+        assertEquals(Category.PHONE, d.detectedCategory)
+    }
+
+    @Test
+    fun failingSerialIsNegativeCachedFor30s() = runTest {
+        val adb = FakeAdb("List of devices attached\nBAD device\n", emptyMap())
+        var now = 1_000L
+        val t = DeviceTracker(adb) { now }
+        assertEquals(emptyList(), t.scan())
+        val n = adb.calls.size
+        assertEquals(1, n)
+        now += 29_000
+        t.scan()
+        assertEquals(n, adb.calls.size)
+        now += 2_000
+        t.scan()
+        assertEquals(n + 1, adb.calls.size)
+    }
+
+    @Test
+    fun groupingPrefersUsbRowRegardlessOfOrder() = runTest {
+        val adb = FakeAdb(
+            "List of devices attached\n$wifi device\n$usb device\n",
+            mapOf(usb to usb, wifi to usb),
+            watch = mapOf(wifi to "true"),
+            models = mapOf(wifi to "WifiModel", usb to "UsbModel"),
+        )
+        val d = DeviceTracker(adb).scan().single()
+        assertEquals("UsbModel", d.model)
+        assertEquals(Category.PHONE, d.detectedCategory)
     }
 }

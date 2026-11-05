@@ -8,6 +8,9 @@ import kotlinx.coroutines.withContext
 interface AdbClient {
     suspend fun devicesLong(): String
     suspend fun shell(serial: String, vararg args: String): String
+
+    /** Returns stdout regardless of exit code; still throws on timeout or launch failure. */
+    suspend fun shellOutput(serial: String, vararg args: String): String
 }
 
 /** Runs the `adb` found on PATH (fallback `/opt/homebrew/bin/adb`), 5 s timeout per call; throws on failure. */
@@ -23,7 +26,10 @@ class ProcessAdbClient(private val timeoutSeconds: Long = 5) : AdbClient {
     override suspend fun shell(serial: String, vararg args: String): String =
         run(listOf(adb, "-s", serial, "shell") + args)
 
-    private suspend fun run(cmd: List<String>): String = withContext(Dispatchers.IO) {
+    override suspend fun shellOutput(serial: String, vararg args: String): String =
+        run(listOf(adb, "-s", serial, "shell") + args, checkExit = false)
+
+    private suspend fun run(cmd: List<String>, checkExit: Boolean = true): String = withContext(Dispatchers.IO) {
         val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
         val out = StringBuilder()
         val reader = Thread { out.append(p.inputStream.bufferedReader().readText()) }.apply { isDaemon = true; start() }
@@ -32,7 +38,7 @@ class ProcessAdbClient(private val timeoutSeconds: Long = 5) : AdbClient {
             throw java.io.IOException("adb timed out: ${cmd.joinToString(" ")}")
         }
         reader.join(1000)
-        if (p.exitValue() != 0) throw java.io.IOException("adb failed (${p.exitValue()}): $out")
+        if (checkExit && p.exitValue() != 0) throw java.io.IOException("adb failed (${p.exitValue()}): $out")
         out.toString()
     }
 }
