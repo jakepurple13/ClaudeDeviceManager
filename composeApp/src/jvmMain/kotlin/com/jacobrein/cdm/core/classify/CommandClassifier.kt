@@ -23,6 +23,13 @@ object CommandClassifier {
         ranges(command).map { (s, e) -> command.substring(s + prefixLength(command.substring(s, e)), e).trim() }
             .filter { it.isNotEmpty() }
 
+    /** Segments exactly as written (trimmed, blank ones dropped): no wrapper or assignment stripping. */
+    fun rawSegments(command: String): List<String> =
+        ranges(command).map { (s, e) -> command.substring(s, e).trim() }.filter { it.isNotEmpty() }
+
+    /** The segment's words with quotes and escapes removed, as the shell would pass them. */
+    fun unquotedWords(segment: String): List<String> = words(segment)
+
     /** Basename of the segment's first word. */
     fun firstWord(segment: String): String =
         words(segment).firstOrNull()?.substringAfterLast('/') ?: ""

@@ -96,7 +96,7 @@ class PermissionMirrorTest {
         assertEquals(Decision.ASK, decide("env adb shell ls"))
         assertEquals(Decision.ASK, decide("FOO=1 adb shell ls"))
         settings(home, allow = listOf("Bash(adb:*)"))
-        assertEquals(Decision.ALLOW, decide("env FOO=1 adb shell ls"))
+        assertEquals(Decision.ASK, decide("env FOO=1 adb shell ls"))
     }
 
     @Test fun projectAndLocalSettingsMerged() {
@@ -119,5 +119,44 @@ class PermissionMirrorTest {
         Thread.sleep(20)
         settings(home, allow = listOf("Bash(adb:*)", "Read(**)"))
         assertEquals(Decision.ALLOW, decide("adb shell ls"))
+    }
+
+    private fun assertAsk(vararg cmds: String) = cmds.forEach { assertEquals(Decision.ASK, decide(it), it) }
+
+    @Test fun bareAssignmentAndWrappersAsk() {
+        settings(home, allow = listOf("Bash(adb:*)"))
+        assertAsk(
+            "PATH=/tmp/evil; ls", "sudo ls", "PATH=/tmp/evil ls", "DYLD_INSERT_LIBRARIES=x cat f",
+            "env PATH=/tmp/evil ls", "sudo adb shell ls", "LD_PRELOAD=x adb shell ls", "time ls",
+        )
+        assertEquals(Decision.ALLOW, decide("env"))
+    }
+
+    @Test fun quotedFlagsDoNotBypassWriterChecks() = assertAsk(
+        "find . '-delete'", "find . \"-exec\" rm {} \\;", "find . -exe\\c rm {} +", "sort '-o' out in",
+    )
+
+    @Test fun readOnlyBuiltinsThatRunOrWrite() = assertAsk(
+        "rg --pre=./evil.sh x", "rg --pre ./evil.sh x", "sort --compress-program=sh f", "sort -T dir f",
+        "sort --temporary-directory=d f", "uniq in out", "file -C -m m", "date -s 2020-01-01",
+    )
+
+    @Test fun redirectsAskOnAllPaths() {
+        settings(home, allow = listOf("Bash(adb:*)"))
+        assertEquals(Decision.ASK, decide("cdm acquire > ~/.zshrc", RewriteKind.CDM))
+        assertAsk("adb shell ls > ~/.bashrc")
+    }
+
+    @Test fun denyMatchesUnquotedForms() {
+        settings(home, allow = listOf("Bash"), deny = listOf("Bash(rm:*)"))
+        assertAsk("'rm' -rf x", "\\rm -rf x", "sudo rm x", "FOO=1 rm x")
+    }
+
+    @Test fun managedSettingsDenyApplies() {
+        val managed = home.resolve("managed.json")
+        managed.writeText("""{"permissions":{"deny":["Bash(adb:*)"]}}""")
+        mirror = PermissionMirror(home, managedSettings = managed)
+        settings(home, allow = listOf("Bash(adb:*)"))
+        assertEquals(Decision.ASK, decide("adb shell ls"))
     }
 }

@@ -156,6 +156,21 @@ class DeviceManagerServiceTest {
         assertEquals(HookDecision(HookReply.NoOpinion, null), s.preToolUse(HookInput("PreToolUse", "s1", null, null, "/w", "Read", null)))
     }
 
+    @Test fun mirrorPermissionAppliedOnlyToRewrites() = runTest {
+        projects.setDefault("/w", Category.WATCH)
+        val s = started()
+        val bypass = s.preToolUse(bash("adb shell ls").copy(permissionMode = "bypassPermissions"))
+        assertIs<HookReply.Rewrite>(bypass.reply)
+        assertEquals(Decision.ALLOW, bypass.permission)
+        val home = java.nio.file.Files.createTempDirectory("cdm-h")
+        java.nio.file.Files.createDirectories(home.resolve(".claude"))
+        home.resolve(".claude/settings.json").toFile().writeText("{\"permissions\":{\"allow\":[\"Bash\"]}}")
+        val s2 = DeviceManagerService(DeviceTracker(adb), configs, projects, settings, activity, blocked, PermissionMirror(home), clock = { now })
+        s2.start(backgroundScope)
+        val edit = s2.preToolUse(HookInput("PreToolUse", "s9", null, null, "/w", "Edit", null))
+        assertEquals(HookDecision(HookReply.NoOpinion, null), edit)
+    }
+
     @Test fun subagentStopReleasesAndEndedHoldersDropAfterAnHour() = runTest {
         val s = DeviceManagerService(
             DeviceTracker(adb), configs, projects, settings, activity, blocked, mirror, clock = { now },
