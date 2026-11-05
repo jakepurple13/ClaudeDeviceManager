@@ -8,3 +8,5 @@ local.properties
 .DS_Store
 spikes/hook-log.jsonl
 .kotlin/
+.hotswan/
+.claude/worktrees/
