@@ -98,11 +98,16 @@ class DeviceManagerService(
     private fun newAllocator(blocked: Set<HolderId>) =
         Allocator(clock = clock, blocked = blocked, timers = { timers }, onEvent = { events.trySend(it) })
 
-    private fun newDecider() = HookDecider(allocator, { timers }) { cwd -> defaultCategories[cwd] ?: Category.ANY }
+    private fun newDecider() = HookDecider(allocator, { timers }) { cwd -> defaultCategories[projectKey(cwd)] ?: Category.ANY }
+
+    /** Ruling X: project defaults and Projects rows key on the project root, not the (cd-following) hook cwd. */
+    private fun projectKey(cwd: String): String =
+        if (cwd.isBlank()) cwd else runCatching { mirror.projectRoot(cwd).toString() }.getOrDefault(cwd)
 
     private suspend fun prefetchDefaultCategory(cwd: String): Category {
-        val c = safely("read default category for $cwd") { projects.defaultCategoryFor(cwd) } ?: Category.ANY
-        defaultCategories[cwd] = c
+        val key = projectKey(cwd)
+        val c = safely("read default category for $key") { projects.defaultCategoryFor(key) } ?: Category.ANY
+        defaultCategories[key] = c
         return c
     }
 

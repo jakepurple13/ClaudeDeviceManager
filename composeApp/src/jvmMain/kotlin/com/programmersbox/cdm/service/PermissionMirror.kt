@@ -35,18 +35,38 @@ class PermissionMirror(
 
     private val cache = ConcurrentHashMap<Path, Cached>()
 
-    /** Merges managed, user, project and local settings. Missing or unreadable files contribute nothing. */
+    /**
+     * The project a hook belongs to (Ruling X): the nearest ancestor of [cwd] (itself included) holding `.git` or
+     * `.claude`, never `$HOME` itself or anything above it. With no such ancestor, [cwd]. The hook's `cwd` follows
+     * the Bash tool's `cd`s, so it is often a subdirectory of the project.
+     */
+    fun projectRoot(cwd: String): Path = projectRootOf(cwd, home)
+
+    /**
+     * deny / ask: managed, user, and `.claude/settings*.json` of every directory from [cwd] up to (not including)
+     * `$HOME`. allow: user plus the project root's `.claude/settings*.json` only, so a stray ancestor can't widen
+     * what is auto-allowed. Missing or unreadable files contribute nothing.
+     */
     fun rulesFor(cwd: String): PermissionRules {
-        val files = buildList {
-            add(managedSettings)
-            add(home.resolve(".claude/settings.json"))
-            val base = runCatching { Path.of(cwd) }.getOrNull()
-            if (base != null) {
-                add(base.resolve(".claude/settings.json"))
-                add(base.resolve(".claude/settings.local.json"))
-            }
-        }
-        return files.map(::load).fold(PermissionRules.EMPTY, PermissionRules::plus)
+        val base = runCatching { Path.of(cwd).toAbsolutePath().normalize() }.getOrNull()
+        val user = load(home.resolve(".claude/settings.json"))
+        val managed = load(managedSettings)
+        val root = base?.let { projectRootOf(it.toString(), home) }
+        val projectAllow = root?.let { projectFiles(it) }.orEmpty().flatMap { load(it).allow }
+        val restrictive = ancestorsBelowHome(base).flatMap(::projectFiles).map(::load)
+        val all = listOf(managed, user) + restrictive
+        return PermissionRules(
+            allow = user.allow + projectAllow,
+            ask = all.flatMap { it.ask },
+            deny = all.flatMap { it.deny },
+        )
+    }
+
+    private fun projectFiles(dir: Path) = listOf(dir.resolve(".claude/settings.json"), dir.resolve(".claude/settings.local.json"))
+
+    private fun ancestorsBelowHome(start: Path?): List<Path> {
+        val h = home.toAbsolutePath().normalize()
+        return generateSequence(start) { it.parent }.takeWhile { it != h }.toList()
     }
 
     fun decide(original: String, kind: RewriteKind, cwd: String, permissionMode: String?): Decision {
@@ -63,11 +83,22 @@ class PermissionMirror(
         if (raw.any { hasRedirect(it) }) return Decision.ASK
         if (kind == RewriteKind.CDM && raw.isNotEmpty() && raw.all { rawFirstWord(it) == "cdm" }) return Decision.ALLOW
         if (forms.any { f -> rules.ask.any { it.matches(f) } }) return Decision.ASK
+        val start = runCatching { Path.of(cwd).toAbsolutePath().normalize() }.getOrNull() ?: return Decision.ASK
+        // In a pipeline a `cd` runs in a subshell, so later segments may still be in the old directory.
+        val dirs = Dirs(projectRootOf(start.toString(), home), mutableSetOf(start), keepOld = '|' in original)
         val ok = raw.isNotEmpty() && raw.all { s ->
-            eligible(s) && (rules.allow.any { it.matches(s) } || isReadOnly(s))
+            val readOnly = isReadOnly(s, dirs) // always run: it tracks `cd`s for later segments
+            eligible(s) && (rules.allow.any { it.matches(s) } || readOnly)
         }
         return if (ok) Decision.ALLOW else Decision.ASK
     }
+
+    /**
+     * Where the shell may be while a segment runs: every directory a `cd` so far could have left it in (a `cd` in a
+     * pipeline runs in a subshell, so with [keepOld] the old ones stay possible). Null [possible] means unknown
+     * (`cd`, `cd -`, `cd /x`).
+     */
+    private class Dirs(val root: Path, var possible: MutableSet<Path>?, val keepOld: Boolean)
 
     private fun withBasenameFirstWord(f: String): String {
         val t = f.trimStart()
@@ -112,14 +143,39 @@ class PermissionMirror(
 
     private fun stripHarmlessRedirects(segment: String) = segment.replace(HARMLESS_REDIRECT, " ")
 
-    private fun isReadOnly(segment: String): Boolean {
+    private fun isReadOnly(segment: String, dirs: Dirs): Boolean {
         val words = CommandClassifier.unquotedWords(segment)
         val first = words.firstOrNull() ?: return false
+        if (words.firstOrNull() == "cd") trackCd(words, dirs)
         if (first !in readOnlyBuiltins || rawFirstWord(segment) != first) return false
-        return when (first) {
+        val ok = when (first) {
             "env" -> words.size == 1
             "printenv" -> words.drop(1).all { VAR_NAME.matches(it) }
+            "cd" -> words.size == 2 && !words[1].startsWith("-")
             else -> true
+        }
+        return ok && words.drop(1).filter { !it.startsWith("-") }.all { insideProject(it, dirs) }
+    }
+
+    /** True if [arg], read as a path from every directory the shell may be in, stays inside the project root. */
+    private fun insideProject(arg: String, dirs: Dirs): Boolean {
+        if (arg.startsWith("/") || arg.startsWith("~")) return false
+        val possible = dirs.possible ?: return false
+        return possible.all { d -> runCatching { d.resolve(arg).normalize().startsWith(dirs.root) }.getOrDefault(false) }
+    }
+
+    private fun trackCd(words: List<String>, dirs: Dirs) {
+        val possible = dirs.possible ?: return
+        val target = words.getOrNull(1)
+        if (words.size != 2 || target == null || target.startsWith("-") || target.startsWith("/") || target.startsWith("~")) {
+            dirs.possible = null
+            return
+        }
+        val next = possible.mapNotNull { runCatching { it.resolve(target).normalize() }.getOrNull() }
+        dirs.possible = when {
+            next.size != possible.size -> null
+            dirs.keepOld -> (possible + next).toMutableSet()
+            else -> next.toMutableSet()
         }
     }
 
@@ -166,7 +222,16 @@ class PermissionMirror(
         private val REDIRECT = Regex("[<>]")
         private val HARMLESS_REDIRECT = Regex("""(?<=^|\s)(?:2>&1|1>&2|>&2|(?:2>|>|&>) ?/dev/null)(?=\s|$)""")
         private val PLAIN_WORD = Regex("^[A-Za-z0-9_./+-]+$")
-        private val ASSIGNMENT = Regex("""^[A-Za-z_][A-Za-z0-9_]*=.*""")
+
+        /** See [PermissionMirror.projectRoot]. */
+        fun projectRootOf(cwd: String, home: Path): Path {
+            val start = Path.of(cwd).toAbsolutePath().normalize()
+            val h = home.toAbsolutePath().normalize()
+            return generateSequence(start) { it.parent }
+                .takeWhile { it != h }
+                .firstOrNull { Files.exists(it.resolve(".git")) || Files.isDirectory(it.resolve(".claude")) }
+                ?: start
+        }
 
         fun defaultManagedSettings(): Path =
             if (System.getProperty("os.name").orEmpty().contains("Mac", ignoreCase = true)) {

@@ -54,7 +54,8 @@ class DeviceManagerServiceTest {
     private val settings = SettingsRepository(db.settingDao())
     private val activity = ActivityRepository(db.activityDao())
     private val blocked = BlockedRepository(db.blockedDao())
-    private val mirror = PermissionMirror(java.nio.file.Files.createTempDirectory("cdm-home"))
+    private val home = java.nio.file.Files.createTempDirectory("cdm-home")
+    private val mirror = PermissionMirror(home)
     private val h1 = HolderId("s1")
     private val h2 = HolderId("s2")
     private val watch = setOf(Category.WATCH)
@@ -162,6 +163,18 @@ class DeviceManagerServiceTest {
         s.snapshot.first { h1 in it.queue }
         s.removeFromQueue(h1)
         assertEquals(AcquireResult.Removed, r.await())
+    }
+
+    /** Ruling X: the hook cwd follows `cd`, so project defaults and the Projects row key on the project root. */
+    @Test fun projectDefaultKeyedByProjectRoot() = runTest {
+        val proj = home.resolve("proj").also { java.nio.file.Files.createDirectories(it.resolve(".git")) }
+        val sub = java.nio.file.Files.createDirectories(proj.resolve("app/src"))
+        projects.setDefault(proj.toString(), Category.WATCH)
+        val s = started()
+        s.preToolUse(HookInput("PreToolUse", "s1", null, null, sub.toString(), "Bash", "adb shell ls"))
+        assertEquals(DeviceKey("W"), assertIs<HolderStatus.Holding>(s.status(h1)).device)
+        s.acquire(h2, sub.toString(), emptySet(), 1.seconds) {}
+        assertEquals(listOf(proj.toString()), projects.all.first().map { it.path })
     }
 
     @Test fun releaseAndBlockPersistsAndAcquireRefuses() = runTest {

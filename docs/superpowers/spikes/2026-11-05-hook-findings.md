@@ -98,3 +98,16 @@ Findings:
 - The Claude Code harness blocks a standalone `sleep N` ("Blocked: standalone sleep"). `adb shell sleep 40` was used to hold the device instead.
 - SessionEnd released a hold that was never released explicitly: `released 06a6…:main (SESSION_END)`.
 - Backups `settings.json.cdm-backup-*` stay in `~/.claude` after exit, by design (pruned to 5). Both are byte-identical to the original.
+
+## Hook cwd
+
+Final-review check (2026-11-05), Claude Code 2.1.318, `claude -p --model haiku --settings <tmp>/settings.json --setting-sources project,local --permission-mode default`, run in a temp git repo with a `sub/` directory, PreToolUse http hook to `spikes/hook-echo.py` (`SPIKE_MODE=off`, copied into a scratch dir).
+
+Prompt: run `cd sub && pwd`, then `pwd`, as separate Bash calls.
+
+| Bash call | hook `cwd` |
+|---|---|
+| `cd sub && pwd` | `<tmp>/repo` |
+| `pwd` | `<tmp>/repo/sub` |
+
+The hook `cwd` is the Bash tool's persistent shell directory at the time of the call, not the session's project root. After a `cd`, every later hook reports the subdirectory. So the app must not key settings or project defaults on the raw hook `cwd`; it resolves the project root first (nearest ancestor with `.git` or `.claude`, stopping at `$HOME`).

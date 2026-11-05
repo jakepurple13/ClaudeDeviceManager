@@ -214,4 +214,61 @@ class PermissionMirrorTest {
             assertEquals(Decision.ALLOW, decide(it), it)
         }
     }
+
+    // ---- final review #5: read-only builtins stay inside the project ----
+
+    @Test fun readOnlyBuiltinsOutsideProjectAsk() {
+        assertAsk(
+            "cat /etc/passwd", "cat ~/.ssh/id_rsa", "head ../secret", "ls /", "grep -r token ~",
+            "cd /", "cd ..", "cd", "cd -", "cd .. && cat secret", "cd sub && cd .. && cd .. && cat f",
+        )
+        listOf("cat sub/../file", "ls -la sub", "cd sub && cat ../file", "grep -rn foo .", "echo hi").forEach {
+            assertEquals(Decision.ALLOW, decide(it), it)
+        }
+    }
+
+    // ---- final review #6, Ruling X: project root, not the hook cwd ----
+
+    private fun layout(): Triple<Path, Path, Path> {
+        val base = home.resolve("work").createDirectories()
+        val proj = base.resolve("proj").createDirectories()
+        proj.resolve(".git").createDirectories()
+        val sub = proj.resolve("app/src").createDirectories()
+        return Triple(base, proj, sub)
+    }
+
+    private fun decideIn(dir: Path, cmd: String) = mirror.decide(cmd, RewriteKind.PIN, dir.absolutePathString(), "default")
+
+    @Test fun projectRootIsNearestGitOrClaudeAncestorBelowHome() {
+        val (base, proj, sub) = layout()
+        assertEquals(proj, mirror.projectRoot(sub.absolutePathString()))
+        assertEquals(proj, mirror.projectRoot(proj.absolutePathString()))
+        // No marker below $HOME: the cwd itself. $HOME's own .claude (user settings) never counts.
+        settings(home)
+        assertEquals(base, mirror.projectRoot(base.absolutePathString()))
+        assertEquals(home, mirror.projectRoot(home.absolutePathString()))
+    }
+
+    @Test fun projectSettingsFoundFromSubdirectory() {
+        val (_, proj, sub) = layout()
+        settings(proj, allow = listOf("Bash(adb:*)"))
+        assertEquals(Decision.ALLOW, decideIn(sub, "adb shell ls"))
+        settings(proj, "settings.local.json", deny = listOf("Bash(adb shell:*)"))
+        assertEquals(Decision.ASK, decideIn(sub, "adb shell ls"))
+        assertEquals(Decision.ALLOW, decideIn(sub, "adb install a.apk"))
+        // A read-only builtin may reach anywhere in the project from a subdirectory, but not above it.
+        assertEquals(Decision.ALLOW, decideIn(sub, "cat ../../README.md"))
+        assertEquals(Decision.ASK, decideIn(sub, "cat ../../../x"))
+    }
+
+    @Test fun ancestorDenyAndAskApplyButAncestorAllowDoesNot() {
+        val (base, proj, sub) = layout()
+        settings(proj, allow = listOf("Bash(adb:*)"))
+        settings(base, allow = listOf("Bash(rm:*)"), ask = listOf("Bash(adb install:*)"))
+        settings(base, "settings.local.json", deny = listOf("Bash(adb logcat:*)"))
+        assertEquals(Decision.ASK, decideIn(sub, "rm x"))
+        assertEquals(Decision.ASK, decideIn(sub, "adb install a.apk"))
+        assertEquals(Decision.ASK, decideIn(sub, "adb logcat"))
+        assertEquals(Decision.ALLOW, decideIn(sub, "adb shell ls"))
+    }
 }
