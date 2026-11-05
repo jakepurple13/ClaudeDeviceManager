@@ -19,6 +19,8 @@ data class HookInput(
     val cwd: String,
     val toolName: String?,
     val command: String?,
+    /** The hook JSON's `permission_mode`. */
+    val permissionMode: String? = null,
 ) {
     val holder: HolderId get() = HolderId(sessionId, agentId ?: HolderId.MAIN)
 }
@@ -47,7 +49,7 @@ interface DeviceManager {
     val tracked: StateFlow<List<TrackedDevice>>
     val holderInfo: StateFlow<Map<HolderId, HolderInfo>>
 
-    suspend fun preToolUse(input: HookInput): HookReply
+    suspend fun preToolUse(input: HookInput): HookDecision
     suspend fun subagentStop(sessionId: String, agentId: String)
     suspend fun sessionEnd(sessionId: String)
     suspend fun acquire(

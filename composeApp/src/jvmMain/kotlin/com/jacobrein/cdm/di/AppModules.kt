@@ -12,6 +12,8 @@ import com.jacobrein.cdm.devices.DeviceTracker
 import com.jacobrein.cdm.devices.ProcessAdbClient
 import com.jacobrein.cdm.service.DeviceManager
 import com.jacobrein.cdm.service.DeviceManagerService
+import com.jacobrein.cdm.service.PermissionMirror
+import kotlin.io.path.Path
 import org.koin.core.module.Module
 import org.koin.dsl.bind
 import org.koin.dsl.module
@@ -32,6 +34,7 @@ fun appModules(): List<Module> = listOf(
         single { BlockedRepository(get()) }
         single<AdbClient> { ProcessAdbClient() }
         single { DeviceTracker(get()) }
-        single { DeviceManagerService(get(), get(), get(), get(), get(), get()) } bind DeviceManager::class
+        single { PermissionMirror(Path(System.getProperty("user.home"))) }
+        single { DeviceManagerService(get(), get(), get(), get(), get(), get(), get()) } bind DeviceManager::class
     },
 )

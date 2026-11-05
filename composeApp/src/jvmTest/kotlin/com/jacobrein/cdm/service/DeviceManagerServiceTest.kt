@@ -54,6 +54,7 @@ class DeviceManagerServiceTest {
     private val settings = SettingsRepository(db.settingDao())
     private val activity = ActivityRepository(db.activityDao())
     private val blocked = BlockedRepository(db.blockedDao())
+    private val mirror = PermissionMirror(java.nio.file.Files.createTempDirectory("cdm-home"))
     private val h1 = HolderId("s1")
     private val h2 = HolderId("s2")
     private val watch = setOf(Category.WATCH)
@@ -65,7 +66,7 @@ class DeviceManagerServiceTest {
         configs: DeviceConfigRepository = this@DeviceManagerServiceTest.configs,
         settings: SettingsRepository = this@DeviceManagerServiceTest.settings,
     ): DeviceManagerService {
-        val s = DeviceManagerService(DeviceTracker(adb), configs, projects, settings, activity, blocked, clock = { now })
+        val s = DeviceManagerService(DeviceTracker(adb), configs, projects, settings, activity, blocked, mirror, clock = { now })
         s.start(scope)
         s.snapshot.first { it.devices.size == 2 }
         return s
@@ -140,8 +141,9 @@ class DeviceManagerServiceTest {
         projects.setDefault("/w", Category.WATCH)
         val s = started()
         val sub = HolderId("s1", "a1")
-        val r = s.preToolUse(bash("adb shell ls", agent = "a1", agentType = "general-purpose"))
-        assertEquals(pinPrefix("w-usb") + "adb shell ls", assertIs<HookReply.Rewrite>(r).command)
+        val d = s.preToolUse(bash("adb shell ls", agent = "a1", agentType = "general-purpose"))
+        assertEquals(pinPrefix("w-usb") + "adb shell ls", assertIs<HookReply.Rewrite>(d.reply).command)
+        assertEquals(Decision.ASK, d.permission)
         val info = s.holderInfo.value.getValue(sub)
         assertEquals("general-purpose", info.agentType)
         assertEquals("adb shell ls", info.lastDeviceCommand)
@@ -149,14 +151,14 @@ class DeviceManagerServiceTest {
         waitFor { activity.recent().first().any { it.kind == "command" && it.text == "adb shell ls" } }
 
         val edit = HookInput("PreToolUse", "s1", "a1", "general-purpose", "/w", "Edit", null)
-        assertEquals(HookReply.NoOpinion, s.preToolUse(edit))
+        assertEquals(HookDecision(HookReply.NoOpinion, null), s.preToolUse(edit))
         assertTrue(assertIs<HolderStatus.Holding>(s.status(sub)).editing)
-        assertEquals(HookReply.NoOpinion, s.preToolUse(HookInput("PreToolUse", "s1", null, null, "/w", "Read", null)))
+        assertEquals(HookDecision(HookReply.NoOpinion, null), s.preToolUse(HookInput("PreToolUse", "s1", null, null, "/w", "Read", null)))
     }
 
     @Test fun subagentStopReleasesAndEndedHoldersDropAfterAnHour() = runTest {
         val s = DeviceManagerService(
-            DeviceTracker(adb), configs, projects, settings, activity, blocked, clock = { now },
+            DeviceTracker(adb), configs, projects, settings, activity, blocked, mirror, clock = { now },
             scanInterval = 2.seconds, tickInterval = 5.seconds,
         )
         s.start(backgroundScope)

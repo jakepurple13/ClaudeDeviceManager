@@ -57,6 +57,7 @@ class DeviceManagerService(
     private val settings: SettingsRepository,
     private val activity: ActivityRepository,
     private val blockedRepo: BlockedRepository,
+    private val mirror: PermissionMirror,
     private val clock: () -> Instant = { Clock.System.now() },
     private val scanInterval: Duration = 2.seconds,
     private val tickInterval: Duration = 5.seconds,
@@ -145,7 +146,7 @@ class DeviceManagerService(
 
     // ---- hooks ----
 
-    override suspend fun preToolUse(input: HookInput): HookReply {
+    override suspend fun preToolUse(input: HookInput): HookDecision {
         val holder = input.holder
         if (input.toolName == "Bash" && input.command != null) prefetchDefaultCategory(input.cwd)
         val (reply, device) = locked {
@@ -161,7 +162,11 @@ class DeviceManagerService(
         }
         book.touch(holder, input.cwd, input.agentType, deviceCommand)
         if (deviceCommand != null && device != null) safely("record command") { activity.recordCommand(holder, device, deviceCommand, clock()) }
-        return reply
+        // After the lock is released: reads settings files.
+        val permission = (reply as? HookReply.Rewrite)?.let {
+            mirror.decide(it.original, it.kind, input.cwd, input.permissionMode)
+        }
+        return HookDecision(reply, permission)
     }
 
     override suspend fun subagentStop(sessionId: String, agentId: String) {
