@@ -1,9 +1,33 @@
 package com.jacobrein.cdm.di
 
+import com.jacobrein.cdm.data.ActivityRepository
+import com.jacobrein.cdm.data.AppDatabase
+import com.jacobrein.cdm.data.BlockedRepository
+import com.jacobrein.cdm.data.DeviceConfigRepository
+import com.jacobrein.cdm.data.ProjectRepository
+import com.jacobrein.cdm.data.SettingsRepository
+import com.jacobrein.cdm.data.fileDatabase
+import com.jacobrein.cdm.devices.AdbClient
+import com.jacobrein.cdm.devices.DeviceTracker
+import com.jacobrein.cdm.devices.ProcessAdbClient
 import org.koin.core.module.Module
 import org.koin.dsl.module
 
 /** Every later task adds its Koin definitions here. */
 fun appModules(): List<Module> = listOf(
-    module { },
+    module {
+        single<AppDatabase> { fileDatabase() }
+        single { get<AppDatabase>().deviceConfigDao() }
+        single { get<AppDatabase>().projectDao() }
+        single { get<AppDatabase>().settingDao() }
+        single { get<AppDatabase>().activityDao() }
+        single { get<AppDatabase>().blockedDao() }
+        single { DeviceConfigRepository(get()) }
+        single { ProjectRepository(get()) }
+        single { SettingsRepository(get()) }
+        single { ActivityRepository(get()) }
+        single { BlockedRepository(get()) }
+        single<AdbClient> { ProcessAdbClient() }
+        single { DeviceTracker(get()) }
+    },
 )
