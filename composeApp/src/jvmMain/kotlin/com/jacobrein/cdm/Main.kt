@@ -17,6 +17,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import com.jacobrein.cdm.ui.nav.AppNavigation
+import com.jacobrein.cdm.ui.nav.Navigator
+import com.jacobrein.cdm.ui.nav.applyDevStartRoute
 import com.jacobrein.cdm.ui.window.AppWindow
 import com.jacobrein.cdm.ui.window.TitleBarStatus
 import com.jacobrein.cdm.ui.window.windowChrome
@@ -41,6 +43,7 @@ fun main() {
     }
     // Cmd+Q / SIGTERM skip the window-close path; stop() is idempotent and deletes the port file.
     Runtime.getRuntime().addShutdownHook(Thread { server.stop() })
+    applyDevStartRoute(koin.get<Navigator>())
     val chrome = windowChrome()
     application {
         AppWindow(

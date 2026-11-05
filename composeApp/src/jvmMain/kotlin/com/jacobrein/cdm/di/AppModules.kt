@@ -19,7 +19,15 @@ import kotlin.io.path.Path
 import com.jacobrein.cdm.ui.nav.Navigator
 import com.jacobrein.cdm.ui.nav.ShellViewModel
 import org.koin.core.module.Module
-import org.koin.core.module.dsl.viewModel
+import org.koin.core.module.dsl.viewModelOf
+import com.jacobrein.cdm.ui.SystemUiClock
+import com.jacobrein.cdm.ui.UiClock
+import com.jacobrein.cdm.ui.UiSources
+import com.jacobrein.cdm.ui.devices.DeviceDetailViewModel
+import com.jacobrein.cdm.ui.devices.DevicesViewModel
+import com.jacobrein.cdm.ui.overview.OverviewViewModel
+import com.jacobrein.cdm.ui.queue.QueueDetailViewModel
+import com.jacobrein.cdm.ui.queue.QueueViewModel
 import org.koin.dsl.bind
 import org.koin.dsl.module
 
@@ -44,6 +52,18 @@ fun appModules(): List<Module> = listOf(
         single { Installer(Path(System.getProperty("user.home"))) }
         single { DeviceManagerService(get(), get(), get(), get(), get(), get(), get()) } bind DeviceManager::class
         single { Navigator() }
-        viewModel { ShellViewModel(get()) }
     },
+    uiModule,
 )
+
+/** View models and their shared inputs. Split out so UI tests can pair it with fakes. */
+val uiModule: Module = module {
+    single<UiClock> { SystemUiClock }
+    single { UiSources(get(), get(), get(), get(), get()) }
+    viewModelOf(::ShellViewModel)
+    viewModelOf(::OverviewViewModel)
+    viewModelOf(::DevicesViewModel)
+    viewModelOf(::QueueViewModel)
+    viewModelOf(::DeviceDetailViewModel)
+    viewModelOf(::QueueDetailViewModel)
+}

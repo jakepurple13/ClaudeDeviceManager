@@ -59,6 +59,7 @@ class Navigator(start: Route = Route.Overview) {
     }
 
     fun openDetail(r: Route) {
+        require(r is Route.DeviceDetail || r is Route.QueueDetail) { "not a detail route: $r" }
         when {
             backStack.size == 1 -> backStack.add(r)
             backStack[1] != r -> backStack[1] = r

@@ -15,7 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.jacobrein.cdm.ui.nav.AnimatedCount
+import com.jacobrein.cdm.ui.components.AnimatedCount
 import com.jacobrein.cdm.ui.nav.ShellViewModel
 import org.koin.compose.viewmodel.koinViewModel
 

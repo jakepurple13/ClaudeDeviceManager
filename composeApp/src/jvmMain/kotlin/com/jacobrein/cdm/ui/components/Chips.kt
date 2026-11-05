@@ -56,8 +56,7 @@ fun Chip(label: String, style: ChipStyle, modifier: Modifier = Modifier) {
     Text(
         text = label,
         color = content,
-        fontSize = 10.sp,
-        style = MaterialTheme.typography.labelSmall,
+        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
         modifier = modifier
             .background(container, RoundedCornerShape(9.dp))
             .padding(horizontal = 6.dp, vertical = 1.dp),

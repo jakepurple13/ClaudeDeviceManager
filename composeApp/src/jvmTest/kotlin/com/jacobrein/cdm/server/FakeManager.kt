@@ -41,11 +41,11 @@ open class FakeManager : DeviceManager {
     }
     override suspend fun release(holder: HolderId) { released += holder }
     override suspend fun status(holder: HolderId): HolderStatus = statusImpl(holder)
-    override suspend fun releaseDevice(key: DeviceKey, block: Boolean) = error("unused")
-    override suspend fun handOff(key: DeviceKey, to: HolderId) = error("unused")
-    override suspend fun setDontUse(key: DeviceKey, dontUse: Boolean, releaseNow: Boolean) = error("unused")
-    override suspend fun setCategory(key: DeviceKey, category: Category?) = error("unused")
-    override suspend fun moveInQueue(h: HolderId, index: Int) = error("unused")
-    override suspend fun removeFromQueue(h: HolderId) = error("unused")
-    override suspend fun unblock(h: HolderId) = error("unused")
+    override suspend fun releaseDevice(key: DeviceKey, block: Boolean): Unit = error("unused")
+    override suspend fun handOff(key: DeviceKey, to: HolderId): Unit = error("unused")
+    override suspend fun setDontUse(key: DeviceKey, dontUse: Boolean, releaseNow: Boolean): Unit = error("unused")
+    override suspend fun setCategory(key: DeviceKey, category: Category?): Unit = error("unused")
+    override suspend fun moveInQueue(h: HolderId, index: Int): Unit = error("unused")
+    override suspend fun removeFromQueue(h: HolderId): Unit = error("unused")
+    override suspend fun unblock(h: HolderId): Unit = error("unused")
 }

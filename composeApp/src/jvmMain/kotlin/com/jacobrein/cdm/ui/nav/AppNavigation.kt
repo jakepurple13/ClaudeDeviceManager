@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -23,22 +24,28 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Text
+import com.jacobrein.cdm.ui.components.AnimatedCount
+import com.jacobrein.cdm.ui.devices.DeviceDetailScreen
+import com.jacobrein.cdm.ui.devices.DevicesScreen
+import com.jacobrein.cdm.ui.overview.OverviewScreen
+import com.jacobrein.cdm.ui.queue.QueueDetailScreen
+import com.jacobrein.cdm.ui.queue.QueueScreen
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.navigation3.ListDetailSceneStrategy
 import androidx.compose.material3.adaptive.navigation3.rememberListDetailSceneStrategy
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -86,38 +93,62 @@ fun AppNavigation(
             remember(slidePx) { { sceneTransition(slidePx, pop = false) } }
         val pop: AnimatedContentTransitionScope<Scene<Route>>.() -> ContentTransform =
             remember(slidePx) { { sceneTransition(slidePx, pop = true) } }
-        NavDisplay(
-            backStack = navigator.backStack,
-            onBack = navigator::back,
-            modifier = Modifier.weight(1f).fillMaxHeight().background(MaterialTheme.colorScheme.background),
-            entryDecorators = listOf(
-                rememberSaveableStateHolderNavEntryDecorator(),
-                rememberViewModelStoreNavEntryDecorator(),
-            ),
-            sceneStrategies = listOf(rememberListDetailSceneStrategy()),
-            transitionSpec = forward,
-            popTransitionSpec = pop,
-            entryProvider = entryProvider {
-                entry<Route.Overview>(metadata = section(TopLevel.OVERVIEW)) { Placeholder("Overview") }
-                entry<Route.Devices>(
-                    metadata = ListDetailSceneStrategy.listPane(detailPlaceholder = { Placeholder("Select a device") }) +
-                        section(TopLevel.DEVICES),
-                ) { Placeholder("Devices") }
-                entry<Route.DeviceDetail>(metadata = ListDetailSceneStrategy.detailPane() + section(TopLevel.DEVICES)) {
-                    Placeholder("Device ${it.key.hardwareSerial}")
-                }
-                entry<Route.Queue>(
-                    metadata = ListDetailSceneStrategy.listPane(detailPlaceholder = { Placeholder("Select a holder") }) +
-                        section(TopLevel.QUEUE),
-                ) { Placeholder("Queue") }
-                entry<Route.QueueDetail>(metadata = ListDetailSceneStrategy.detailPane() + section(TopLevel.QUEUE)) {
-                    Placeholder("Holder ${it.holder.key}")
-                }
-                entry<Route.Sessions>(metadata = section(TopLevel.SESSIONS)) { Placeholder("Sessions") }
-                entry<Route.Projects>(metadata = section(TopLevel.PROJECTS)) { Placeholder("Projects") }
-                entry<Route.Settings>(metadata = section(TopLevel.SETTINGS)) { Placeholder("Settings") }
-            },
-        )
+        // Screens draw on the bare background (no Surface), so give their text the right default colour.
+        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground) {
+            NavDisplay(
+                backStack = navigator.backStack,
+                onBack = navigator::back,
+                modifier = Modifier.weight(1f).fillMaxHeight().background(MaterialTheme.colorScheme.background),
+                entryDecorators = listOf(
+                    rememberSaveableStateHolderNavEntryDecorator(),
+                    rememberViewModelStoreNavEntryDecorator(),
+                ),
+                sceneStrategies = listOf(rememberListDetailSceneStrategy()),
+                transitionSpec = forward,
+                popTransitionSpec = pop,
+                entryProvider = entryProvider {
+                    entry<Route.Overview>(metadata = section(TopLevel.OVERVIEW)) {
+                        OverviewScreen(
+                            onOpenDevice = { key ->
+                                navigator.selectTopLevel(TopLevel.DEVICES)
+                                navigator.openDetail(Route.DeviceDetail(key))
+                            },
+                            onOpenHolder = { h ->
+                                navigator.selectTopLevel(TopLevel.QUEUE)
+                                navigator.openDetail(Route.QueueDetail(h))
+                            },
+                        )
+                    }
+                    entry<Route.Devices>(
+                        metadata = ListDetailSceneStrategy.listPane(detailPlaceholder = { DetailPane { Placeholder("Select a device") } }) +
+                            section(TopLevel.DEVICES),
+                    ) {
+                        DevicesScreen(
+                            selected = (navigator.backStack.getOrNull(1) as? Route.DeviceDetail)?.key,
+                            onOpen = { navigator.openDetail(Route.DeviceDetail(it)) },
+                        )
+                    }
+                    entry<Route.DeviceDetail>(metadata = ListDetailSceneStrategy.detailPane() + section(TopLevel.DEVICES)) {
+                        DetailPane { DeviceDetailScreen(it.key) }
+                    }
+                    entry<Route.Queue>(
+                        metadata = ListDetailSceneStrategy.listPane(detailPlaceholder = { DetailPane { Placeholder("Select a holder") } }) +
+                            section(TopLevel.QUEUE),
+                    ) {
+                        QueueScreen(
+                            selected = (navigator.backStack.getOrNull(1) as? Route.QueueDetail)?.holder,
+                            onOpen = { navigator.openDetail(Route.QueueDetail(it)) },
+                        )
+                    }
+                    entry<Route.QueueDetail>(metadata = ListDetailSceneStrategy.detailPane() + section(TopLevel.QUEUE)) {
+                        DetailPane { QueueDetailScreen(it.holder, onClose = navigator::back) }
+                    }
+                    entry<Route.Sessions>(metadata = section(TopLevel.SESSIONS)) { Placeholder("Sessions") }
+                    entry<Route.Projects>(metadata = section(TopLevel.PROJECTS)) { Placeholder("Projects") }
+                    entry<Route.Settings>(metadata = section(TopLevel.SETTINGS)) { Placeholder("Settings") }
+                },
+            )
+        }
     }
 }
 
@@ -182,22 +213,21 @@ private fun QueueBadge(waiting: Int) {
     }
 }
 
-/** A number that slides vertically and fades when it changes: up when it grows, down when it shrinks. */
+/**
+ * Slides and fades a detail pane's content in when it first composes. In the two-pane layout the list-detail
+ * scene keeps its key when a detail opens or changes, so NavDisplay's scene transition doesn't run there; this
+ * animates the detail pane alone and leaves the list pane still.
+ */
 @Composable
-fun AnimatedCount(value: Int, modifier: Modifier = Modifier, style: TextStyle = LocalTextStyle.current) {
-    AnimatedContent(
-        targetState = value,
-        modifier = modifier,
-        transitionSpec = {
-            val up = targetState > initialState
-            (slideInVertically(tween(200)) { h -> if (up) h else -h } + fadeIn(tween(200))) togetherWith
-                (slideOutVertically(tween(200)) { h -> if (up) -h else h } + fadeOut(tween(200)))
-        },
-        label = "count",
-    ) { Text("$it", style = style) }
+private fun DetailPane(content: @Composable () -> Unit) {
+    val shown = remember { MutableTransitionState(false).apply { targetState = true } }
+    AnimatedVisibility(
+        visibleState = shown,
+        enter = fadeIn(tween(DETAIL_MS)) + slideInHorizontally(tween(DETAIL_MS)) { it / 8 },
+    ) { content() }
 }
 
-/** Stand-in screen until Tasks 10–11 fill the routes in. */
+/** Stand-in screen: empty detail panes, and routes Task 11 fills in. */
 @Composable
 private fun Placeholder(name: String) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
