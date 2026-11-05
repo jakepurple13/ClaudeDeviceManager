@@ -37,7 +37,7 @@ deadline=$((SECONDS + RETRY_SECONDS))
 port=""
 while :; do
   [ -f "$PORT_FILE" ] && port="$(tr -d '[:space:]' < "$PORT_FILE")"
-  if [ -n "$port" ] && curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/cdm/status" 2>/dev/null; then
+  if [ -n "$port" ] && [ "$(curl -s --max-time 2 "http://127.0.0.1:$port/cdm/ping" 2>/dev/null | tr -d '[:space:]')" = "cdm-ok" ]; then
     break
   fi
   [ "$SECONDS" -ge "$deadline" ] && not_running
@@ -61,6 +61,7 @@ case "$cmd" in
     [ "$label" = "any" ] && label="device"
     while IFS= read -r line; do
       case "$line" in
+        .) ;; # heartbeat
         QUEUED\ *) echo "Waiting for a $label device… position ${line#QUEUED }" ;;
         GRANTED\ *) rest="${line#GRANTED }"; say_grant "${rest%% *}" "${rest#* }"; exit 0 ;;
         TIMEOUT\ *) echo "Still queued at position ${line#TIMEOUT }. Run \`cdm acquire\` again to keep waiting."; exit 0 ;;

@@ -100,4 +100,36 @@ class CdmScriptTest {
             assertEquals(1, m.released.size)
         }
     }
+
+    @Test
+    fun killedClientCancelsAcquireViaHeartbeat() {
+        val started = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val cancelled = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val m = FakeManager().apply {
+            acquireImpl = { _, _, _, _, onPos ->
+                onPos(1)
+                started.complete(Unit)
+                try {
+                    kotlinx.coroutines.awaitCancellation()
+                } finally {
+                    cancelled.complete(Unit)
+                }
+            }
+        }
+        val pf = dir.resolve("hb-port")
+        val server = CdmServer(m, port = 0, portFile = pf, heartbeat = kotlin.time.Duration.parse("200ms"))
+        val port = runBlocking { server.start() }
+        try {
+            java.net.Socket("127.0.0.1", port).use { sock ->
+                sock.getOutputStream().write(
+                    "POST /cdm/acquire?holder=s:main&cwd=/x HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n".toByteArray(),
+                )
+                sock.getOutputStream().flush()
+                runBlocking { kotlinx.coroutines.withTimeout(5_000) { started.await() } }
+            } // socket closed mid-wait
+            runBlocking { kotlinx.coroutines.withTimeout(10_000) { cancelled.await() } }
+        } finally {
+            server.stop()
+        }
+    }
 }

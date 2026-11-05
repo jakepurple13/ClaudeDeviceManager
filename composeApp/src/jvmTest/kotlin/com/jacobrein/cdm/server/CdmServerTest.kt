@@ -48,7 +48,7 @@ class CdmServerTest {
     fun managerExceptionStill200Empty() = app(object : FakeManager() {
         override suspend fun preToolUse(input: com.jacobrein.cdm.service.HookInput): HookDecision = error("boom")
     }) {
-        val r = client.post("/hooks/pre-tool-use") { setBody("""{"session_id":"s","tool_input":{"command":"ls"}}""") }
+        val r = client.post("/hooks/pre-tool-use") { setBody("""{"session_id":"s","hook_event_name":"PreToolUse","tool_input":{"command":"ls"}}""") }
         assertEquals(HttpStatusCode.OK, r.status)
         assertEquals("{}", r.bodyAsText())
     }
@@ -70,7 +70,7 @@ class CdmServerTest {
             }
             app(m) {
                 val r = client.post("/hooks/pre-tool-use") {
-                    setBody("""{"session_id":"s","permission_mode":"auto","tool_name":"Bash","tool_input":{"command":"adb shell ls","description":"d","timeout":5000}}""")
+                    setBody("""{"session_id":"s","hook_event_name":"PreToolUse","permission_mode":"auto","tool_name":"Bash","tool_input":{"command":"adb shell ls","description":"d","timeout":5000}}""")
                 }
                 val o = hso(r.bodyAsText())
                 assertEquals(expected, o["permissionDecision"]!!.jsonPrimitive.content)
@@ -88,7 +88,7 @@ class CdmServerTest {
     fun rewriteWithNullPermissionFailsSafeToAsk() = app(FakeManager().apply {
         decision = HookDecision(HookReply.Rewrite("cdm acquire --holder s:main --cwd '/x'", "cdm acquire", RewriteKind.CDM), null)
     }) {
-        val r = client.post("/hooks/pre-tool-use") { setBody("""{"session_id":"s","tool_input":{"command":"cdm acquire"}}""") }
+        val r = client.post("/hooks/pre-tool-use") { setBody("""{"session_id":"s","hook_event_name":"PreToolUse","tool_input":{"command":"cdm acquire"}}""") }
         val o = hso(r.bodyAsText())
         assertEquals("ask", o["permissionDecision"]!!.jsonPrimitive.content)
         assertEquals("Claude Device Manager identity", o["permissionDecisionReason"]!!.jsonPrimitive.content)
@@ -98,8 +98,8 @@ class CdmServerTest {
     fun subagentIdentityFromAgentId() {
         val m = FakeManager()
         app(m) {
-            client.post("/hooks/pre-tool-use") { setBody("""{"session_id":"s","agent_id":"agent-1","tool_input":{"command":"ls"}}""") }
-            client.post("/hooks/pre-tool-use") { setBody("""{"session_id":"s","tool_input":{"command":"ls"}}""") }
+            client.post("/hooks/pre-tool-use") { setBody("""{"session_id":"s","hook_event_name":"PreToolUse","agent_id":"agent-1","tool_input":{"command":"ls"}}""") }
+            client.post("/hooks/pre-tool-use") { setBody("""{"session_id":"s","hook_event_name":"PreToolUse","tool_input":{"command":"ls"}}""") }
         }
         assertEquals(listOf(HolderId("s", "agent-1"), HolderId("s", "main")), m.inputs.map { it.holder })
     }
@@ -175,5 +175,23 @@ class CdmServerTest {
             assertEquals("NONE", client.get("/cdm/status?holder=s:main").bodyAsText().trim())
             assertTrue(client.get("/cdm/status").status == HttpStatusCode.BadRequest)
         }
+    }
+
+    @Test
+    fun unknownEventWithSessionAndBashCommandIsNoOp() {
+        val m = FakeManager()
+        app(m) {
+            val r = client.post("/hooks/pre-tool-use") {
+                setBody("""{"session_id":"s","hook_event_name":"Weird","tool_name":"Bash","tool_input":{"command":"adb devices"}}""")
+            }
+            assertEquals(HttpStatusCode.OK, r.status)
+            assertEquals("{}", r.bodyAsText())
+        }
+        assertTrue(m.inputs.isEmpty(), "service must not be called for unknown events")
+    }
+
+    @Test
+    fun pingAnswersCdmOk() = app(FakeManager()) {
+        assertEquals("cdm-ok", client.get("/cdm/ping").bodyAsText().trim())
     }
 }

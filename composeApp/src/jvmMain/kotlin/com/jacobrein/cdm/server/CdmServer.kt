@@ -22,7 +22,22 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.io.path.Path
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+
+/** Holds the HTTP server's startup failure (e.g. port in use) for the UI to show. */
+class ServerStatus {
+    private val _error = MutableStateFlow<String?>(null)
+    val serverError: StateFlow<String?> = _error
+    fun fail(message: String) { _error.value = message }
+}
 
 const val DEFAULT_ACQUIRE_TIMEOUT_SEC = 570L
 
@@ -33,12 +48,13 @@ class CdmServer(
     private val manager: DeviceManager,
     private val port: Int,
     private val portFile: Path = defaultPortFile(),
+    private val heartbeat: Duration = 5.seconds,
 ) {
     private var engine: EmbeddedServer<*, *>? = null
 
     /** Binds, then writes the port file. Returns the bound port. */
     suspend fun start(): Int {
-        val e = embeddedServer(CIO, port = port, host = "127.0.0.1") { cdmModule(manager) }
+        val e = embeddedServer(CIO, port = port, host = "127.0.0.1") { cdmModule(manager, heartbeat) }
         e.start(wait = false)
         engine = e
         val bound = e.engine.resolvedConnectors().first().port
@@ -56,11 +72,13 @@ class CdmServer(
 
 private val EMPTY = "{}"
 
-fun Application.cdmModule(manager: DeviceManager) {
+fun Application.cdmModule(manager: DeviceManager, heartbeat: Duration = 5.seconds) {
     routing {
+        get("/cdm/ping") { call.respondText("cdm-ok\n") }
         post("/hooks/pre-tool-use") {
             hook {
                 val p = HookJson.parse(call.receiveText()) ?: return@hook EMPTY
+                if (p.input.hookEventName != "PreToolUse") return@hook EMPTY
                 HookJson.render(manager.preToolUse(p.input), p.toolInput).toString()
             }
         }
@@ -86,12 +104,24 @@ fun Application.cdmModule(manager: DeviceManager) {
                 .split(',').map { it.trim() }.filter { it.isNotEmpty() }.map { Category(it) }.toSet()
             val timeout = (call.request.queryParameters["timeoutSec"]?.toLongOrNull() ?: DEFAULT_ACQUIRE_TIMEOUT_SEC).seconds
             call.respondTextWriter(ContentType.Text.Plain) {
-                suspend fun line(s: String) { write(s + "\n"); flush() }
-                // Cancellation (client disconnect) propagates through acquire, which detaches in its finally.
-                when (val r = manager.acquire(holder, cwd, wants, timeout) { line("QUEUED $it") }) {
-                    is AcquireResult.Granted -> line("GRANTED ${r.serial} ${r.name}")
-                    is AcquireResult.TimedOut -> line("TIMEOUT ${r.position}")
-                    AcquireResult.Blocked -> line("BLOCKED")
+                val out = Mutex()
+                suspend fun line(s: String) = out.withLock { write(s + "\n"); flush() }
+                coroutineScope {
+                    // Heartbeat: a write to a dead client fails, which cancels this scope and with it the acquire
+                    // (which detaches in its finally). Without it a disconnect goes unnoticed until the next real line.
+                    val beat = launch {
+                        while (true) {
+                            delay(heartbeat)
+                            line(".")
+                        }
+                    }
+                    val r = manager.acquire(holder, cwd, wants, timeout) { line("QUEUED $it") }
+                    beat.cancel()
+                    when (r) {
+                        is AcquireResult.Granted -> line("GRANTED ${r.serial} ${r.name}")
+                        is AcquireResult.TimedOut -> line("TIMEOUT ${r.position}")
+                        AcquireResult.Blocked -> line("BLOCKED")
+                    }
                 }
             }
         }
