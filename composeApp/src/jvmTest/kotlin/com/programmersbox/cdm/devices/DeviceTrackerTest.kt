@@ -120,4 +120,44 @@ class DeviceTrackerTest {
         assertEquals("UsbModel", d.model)
         assertEquals(Category.PHONE, d.detectedCategory)
     }
+
+    // ---- final review #9, Ruling Z ----
+
+    @Test
+    fun emulatorsSharingSerialnoStaySeparateKeyedByAdbSerial() = runTest {
+        val adb = FakeAdb(
+            "List of devices attached\nemulator-5554 device\nemulator-5556 device\n",
+            mapOf("emulator-5554" to "EMULATOR35X1X1X0", "emulator-5556" to "EMULATOR35X1X1X0"),
+        )
+        val d = DeviceTracker(adb).scan()
+        assertEquals(listOf(DeviceKey("emulator-5554"), DeviceKey("emulator-5556")), d.map { it.key })
+        assertEquals(listOf(listOf("emulator-5554"), listOf("emulator-5556")), d.map { it.serials })
+    }
+
+    @Test
+    fun twoUsbDevicesSharingSerialnoStaySeparate() = runTest {
+        val shared = "0123456789ABCDEF"
+        val adb = FakeAdb(
+            "List of devices attached\nA1 device usb:1\nB2 device usb:2\n192.168.1.9:5555 device\n",
+            mapOf("A1" to shared, "B2" to shared, "192.168.1.9:5555" to shared),
+        )
+        val d = DeviceTracker(adb).scan().sortedBy { it.key.hardwareSerial }
+        // Which Wi-Fi transport belongs to which USB device can't be told, so nothing in the group merges.
+        assertEquals(
+            listOf("$shared@192.168.1.9:5555", "$shared@A1", "$shared@B2"),
+            d.map { it.key.hardwareSerial },
+        )
+        assertEquals(listOf(listOf("192.168.1.9:5555"), listOf("A1"), listOf("B2")), d.map { it.serials })
+    }
+
+    @Test
+    fun usbPlusWifiStillMergeAlongsideEmulator() = runTest {
+        val adb = FakeAdb(
+            "List of devices attached\n$usb device\n$wifi device\nemulator-5554 device\n",
+            mapOf(usb to usb, wifi to usb, "emulator-5554" to usb),
+        )
+        val d = DeviceTracker(adb).scan().associateBy { it.key }
+        assertEquals(listOf(usb, wifi), d.getValue(DeviceKey(usb)).serials)
+        assertEquals(listOf("emulator-5554"), d.getValue(DeviceKey("emulator-5554")).serials)
+    }
 }

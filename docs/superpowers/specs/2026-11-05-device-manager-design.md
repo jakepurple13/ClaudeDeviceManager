@@ -147,6 +147,7 @@ The app installs itself into Claude Code only while it is running, so Claude nev
 
 - Discover devices by running `adb track-devices` or polling `adb devices -l` about every 2 s (builder's choice). Read the model, Android version, and transport (USB or Wi-Fi).
 - **Identity:** key devices on `ro.serialno`, not the `adb` serial. A device on both USB and Wi-Fi then shows up once, and its settings follow it when it reconnects over a different transport. A holder is handed the `adb` serial of a transport that is currently connected.
+- **Identity limits (final review, Ruling Z):** serials merge under one `ro.serialno` key only when they can be one device: at most one USB and at most one Wi-Fi serial. Emulators (`emulator-*`) never merge, since they often share a serialno; each is keyed by its adb serial (`emulator-5554`). When a serialno group can't be one device (for example two USB devices that both report `0123456789ABCDEF`), nothing in the group merges and every serial is keyed `<serialno>@<adb serial>`. Both keys being derived the same way every scan keeps them stable while the devices stay on the same transports.
 - **Category:** auto-detected. `pm has-feature android.hardware.type.watch` means watch, otherwise phone. Emulators are detected the same way. Jacob can override the category in the UI, and the override persists.
 - The category set is phone and watch to start, stored as data so more can be added later.
 

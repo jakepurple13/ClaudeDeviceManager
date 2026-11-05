@@ -33,6 +33,9 @@ data class HolderId(val sessionId: String, val agentId: String = MAIN) {
     }
 }
 
-/** Hardware serial (`ro.serialno`). */
+/**
+ * Device identity: usually the hardware serial (`ro.serialno`). Emulators use their adb serial (`emulator-5554`),
+ * and devices whose serialno can't be told apart use `<serialno>@<adb serial>` (see `DeviceTracker`).
+ */
 @JvmInline
 value class DeviceKey(val hardwareSerial: String)

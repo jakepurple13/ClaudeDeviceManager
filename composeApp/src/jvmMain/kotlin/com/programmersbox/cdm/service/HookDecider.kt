@@ -259,7 +259,7 @@ class HookDecider(
         private const val MORE_THAN_ONE =
             "This command names more than one device. A holder can use only one device at a time."
 
-        internal fun isEmulatorSerial(serial: String) = serial.startsWith("emulator-")
+        internal fun isEmulatorSerial(serial: String) = com.programmersbox.cdm.devices.isEmulatorSerial(serial)
         internal fun isUsbSerial(serial: String) = !isWifiSerial(serial) && !isEmulatorSerial(serial)
     }
 }

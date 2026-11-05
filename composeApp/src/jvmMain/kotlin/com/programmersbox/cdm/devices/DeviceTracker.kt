@@ -13,6 +13,8 @@ data class TrackedDevice(
     val detectedCategory: Category,
 )
 
+internal fun isEmulatorSerial(serial: String) = serial.startsWith("emulator-")
+
 internal fun isWifiSerial(serial: String) =
     ':' in serial || (serial.startsWith("adb-") && "_adb-tls-connect" in serial)
 
@@ -49,14 +51,35 @@ class DeviceTracker(
             } ?: continue
             resolved += s to props
         }
-        return resolved.groupBy { it.second.hardware }.map { (hw, rows) ->
+        return identities(resolved).map { (key, rows) ->
             val ordered = rows.map { it.first }.sortedBy { isWifiSerial(it) } // stable: USB first
             val p = (rows.firstOrNull { !isWifiSerial(it.first) } ?: rows.first()).second
             TrackedDevice(
-                DeviceKey(hw), ordered, p.model, p.version,
+                key, ordered, p.model, p.version,
                 if (ordered.any { !isWifiSerial(it) }) "usb" else "wifi", p.category,
             )
         }
+    }
+
+    /**
+     * Ruling Z. Transports merge under one `ro.serialno` key only when they can be one device: at most one USB and
+     * at most one Wi-Fi serial. Emulators never merge (they often share a serialno) and are keyed by adb serial.
+     * In a group that can't be one device (say two USB devices both reporting `0123456789ABCDEF`) nothing merges:
+     * every serial gets its own key, `<serialno>@<adb serial>`.
+     */
+    private fun identities(resolved: List<Pair<String, Props>>): List<Pair<DeviceKey, List<Pair<String, Props>>>> {
+        val (emulators, real) = resolved.partition { isEmulatorSerial(it.first) }
+        val out = mutableListOf<Pair<DeviceKey, List<Pair<String, Props>>>>()
+        for ((hw, rows) in real.groupBy { it.second.hardware }) {
+            val wifi = rows.count { isWifiSerial(it.first) }
+            if (rows.size - wifi <= 1 && wifi <= 1) {
+                out += DeviceKey(hw) to rows
+            } else {
+                rows.forEach { out += DeviceKey("$hw@${it.first}") to listOf(it) }
+            }
+        }
+        emulators.forEach { out += DeviceKey(it.first) to listOf(it) }
+        return out
     }
 
     private suspend fun read(serial: String): Props {
