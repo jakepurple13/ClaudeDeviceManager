@@ -1,6 +1,9 @@
 package com.programmersbox.cdm.ui.nav
 
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.navigation3.runtime.NavKey
 import com.programmersbox.cdm.core.model.DeviceKey
@@ -51,7 +54,34 @@ class Navigator(start: Route = Route.Overview) {
 
     val currentTopLevel: TopLevel get() = backStack.first().topLevel
 
+    /**
+     * A detail route that [back] is animating out before it is popped. Only routes whose pane registered with
+     * [registerExitAnimation] (a detail shown beside its list, where NavDisplay's own transition doesn't run) wait.
+     */
+    var closing: Route? by mutableStateOf(null)
+        private set
+
+    private val exitAnimated = mutableSetOf<Route>()
+
+    fun registerExitAnimation(r: Route) {
+        exitAnimated += r
+    }
+
+    /** Called when the pane leaves composition; finishes a close still in progress so the stack never sticks. */
+    fun unregisterExitAnimation(r: Route) {
+        exitAnimated -= r
+        finishClose(r)
+    }
+
+    /** The pane's exit animation for [r] ended: pop it now. */
+    fun finishClose(r: Route) {
+        if (closing != r) return
+        closing = null
+        if (backStack.size > 1 && backStack.last() == r) backStack.removeAt(backStack.lastIndex)
+    }
+
     fun selectTopLevel(t: TopLevel) {
+        closing = null
         if (backStack.size == 1 && backStack[0] == t.route) return
         // Add before removing so the list is never momentarily empty for a reader.
         backStack.add(0, t.route)
@@ -60,6 +90,7 @@ class Navigator(start: Route = Route.Overview) {
 
     fun openDetail(r: Route) {
         require(r is Route.DeviceDetail || r is Route.QueueDetail) { "not a detail route: $r" }
+        closing = null
         when {
             backStack.size == 1 -> backStack.add(r)
             backStack[1] != r -> backStack[1] = r
@@ -67,6 +98,12 @@ class Navigator(start: Route = Route.Overview) {
     }
 
     fun back() {
-        if (backStack.size > 1) backStack.removeAt(backStack.lastIndex)
+        if (backStack.size <= 1) return
+        val top = backStack.last()
+        if (top in exitAnimated) {
+            closing = top // popped by finishClose once the pane has animated out
+            return
+        }
+        backStack.removeAt(backStack.lastIndex)
     }
 }

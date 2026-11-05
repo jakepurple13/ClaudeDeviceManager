@@ -14,8 +14,8 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 
-/** A hook body parsed leniently. [raw] is kept for fields [HookInput] does not carry (`tool_input`, `agent_id`). */
-class ParsedHook(val input: HookInput, val toolInput: JsonObject?, val raw: JsonObject)
+/** A hook body parsed leniently; [toolInput] is kept whole so a rewrite can preserve its other fields. */
+class ParsedHook(val input: HookInput, val toolInput: JsonObject?)
 
 object HookJson {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -39,7 +39,7 @@ object HookJson {
             command = toolInput?.str("command"),
             permissionMode = raw.str("permission_mode"),
         )
-        return ParsedHook(input, toolInput, raw)
+        return ParsedHook(input, toolInput)
     }
 
     /** The JSON answer for a PreToolUse hook. */
@@ -55,15 +55,16 @@ object HookJson {
                 toolInput?.forEach { (k, v) -> if (k != "command") put(k, v) }
                 put("command", r.command)
             }
-            hookOutput(perm, reasonFor(r), updated)
+            hookOutput(perm, reasonFor(r, perm == "ask"), updated)
         }
     }
 
-    private fun reasonFor(r: HookReply.Rewrite): String = when (r.kind) {
+    private fun reasonFor(r: HookReply.Rewrite, asks: Boolean): String = when (r.kind) {
         RewriteKind.CDM -> "Claude Device Manager identity"
         RewriteKind.PIN -> {
             val serial = Regex("""ANDROID_SERIAL=(\S+?);""").find(r.command)?.groupValues?.get(1) ?: "device"
-            "Pinned to $serial by Claude Device Manager"
+            val pinned = "Pinned to $serial by Claude Device Manager"
+            if (asks) "$pinned; needs approval because the pinned command no longer matches your allow rules" else pinned
         }
     }
 

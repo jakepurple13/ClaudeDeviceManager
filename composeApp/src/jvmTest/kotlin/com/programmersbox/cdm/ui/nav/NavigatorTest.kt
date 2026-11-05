@@ -70,4 +70,30 @@ class NavigatorTest {
         applyDevStartRoute(nav, "queue:s1:main")
         assertEquals(listOf<Route>(Route.Queue, Route.QueueDetail(HolderId("s1"))), nav.backStack.toList())
     }
+
+    /** Final review #14: a registered (two-pane) detail is popped only after its exit animation finishes. */
+    @Test
+    fun backWaitsForRegisteredDetailExit() {
+        val nav = Navigator(Route.Devices)
+        val d = Route.DeviceDetail(a)
+        nav.openDetail(d)
+        nav.registerExitAnimation(d)
+        nav.back()
+        assertEquals(listOf(Route.Devices, d), nav.backStack.toList())
+        assertEquals(d, nav.closing)
+        nav.finishClose(d)
+        assertEquals(listOf<Route>(Route.Devices), nav.backStack.toList())
+        assertEquals(null, nav.closing)
+
+        // A pane that leaves composition mid-close still completes the pop.
+        nav.openDetail(d)
+        nav.back()
+        nav.unregisterExitAnimation(d)
+        assertEquals(listOf<Route>(Route.Devices), nav.backStack.toList())
+
+        // Unregistered: immediate.
+        nav.openDetail(d)
+        nav.back()
+        assertEquals(listOf<Route>(Route.Devices), nav.backStack.toList())
+    }
 }

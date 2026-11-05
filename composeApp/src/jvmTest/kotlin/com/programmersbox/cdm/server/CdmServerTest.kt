@@ -64,7 +64,9 @@ class CdmServerTest {
 
     @Test
     fun rewriteKeepsOtherToolInputFields() {
-        for ((d, expected) in listOf(Decision.ALLOW to "allow", Decision.ASK to "ask")) {
+        val pinned = "Pinned to ABC by Claude Device Manager"
+        val asks = "$pinned; needs approval because the pinned command no longer matches your allow rules"
+        for ((d, expected, reason) in listOf(Triple(Decision.ALLOW, "allow", pinned), Triple(Decision.ASK, "ask", asks))) {
             val m = FakeManager().apply {
                 decision = HookDecision(HookReply.Rewrite("export ANDROID_SERIAL=ABC; adb shell ls", "adb shell ls", RewriteKind.PIN), d)
             }
@@ -74,7 +76,7 @@ class CdmServerTest {
                 }
                 val o = hso(r.bodyAsText())
                 assertEquals(expected, o["permissionDecision"]!!.jsonPrimitive.content)
-                assertEquals("Pinned to ABC by Claude Device Manager", o["permissionDecisionReason"]!!.jsonPrimitive.content)
+                assertEquals(reason, o["permissionDecisionReason"]!!.jsonPrimitive.content)
                 val u = o["updatedInput"]!!.jsonObject
                 assertEquals("export ANDROID_SERIAL=ABC; adb shell ls", u["command"]!!.jsonPrimitive.content)
                 assertEquals("d", u["description"]!!.jsonPrimitive.content)

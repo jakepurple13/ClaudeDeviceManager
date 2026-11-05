@@ -72,6 +72,21 @@ class UiModelsTest {
         assertEquals(DeviceState.OFFLINE_HELD, deviceRows(world(snap, tracked = emptyList())).single().state)
     }
 
+    /**
+     * Final review #13: OFFLINE is reachable, so it stays. Releasing an "offline · held" device leaves it in the
+     * allocator, unheld with no serials, until the next scan drops it (up to one scan interval).
+     */
+    @Test
+    fun releasedOfflineDeviceShowsOfflineUntilNextScan() {
+        val snap = AllocatorSnapshot(
+            devices = listOf(dev(p, "Pixel 8", Category.PHONE).copy(connectedSerials = emptyList())),
+            holds = emptyMap(),
+            queue = emptyList(),
+            statuses = emptyMap(),
+        )
+        assertEquals(DeviceState.OFFLINE, deviceRows(world(snap, tracked = emptyList())).single().state)
+    }
+
     @Test
     fun waitReasons() {
         val h1 = HolderId("19be0000")

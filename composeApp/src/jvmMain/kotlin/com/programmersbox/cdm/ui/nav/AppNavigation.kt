@@ -39,10 +39,14 @@ import com.programmersbox.cdm.ui.projects.ProjectsScreen
 import com.programmersbox.cdm.ui.sessions.SessionsScreen
 import com.programmersbox.cdm.ui.settings.SettingsScreen
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
+import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
+import androidx.compose.material3.adaptive.layout.calculatePaneScaffoldDirective
 import androidx.compose.material3.adaptive.navigation3.ListDetailSceneStrategy
 import androidx.compose.material3.adaptive.navigation3.rememberListDetailSceneStrategy
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -132,7 +136,7 @@ fun AppNavigation(
                         )
                     }
                     entry<Route.DeviceDetail>(metadata = ListDetailSceneStrategy.detailPane() + section(TopLevel.DEVICES)) {
-                        DetailPane { DeviceDetailScreen(it.key) }
+                        DetailPane(navigator, it) { DeviceDetailScreen(it.key) }
                     }
                     entry<Route.Queue>(
                         metadata = ListDetailSceneStrategy.listPane(detailPlaceholder = { DetailPane { Placeholder("Select a holder") } }) +
@@ -144,7 +148,7 @@ fun AppNavigation(
                         )
                     }
                     entry<Route.QueueDetail>(metadata = ListDetailSceneStrategy.detailPane() + section(TopLevel.QUEUE)) {
-                        DetailPane { QueueDetailScreen(it.holder, onClose = navigator::back) }
+                        DetailPane(navigator, it) { QueueDetailScreen(it.holder, onClose = navigator::back) }
                     }
                     entry<Route.Sessions>(metadata = section(TopLevel.SESSIONS)) { SessionsScreen() }
                     entry<Route.Projects>(metadata = section(TopLevel.PROJECTS)) { ProjectsScreen() }
@@ -217,16 +221,32 @@ private fun QueueBadge(waiting: Int) {
 }
 
 /**
- * Slides and fades a detail pane's content in when it first composes. In the two-pane layout the list-detail
- * scene keeps its key when a detail opens or changes, so NavDisplay's scene transition doesn't run there; this
- * animates the detail pane alone and leaves the list pane still.
+ * Slides and fades a detail pane's content in when it first composes, and (for a [route]) out again when it is
+ * closed. In the two-pane layout the list-detail scene keeps its key when a detail opens, changes or closes, so
+ * NavDisplay's scene transition doesn't run there; this animates the detail pane alone and leaves the list pane
+ * still. To close, [Navigator.back] marks the route [Navigator.closing]; the pane animates out, then pops it.
+ * In the single-pane layout NavDisplay's pop transition already animates, so the pane doesn't register.
  */
+@OptIn(ExperimentalMaterial3AdaptiveApi::class)
 @Composable
-private fun DetailPane(content: @Composable () -> Unit) {
+private fun DetailPane(navigator: Navigator? = null, route: Route? = null, content: @Composable () -> Unit) {
     val shown = remember { MutableTransitionState(false).apply { targetState = true } }
+    if (navigator != null && route != null) {
+        val twoPane = calculatePaneScaffoldDirective(currentWindowAdaptiveInfo()).maxHorizontalPartitions > 1
+        DisposableEffect(navigator, route, twoPane) {
+            if (twoPane) navigator.registerExitAnimation(route)
+            onDispose { navigator.unregisterExitAnimation(route) }
+        }
+        val closing = navigator.closing == route
+        LaunchedEffect(closing) { shown.targetState = !closing }
+        if (closing && shown.isIdle && !shown.currentState) {
+            LaunchedEffect(Unit) { navigator.finishClose(route) }
+        }
+    }
     AnimatedVisibility(
         visibleState = shown,
         enter = fadeIn(tween(DETAIL_MS)) + slideInHorizontally(tween(DETAIL_MS)) { it / 8 },
+        exit = fadeOut(tween(DETAIL_MS)) + slideOutHorizontally(tween(DETAIL_MS)) { it / 8 },
     ) { content() }
 }
 

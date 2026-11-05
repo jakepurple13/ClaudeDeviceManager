@@ -139,6 +139,37 @@ class AppNavigationTest {
         assertTrue(detailLefts.size > 2 && detailLefts.first() > detailLefts.last(), "detail pane didn't slide in: $detailLefts")
     }
 
+    /** Final review #14: closing a detail in the two-pane layout animates the detail out, not a hard cut. */
+    @Test
+    fun closingDetailAnimatesOut() = runComposeUiTest {
+        val key = DeviceKey("SER1")
+        snap.value = snap.value.copy(devices = listOf(AllocDevice(key, "S6003L", Category.PHONE, false, listOf("s1"))))
+        val navigator = Navigator(Route.Devices)
+        setContent { AppTheme(dark = true) { AppNavigation(navigator = navigator, shell = ShellViewModel(manager)) } }
+        waitUntil(timeoutMillis = 3_000) { onAllNodesWithText("S6003L").fetchSemanticsNodes().isNotEmpty() }
+        navigator.openDetail(Route.DeviceDetail(key))
+        waitUntil(timeoutMillis = 3_000) { onAllNodesWithText("S6003L").fetchSemanticsNodes().size == 2 }
+        waitForIdle()
+        val listLeft = onAllNodesWithText("S6003L").fetchSemanticsNodes().first().boundsInRoot.left
+
+        mainClock.autoAdvance = false
+        navigator.back()
+        val detailLefts = mutableListOf<Float>()
+        val listLefts = mutableListOf<Float>()
+        repeat(30) {
+            mainClock.advanceTimeByFrame()
+            val nodes = onAllNodesWithText("S6003L").fetchSemanticsNodes()
+            listLefts += nodes.first().boundsInRoot.left
+            nodes.getOrNull(1)?.let { detailLefts += it.boundsInRoot.left }
+        }
+        mainClock.autoAdvance = true
+        waitForIdle()
+        assertEquals(listOf(Route.Devices), navigator.backStack.toList())
+        assertEquals(1, onAllNodesWithText("S6003L").fetchSemanticsNodes().size, "detail still shown after the exit")
+        assertTrue(listLefts.all { it == listLeft }, "list pane moved while the detail closed: $listLefts")
+        assertTrue(detailLefts.size > 2 && detailLefts.last() > detailLefts.first(), "detail pane didn't slide out: $detailLefts")
+    }
+
     @Test
     fun badgeExitsWithoutShowingZero() = runComposeUiTest {
         val shell = ShellViewModel(manager)
