@@ -32,7 +32,7 @@ The fix is a desktop app that hands out devices. Anything in Claude that is abou
 - **Taking a device away mid-test.** Long Gradle builds, flaky USB, and flaky Wi-Fi are normal. Neither those nor a quick code edit may cost a holder its device.
 - **A slow Bash tool.** The hook sees every Bash command, so commands from holders with no device and no device intent must pass with no noticeable delay.
 - **A holder acting on the wrong device.** Once a holder has a device, its commands, including wrapper scripts, can reach only that device.
-- **Weakening Jacob's permission settings.** Hooks must not auto-approve commands that Jacob's normal permission rules would have prompted for.
+- **Weakening Jacob's permission settings.** Hooks must not auto-approve commands that Jacob's normal permission rules would have prompted for. This is enforced by permission mirroring, described below.
 
 ## How it works
 
@@ -61,9 +61,16 @@ The holder key is `session_id` plus `agent_id` from the hook input. `agent_id` i
 
 While a holder has a device, **every** Bash command from that holder is rewritten with `updatedInput` to start with `export ANDROID_SERIAL=<serial>;`. Every command is pinned, not only `adb` ones, so wrapper scripts, scrcpy, and anything else that honors `ANDROID_SERIAL` reach the right device. `adb` and Gradle both honor it.
 
-Rewrites return `updatedInput` **without** a `permissionDecision`, so Jacob's normal permission flow still decides. This must not become an auto-approve.
+**Permission mirroring (decided by Jacob on 2026-11-05 after the spike).** The spike (`docs/superpowers/spikes/2026-11-05-hook-findings.md`) showed that once a command is rewritten, Claude Code no longer matches it against allow rules. That held for every prefix form. So the app makes the permission call itself, by mirroring Jacob's rules against the **original** command:
 
-**Verify in the spike:** Claude Code checks permission rules against the rewritten command. Confirm whether rules like `Bash(adb:*)` still match a command that starts with `export ANDROID_SERIAL=…;`. If they don't, try a pure `ANDROID_SERIAL=… <cmd>` prefix. If neither matches and pinning would add permission prompts, stop and bring the options back to Jacob before choosing.
+- The app reads `permissions.allow`, `permissions.ask`, and `permissions.deny` from `~/.claude/settings.json`, `<cwd>/.claude/settings.json`, and `<cwd>/.claude/settings.local.json`.
+- **Allow + rewrite** when the original command would have run without a prompt. That's the case when the session's `permission_mode` is `bypassPermissions`, or when every subcommand of the original either matches an allow rule or is a read-only built-in (the set Claude Code auto-allows: `ls`, `cat`, `pwd`, `grep`, and so on), and no ask or deny rule matches.
+- **Ask + rewrite** in every other case. Jacob sees a normal prompt showing the pinned command.
+- Deny rules are still enforced by Claude Code itself, and the mirror also never returns allow when a deny rule matches.
+- In auto mode, commands Jacob's rules don't cover get an ask prompt instead of going to auto mode's check. Jacob accepted that tradeoff.
+- `cdm` rewrites are allowed outright only when the whole command consists of `cdm` invocations. Otherwise they go through the mirror.
+
+The prefix form is `export ANDROID_SERIAL=<serial>; `, the form the spike proved executes.
 
 Commands from holders with no device are never rewritten, except for `cdm` (below).
 

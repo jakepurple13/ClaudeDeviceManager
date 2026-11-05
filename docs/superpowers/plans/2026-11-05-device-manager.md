@@ -17,10 +17,10 @@
 - Every screen has a ViewModel, provided by Koin. Room 3 for persistence. Koin for all wiring; no hand-built object graphs outside `di/`.
 - The HTTP server binds `127.0.0.1` only. The default port is `47823`, and the app writes the port to `~/.claude-device-manager/port`.
 - Hooks are `type: "http"`. Never set `onFailure: "block"`. `PreToolUse` timeout is 2 s.
-- A rewrite never carries a `permissionDecision`.
+- Every rewrite carries a `permissionDecision` of `allow` or `ask`, computed by `PermissionMirror` (Task 6b) against the **original** command. Never `allow` when the mirror says otherwise. (Jacob's decision after Task 0; the spec's "Permission mirroring" section has the details.)
 - Default timers: idle 15 min, editing 5 min. A queue spot is kept for 2 min after `cdm acquire` stops waiting. `cdm acquire` waits up to 570 s. `cdm` retries an unreachable app for 30 s.
 - Holder key: `"<session_id>:<agent_id>"`, where `agent_id` defaults to `"main"`.
-- The pin prefix comes from one function, `pinPrefix(serial)`. Its starting value is `export ANDROID_SERIAL=<serial>; `. Task 0 may change it.
+- The pin prefix comes from one function, `pinPrefix(serial)`, and its value is `export ANDROID_SERIAL=<serial>; `. Task 0 confirmed this form executes.
 - Package root: `com.jacobrein.cdm`. Gradle module: `composeApp`. Source: `composeApp/src/jvmMain/kotlin/com/jacobrein/cdm/`. Tests: `composeApp/src/jvmTest/kotlin/com/jacobrein/cdm/`. (Below, `…/` means those roots.)
 - Animation is required (spec, "Animation matters to Jacob"). Durations are 150–300 ms, `tween`/`spring` from Compose animation APIs. Every `LazyColumn`/`LazyRow` item uses `Modifier.animateItem()`. Conditional UI uses `AnimatedVisibility`. Swapped content uses `AnimatedContent`/`Crossfade`. Colors use `animateColorAsState`. Numbers and badges use `AnimatedContent` with a vertical slide. Animations never block input.
 - If a pinned version fails to resolve or doesn't work with the others, use the nearest compatible version and note it in the commit message.
@@ -289,7 +289,8 @@ class DeviceTracker(adb: AdbClient) { suspend fun scan(): List<TrackedDevice> }
 
 ```kotlin
 fun pinPrefix(serial: String): String            // value per Task 0 findings
-sealed interface HookReply { data object NoOpinion : HookReply; data class Rewrite(val command: String) : HookReply; data class Deny(val reason: String) : HookReply }
+sealed interface HookReply { data object NoOpinion : HookReply; data class Rewrite(val command: String, val original: String, val kind: RewriteKind) : HookReply; data class Deny(val reason: String) : HookReply }
+enum class RewriteKind { PIN, CDM }   // Task 6b's PermissionMirror turns (original, kind) into allow/ask; tests below compare only `command`
 class HookDecider(private val allocator: Allocator, private val defaultCategory: suspend (cwd: String) -> Category) {
     suspend fun onBash(holder: HolderId, cwd: String, command: String): HookReply
     fun onEdit(holder: HolderId): HookReply      // recordEdit, always NoOpinion
@@ -339,6 +340,58 @@ The `onBash` decision table follows the spec's "Bash command classification", ru
 
 ---
 
+### Task 6b: `PermissionMirror` — allow or ask for rewrites
+
+**Files:**
+- Create: `…/service/PermissionMirror.kt`, `…/service/BashRule.kt`
+- Test: `…/service/PermissionMirrorTest.kt`, `…/service/BashRuleTest.kt`
+
+**Interfaces:**
+- Consumes: `HookReply.Rewrite`/`RewriteKind` (Task 6), and the segment splitting from `CommandClassifier` (Task 2; expose `CommandClassifier.segments(command): List<String>` if it isn't public yet).
+- Produces:
+
+```kotlin
+enum class Decision { ALLOW, ASK }
+data class PermissionRules(val allow: List<BashRule>, val ask: List<BashRule>, val deny: List<BashRule>)
+sealed interface BashRule { fun matches(segment: String): Boolean
+    companion object { fun parse(rule: String): BashRule? } }   // "Bash" → all; "Bash(x)" → exact; "Bash(x:*)" → prefix x; "Bash(x *)" / any "*" → glob; non-Bash rules → null
+class PermissionMirror(private val home: Path, private val readOnlyBuiltins: Set<String> = DEFAULT_READ_ONLY) {
+    fun rulesFor(cwd: String): PermissionRules           // merges ~/.claude/settings.json, <cwd>/.claude/settings.json, <cwd>/.claude/settings.local.json; unreadable/missing files contribute nothing; cached by file mtime
+    fun decide(original: String, kind: RewriteKind, cwd: String, permissionMode: String?): Decision
+}
+```
+
+The decision, in order:
+1. Any segment matches deny → `ASK`.
+2. `permissionMode == "bypassPermissions"` → `ALLOW`.
+3. `kind == CDM` and every segment's first word is `cdm` → `ALLOW`.
+4. Any segment matches an ask rule → `ASK`.
+5. Every segment matches an allow rule or is a read-only built-in → `ALLOW`.
+6. Otherwise → `ASK`.
+
+A segment is read-only built-in when its first word is in `DEFAULT_READ_ONLY` = `cd, ls, cat, head, tail, pwd, echo, grep, rg, wc, which, file, stat, du, df, find, sort, uniq, tr, cut, date, env, printenv, true, false, test, [`. The exception is `find` with `-exec`, `-delete`, or `-ok`. Leading `VAR=value` assignments are stripped before matching, as Task 2 does.
+
+`DeviceManagerService.preToolUse` now returns `HookReplyWithDecision`: for a `Rewrite`, it calls `mirror.decide(...)`. `HookInput` gains `permissionMode: String?`.
+
+- [ ] **Step 1: Write failing tests:**
+  - `BashRuleTest`: `parse("Bash(adb:*)")` matches `"adb shell ls"` and `"adb"`, but not `"adbx"`. `parse("Bash(adb devices)")` matches exactly that. `parse("Bash(./gradlew *)")` matches `"./gradlew installDebug"`. `parse("Bash")` matches anything. `parse("Read(**)")` is null.
+  - `allowRuleMatchesOriginal`: user settings allow `Bash(adb:*)` → `decide("adb shell ls", PIN, cwd, "default") == ALLOW`.
+  - `unmatchedAsks`: no rules → `decide("./run_tests.sh", PIN, …) == ASK`.
+  - `compoundNeedsAllSegments`: allow `Bash(adb:*)` → `decide("rm -rf build && adb install a.apk", PIN, …) == ASK`; `decide("cd app && adb install a.apk", PIN, …) == ALLOW` (`cd` is read-only).
+  - `readOnlyBuiltinsAllowed`: `decide("ls -la | grep foo", PIN, …) == ALLOW`; `decide("find . -delete", PIN, …) == ASK`.
+  - `denyWins`: allow `Bash(adb:*)` + deny `Bash(adb uninstall:*)` → `decide("adb uninstall com.x", PIN, …) == ASK`.
+  - `askRuleWins`: allow `Bash(adb:*)` + ask `Bash(adb shell rm:*)` → `ASK`.
+  - `bypassMode`: no rules, mode `bypassPermissions` → `ALLOW`.
+  - `cdmOnlyAllowed`: `decide("cdm acquire --category watch", CDM, …) == ALLOW`; `decide("cdm release && rm x", CDM, …) == ASK`.
+  - `projectAndLocalSettingsMerged`: allow rule only in `<cwd>/.claude/settings.local.json` → `ALLOW`.
+  - `unreadableSettingsIgnored`: a malformed `~/.claude/settings.json` → no exception; the decision falls back to the other files.
+- [ ] **Step 2:** Run `./gradlew :composeApp:jvmTest --tests '*PermissionMirrorTest*' --tests '*BashRuleTest*'`. Expected: FAIL.
+- [ ] **Step 3:** Implement. Wire it into `DeviceManagerService` and register it as `single` in Koin with `home = Path(System.getProperty("user.home"))`.
+- [ ] **Step 4:** Run `./gradlew :composeApp:jvmTest`. Expected: PASS.
+- [ ] **Step 5: Commit** `feat: mirror user permission rules for rewritten commands`.
+
+---
+
 ### Task 7: HTTP server and the `cdm` CLI
 
 **Files:**
@@ -351,7 +404,7 @@ The `onBash` decision table follows the spec's "Bash command classification", ru
 - `POST /hooks/pre-tool-use`, `POST /hooks/subagent-stop`, `POST /hooks/session-end` take the raw hook JSON and always answer 200.
   - `NoOpinion` → `{}`
   - `Deny(r)` → `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":r}}`
-  - `Rewrite(c)` → `{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":<original tool_input with command = c>}}`
+  - `Rewrite(c)` with decision `d` → `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"|"ask","permissionDecisionReason":"Pinned to <device> by Claude Device Manager","updatedInput":<original tool_input with command = c>}}`
 - `POST /cdm/acquire?holder=&cwd=&category=&timeoutSec=570` streams `text/plain` lines: `QUEUED <n>` on each position change, then one of `GRANTED <serial> <name>`, `TIMEOUT <n>`, or `BLOCKED`.
 - `POST /cdm/release?holder=` → `RELEASED` or `NONE`. `GET /cdm/status?holder=` → one line: `HOLDING <serial> <name>`, `QUEUED <n>`, `BLOCKED`, or `NONE`.
 - The `cdm` script: subcommands `acquire [--category c]`, `release`, `status`. It requires the `--holder`/`--cwd` that the hook injects, and prints a clear message if they're missing: "cdm must be run through Claude Code's Bash tool". It reads the port file and maps the server lines to human messages, copying the spec's text for each case. It retries connection failures for 30 s. If the app is still unreachable, it prints `Device Manager not running; proceeding without a device lock.` and exits 0.
@@ -359,7 +412,7 @@ The `onBash` decision table follows the spec's "Bash command classification", ru
 - [ ] **Step 1: Write failing tests:**
   - **Review Focus 4** `malformedHookBodyIsEmptyObject`: bodies `""`, `"not json"`, `{"hook_event_name":"PreToolUse","tool_name":"Bash"}` (no command), and `{"hook_event_name":"Weird"}` → 200 with `{}`.
   - `denyShape`: a decider stubbed to `Deny("x")` → JSON with `permissionDecision == "deny"` and reason `"x"`.
-  - `rewriteKeepsOtherToolInputFields`: input `tool_input = {"command":"adb shell ls","description":"d","timeout":5000}` and a `Rewrite` → `updatedInput` keeps `description` and `timeout`. The response has **no** `permissionDecision` key.
+  - `rewriteKeepsOtherToolInputFields`: input `tool_input = {"command":"adb shell ls","description":"d","timeout":5000}` and a `Rewrite` → `updatedInput` keeps `description` and `timeout`, and `permissionDecision` equals the mirror's decision. Test both `ALLOW` → `"allow"` and `ASK` → `"ask"` with a stubbed mirror.
   - `subagentIdentityFromAgentId`: `agent_id = "agent-1"` → the decider receives `HolderId(session, "agent-1")`; absent → `"main"`.
   - `acquireStreamsQueuedThenGranted`: h2 holds W; h1 acquires watch with `timeoutSec=5`; the test releases h2 → the response lines are `QUEUED 1`, then `GRANTED <W serial> <W name>`.
   - `acquireTimesOut`: `timeoutSec=1` → the last line is `TIMEOUT 1`.
@@ -532,5 +585,6 @@ No new product code, unless this check finds a bug. Fix any bug through the owni
 - [ ] **Step 3:** Start session B: the same request. Expected: B's `cdm acquire` pauses, and Queue shows B at position 1 with "why it's waiting" naming A.
 - [ ] **Step 4:** In the app, Release A's device. Expected: B's acquire returns `GRANTED`, and A's next `adb` command is denied with the "released from Device Manager" message.
 - [ ] **Step 5:** In session B, have a subagent run `cdm acquire --category phone`. Expected: the subagent appears as its own holder, queued behind or blocked by B's main agent, not sharing the device.
+- [ ] **Step 5b:** In session A, while it holds the device, run `./gradlew --version`, which is not in your allow rules. Expected: a permission prompt that shows the `export ANDROID_SERIAL=…;` prefix. Then run `adb shell ls`, which is allowed by `Bash(adb:*)` if you have that rule. Expected: no prompt.
 - [ ] **Step 6:** Quit the app, then run `adb devices` in a session. Expected: the command runs normally with no hook error that blocks it.
 - [ ] **Step 7:** Record the results in `docs/superpowers/spikes/2026-11-05-hook-findings.md` under "E2E", then commit `docs: record end-to-end verification`.
