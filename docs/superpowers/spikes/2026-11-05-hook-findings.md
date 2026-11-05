@@ -75,3 +75,26 @@ Conclusions:
 - Hook response `{}` is fine for all events.
 - `--max-turns` is not a listed flag in this CLI; runs were bounded by task size (each ~US$0.001-0.01, haiku).
 - `--setting-sources project,local` plus `--settings` isolated the experiment from `~/.claude/settings.json`.
+
+## E2E (Task 12)
+
+Run on 2026-11-05 with the real `~/.claude` config and a real phone (S6003L, adb serial MBX6P240401889). The app ran via `./gradlew :composeApp:run`. Sessions ran as `claude -p --model haiku --output-format stream-json` from throwaway project dirs. Each dir's `.claude/settings.local.json` allowed only `Bash(adb:*)` and `Bash(cdm:*)`. Times below are epoch seconds from the transcripts.
+
+| Step | Result | Evidence |
+|---|---|---|
+| 1. Auto-install on startup | PASS | Port file showed 47823. `/cdm/ping` returned `cdm-ok`. `settings.json` had 4 entries with `statusMessage` `claude-device-manager`: PreToolUse `Bash` and PreToolUse `Edit\|Write\|MultiEdit\|NotebookEdit` (timeout 2), plus SubagentStop and SessionEnd (timeout 5). `~/.local/bin/cdm` was `-rwxr-xr-x`. `~/.claude/CLAUDE.md` was created with the `<!-- cdm:start/end -->` block. A backup file `settings.json.cdm-backup-20261105-160255` existed. |
+| 2. Session A acquires and is pinned | PASS | `cdm acquire` printed "Got S6003L (MBX6P240401889)". `adb shell getprop ro.product.model` printed `S6003L`. `printenv ANDROID_SERIAL` printed `MBX6P240401889`, which proves the rewrite ran. The app title bar showed "1 in use · 1 waiting". The Devices list showed "S6003L phone · projA #bd78" with Queue badge 1. |
+| 3. Session B queues behind A | PASS | B's acquire started at 847.4 and printed "Waiting for a phone device… position 1". A's `cdm release` ran at 879.3. B was granted at 879.3: "Got S6003L". The activity log shows `released bd78…:main (SELF_RELEASE)` and `granted 6c3e…:main` in the same ms. |
+| 4. A subagent is its own holder | PASS | Session C's main agent acquired the phone, then spawned a general-purpose subagent. The subagent's `cdm status` printed "No device held and not queued", so it did not share main's hold. Its `cdm acquire` queued as `c6740ffe…:a37cbbee77354b46e` at position 1, behind `c6740ffe…:main`. Main was released via `POST /cdm/release?holder=<session>:main`, standing in for main releasing. The subagent was granted in the same ms, then ran getprop (`S6003L`) and `cdm release` (SELF_RELEASE). |
+| 5. User release from the app | SKIPPED | Release is UI-only, with no HTTP route, and synthetic clicks are blocked. Unit tests cover it. |
+| 6. Permission mirror while holding | PASS | `printf hi \| wc -c` and `python3 -c "print(42)"` were both denied. In `permission_denials` they appear as `export ANDROID_SERIAL=MBX6P240401889; …`, so the mirror returned ask and `-p` denied them. `adb shell ls /sdcard \| head -1` ran and printed `Alarms`. |
+| 7. SIGTERM exit uninstalls | PASS | After `pkill -TERM`, cleanup finished within 1 s. No cdm hook entries remained. `cdm`, `CLAUDE.md`, and the port file were gone. `settings.json` sha1 was `ec8f3f8c…`, byte-identical to the pre-test copy. Port 47823 was free. Gradle exit 143 is the expected SIGTERM code. |
+| 8. App down | PASS | A fresh session ran `adb devices` normally, with no hook error and no denials. |
+| 9. Cmd+Q | PARTIAL | The app restarted and installed again, adding a second backup. macOS blocked the keystroke: "osascript is not allowed to send keystrokes (1002)". `tell application "java" to quit` did not reach the JVM. The fallback SIGTERM uninstalled cleanly again, and `settings.json` was byte-identical. |
+
+Findings:
+- In `-p` mode, an ask from the mirror reaches Claude only as the hook reason "Pinned to <serial> by Claude Device Manager". Nothing in that text says permission is needed, and Session A's agent read it as "blocked". Interactive sessions show a normal prompt, so this is UX only.
+- `PermissionMirror.DEFAULT_READ_ONLY` is narrower than Claude Code's read-only set. With the app down, `printf hi | wc -c` ran with no prompt. While holding a device, it became an ask. This errs safe (an extra prompt, never an extra allow).
+- The Claude Code harness blocks a standalone `sleep N` ("Blocked: standalone sleep"). `adb shell sleep 40` was used to hold the device instead.
+- SessionEnd released a hold that was never released explicitly: `released 06a6…:main (SESSION_END)`.
+- Backups `settings.json.cdm-backup-*` stay in `~/.claude` after exit, by design (pruned to 5). Both are byte-identical to the original.
