@@ -137,4 +137,23 @@ class AllocatorQueueTest {
             events,
         )
     }
+
+    @Test fun offlineDeviceNotGranted() {
+        val a = alloc()
+        val off = w.copy(connectedSerials = emptyList())
+        a.setDevices(listOf(p, off))
+        assertEquals(GrabResult.NoneFree, a.tryGrab(h1, watch))
+        assertEquals(GrabResult.NoneFree, a.tryGrab(h1, watch, specific = w.key))
+        a.enqueue(h2, watch)
+        a.setDevices(listOf(p, off))
+        assertEquals(HolderStatus.Queued(1, watch), a.statusOf(h2))
+    }
+
+    @Test fun deviceComingOnlineGrantsQueued() {
+        val a = alloc()
+        a.setDevices(listOf(p, w.copy(connectedSerials = emptyList())))
+        a.enqueue(h2, watch)
+        a.setDevices(listOf(p, w))
+        assertIs<HolderStatus.Holding>(a.statusOf(h2))
+    }
 }

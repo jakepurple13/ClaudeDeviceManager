@@ -49,9 +49,10 @@ class Allocator(
             val d = devices.firstOrNull { it.key == specific } ?: return GrabResult.NoneFree
             if (d.dontUse) return GrabResult.DontUse
             holds[d.key]?.let { return GrabResult.HeldByOther(d, it) }
+            if (d.connectedSerials.isEmpty()) return GrabResult.NoneFree
             return grant(holder, d)
         }
-        val free = devices.firstOrNull { !it.dontUse && it.key !in holds && fits(wants, it) }
+        val free = devices.firstOrNull { !it.dontUse && it.connectedSerials.isNotEmpty() && it.key !in holds && fits(wants, it) }
         return if (free != null) grant(holder, free) else GrabResult.NoneFree
     }
 
@@ -165,7 +166,7 @@ class Allocator(
     private fun passToQueue(device: DeviceKey) {
         if (device in holds) return
         val d = devices.firstOrNull { it.key == device } ?: return
-        if (d.dontUse) return
+        if (d.dontUse || d.connectedSerials.isEmpty()) return
         val next = queue.firstOrNull { it !in blockedHolders && fits(queueWants[it].orEmpty(), d) } ?: return
         grant(next, d)
     }
