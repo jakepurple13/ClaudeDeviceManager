@@ -3,12 +3,17 @@ package com.jacobrein.cdm.core.allocator
 import com.jacobrein.cdm.core.model.Category
 import com.jacobrein.cdm.core.model.DeviceKey
 import com.jacobrein.cdm.core.model.HolderId
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
+
+data class Timers(val idle: Duration = 15.minutes, val editing: Duration = 5.minutes, val queueGrace: Duration = 2.minutes)
 
 /** Not thread-safe: the service wraps it in a Mutex. */
 class Allocator(
     private val clock: () -> Instant,
     blocked: Set<HolderId> = emptySet(),
+    private val timers: () -> Timers = { Timers() },
     private val onEvent: (AllocatorEvent) -> Unit = {},
 ) {
     private var devices: List<AllocDevice> = emptyList()
@@ -17,6 +22,9 @@ class Allocator(
     private val queue = ArrayList<HolderId>()
     private val queueWants = HashMap<HolderId, Set<Category>>()
     private val blockedHolders = LinkedHashSet(blocked)
+
+    /** When a queued holder's waiter detached. Absent means attached (or never detached). */
+    private val detachedAt = HashMap<HolderId, Instant>()
 
     /** Holding and Released only; Queued and Blocked are derived. */
     private val statuses = HashMap<HolderId, HolderStatus>()
@@ -85,7 +93,7 @@ class Allocator(
         passToQueue(device)
     }
 
-    /** No-op if [to] is blocked or already holds another device, or the device is don't-use. */
+    /** No-op if [to] is blocked or already holds another device, or the device is don't-use or offline (no connected serials). */
     fun handOff(device: DeviceKey, to: HolderId) {
         val old = holds[device] ?: return
         if (old == to || to in blockedHolders || holds.containsValue(to)) return
@@ -93,6 +101,50 @@ class Allocator(
         if (d.dontUse || devices.firstOrNull { it.key == device }?.connectedSerials.isNullOrEmpty()) return
         free(device, old, ReleaseReason.USER_HANDOFF)
         grant(to, d)
+    }
+
+    fun recordDeviceActivity(holder: HolderId) = updateHolding(holder) { it.copy(lastActivity = clock(), editing = false) }
+
+    fun recordEdit(holder: HolderId) = updateHolding(holder) { it.copy(editing = true) }
+
+    fun attachWaiter(holder: HolderId) {
+        detachedAt.remove(holder)
+    }
+
+    /** Starts the queue-grace clock for a queued holder. */
+    fun detachWaiter(holder: HolderId) {
+        if (holder in queue) detachedAt[holder] = clock()
+    }
+
+    /** Expires detached queue spots, then releases holders past their idle/editing timeout. */
+    fun tick() {
+        val now = clock()
+        val t = timers()
+        detachedAt.filter { (h, at) -> now - at > t.queueGrace && h in queue }.keys.forEach { removeFromQueueInternal(it) }
+        holds.entries.toList().forEach { (device, holder) ->
+            val st = statuses[holder] as? HolderStatus.Holding ?: return@forEach
+            val limit = if (st.editing) t.editing else t.idle
+            if (now - st.lastActivity > limit) {
+                free(device, holder, if (st.editing) ReleaseReason.EDIT_TIMEOUT else ReleaseReason.IDLE_TIMEOUT)
+                passToQueue(device)
+            }
+        }
+    }
+
+    /** Only valid after an idle/edit timeout; anything else is [GrabResult.NoneFree]. */
+    fun tryRegrab(holder: HolderId): GrabResult {
+        if (holder in blockedHolders) return GrabResult.Blocked
+        val st = statuses[holder] as? HolderStatus.Released ?: return GrabResult.NoneFree
+        if (st.reason != ReleaseReason.IDLE_TIMEOUT && st.reason != ReleaseReason.EDIT_TIMEOUT) return GrabResult.NoneFree
+        val d = devices.firstOrNull { it.key == st.lastDevice } ?: return GrabResult.NoneFree
+        if (d.dontUse) return GrabResult.DontUse
+        holds[d.key]?.let { return GrabResult.HeldByOther(d, it) }
+        if (d.connectedSerials.isEmpty()) return GrabResult.NoneFree
+        return grant(holder, d)
+    }
+
+    private fun updateHolding(holder: HolderId, f: (HolderStatus.Holding) -> HolderStatus.Holding) {
+        (statuses[holder] as? HolderStatus.Holding)?.let { statuses[holder] = f(it) }
     }
 
     fun setDontUse(device: DeviceKey, dontUse: Boolean, releaseNow: Boolean) {
@@ -156,6 +208,7 @@ class Allocator(
     }
 
     private fun removeFromQueueInternal(holder: HolderId, emitEvent: Boolean = true) {
+        detachedAt.remove(holder)
         if (queue.remove(holder)) {
             queueWants.remove(holder)
             if (emitEvent) emit(AllocatorEvent.LeftQueue(clock(), holder))
