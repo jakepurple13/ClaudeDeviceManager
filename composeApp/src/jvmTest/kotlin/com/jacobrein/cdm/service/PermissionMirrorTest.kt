@@ -186,4 +186,32 @@ class PermissionMirrorTest {
         assertEquals(Decision.ALLOW, decide("printenv HOME"))
         assertAsk("printenv --help x/y")
     }
+
+    @Test fun quotedWrappersAreIneligible() {
+        settings(home, allow = listOf("Bash"), deny = listOf("Bash(rm:*)"))
+        assertAsk(
+            "\"command\" rm x", "'eval' 'rm x'", "\"bash\" -c 'rm x'", "c''ommand rm x", "'nohup' rm x",
+            "echo x | 'xargs' rm", "'sudo' rm x", "\"env\" rm x", "'time' rm x", "\"exec\" rm x",
+            "trap 'rm x' EXIT", "setsid rm x", "caffeinate rm x", "doas rm x", "watch rm x", "builtin eval x",
+        )
+    }
+
+    @Test fun redirectsAreAnchored() {
+        settings(home, allow = listOf("Bash(adb:*)"))
+        assertAsk(
+            "echo hi >&2out", "echo hi 1>&2out", "ls >/dev/nullx", "adb shell ls >&2out", "adb shell ls>/dev/null.x",
+        )
+    }
+
+    @Test fun doubleQuotesDoNotHideSingleQuoteTricks() {
+        settings(home, allow = listOf("Bash(adb:*)"))
+        assertAsk("echo \"'\" \$X \"'\"", "cat \"'\" * \"'\"", "adb \"'\" \$X \"'\"", "echo \"\$X\"", "echo 'unterminated")
+    }
+
+    @Test fun sanityAllows() {
+        settings(home, allow = listOf("Bash(adb:*)"))
+        listOf("adb shell \"ls; pwd\"", "adb logcat -d 2>&1", "ls -la >/dev/null", "grep -r foo src").forEach {
+            assertEquals(Decision.ALLOW, decide(it), it)
+        }
+    }
 }

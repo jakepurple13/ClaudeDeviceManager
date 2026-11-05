@@ -77,18 +77,40 @@ class PermissionMirror(
 
     private fun rawFirstWord(segment: String) = segment.trimStart().substringBefore(' ').substringBefore('\t')
 
-    private fun hasRedirect(segment: String) = REDIRECT.containsMatchIn(segment.replace(HARMLESS_REDIRECT, ""))
+    private fun hasRedirect(segment: String) = REDIRECT.containsMatchIn(stripHarmlessRedirects(segment))
 
-    /** True if [segment] may be auto-allowed at all: no expansion, grouping, redirect or exec-wrapper syntax. */
+    /** True if [segment] may be auto-allowed at all: plain command word, no expansion, grouping, redirect or exec-wrapper syntax. */
     private fun eligible(segment: String): Boolean {
-        val words = segment.trim().split(Regex("\\s+"))
-        val first = words.first()
-        if (ASSIGNMENT.matches(first)) return false
-        if (first in NEVER_ELIGIBLE && !(first == "env" && words.size == 1)) return false
-        var text = segment.replace(HARMLESS_REDIRECT, "").replace(SINGLE_QUOTED, "''")
+        val first = segment.trim().split(Regex("\\s+")).first()
+        val bare = segment.trim().split(Regex("\\s+")).size == 1
+        if (first != "[" && !PLAIN_WORD.matches(first)) return false
+        if (first in NEVER_ELIGIBLE && !(first == "env" && bare)) return false
+        if (first.substringAfterLast('/') in NEVER_ELIGIBLE && !(first.substringAfterLast('/') == "env" && bare)) return false
+        var text = stripHarmlessRedirects(segment)
         if (first == "[") text = text.trimStart().removePrefix("[")
-        return text.none { it in FORBIDDEN_CHARS }
+        return quoteAwareClean(text)
     }
+
+    /** Outside quotes every forbidden char applies; in single quotes none; in double quotes `$`, backtick, backslash. */
+    private fun quoteAwareClean(text: String): Boolean {
+        var q = ' '
+        for (c in text) {
+            when (q) {
+                '\'' -> if (c == '\'') q = ' '
+                '"' -> when {
+                    c == '"' -> q = ' '
+                    c == '$' || c == '`' || c == '\\' -> return false
+                }
+                else -> when {
+                    c == '\'' || c == '"' -> q = c
+                    c in FORBIDDEN_CHARS -> return false
+                }
+            }
+        }
+        return q == ' '
+    }
+
+    private fun stripHarmlessRedirects(segment: String) = segment.replace(HARMLESS_REDIRECT, " ")
 
     private fun isReadOnly(segment: String): Boolean {
         val words = CommandClassifier.unquotedWords(segment)
@@ -136,14 +158,14 @@ class PermissionMirror(
         private val NEVER_ELIGIBLE = setOf(
             "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "case", "esac", "function", "select",
             "command", "exec", "eval", "nohup", "nice", "timeout", "stdbuf", "xargs", "time", "sudo", "env",
-            "bash", "sh", "zsh", "dash", "ksh", "fish", "source", ".",
+            "bash", "sh", "zsh", "dash", "ksh", "fish", "source", ".", "trap", "setsid", "caffeinate", "doas", "watch", "builtin",
         )
         private val FORBIDDEN_CHARS = setOf('$', '\\', '`', '{', '}', '(', ')', '*', '?', '[', '!', '<', '>')
-        private val SINGLE_QUOTED = Regex("'[^']*'")
         private val VAR_NAME = Regex("^[A-Za-z_][A-Za-z0-9_]*$")
         private val SUBSTITUTION = Regex("""\$\(|`|<\(|>\(""")
         private val REDIRECT = Regex("[<>]")
-        private val HARMLESS_REDIRECT = Regex("""\d?>&\d|\d?>\s?/dev/null""")
+        private val HARMLESS_REDIRECT = Regex("""(?<=^|\s)(?:2>&1|1>&2|>&2|(?:2>|>|&>) ?/dev/null)(?=\s|$)""")
+        private val PLAIN_WORD = Regex("^[A-Za-z0-9_./+-]+$")
         private val ASSIGNMENT = Regex("""^[A-Za-z_][A-Za-z0-9_]*=.*""")
 
         fun defaultManagedSettings(): Path =
