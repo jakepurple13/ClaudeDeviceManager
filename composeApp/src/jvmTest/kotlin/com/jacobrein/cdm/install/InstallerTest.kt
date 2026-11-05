@@ -10,6 +10,7 @@ import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
@@ -213,5 +214,208 @@ class InstallerTest {
         val r = Installer(home).appendSnippet()
         assertTrue(r.isFailure)
         assertEquals("x\n<!-- cdm:start -->\nhalf\n", md.readText())
+    }
+
+    // --- Task 11b: uninstall -------------------------------------------------------------------------------------
+
+    private fun hooksOf(home: Path) = Json.parseToJsonElement(settings(home).readText()).jsonObject
+
+    @Test
+    fun uninstallRemovesOnlyOurs() {
+        val user = """{"model":"opus","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo hi"}]}],"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]},"zeta":1}"""
+        val (home, inst) = withSettings(user)
+        inst.installHooks(47823).getOrThrow()
+        assertEquals(4, cdmGroups(home).size)
+        inst.uninstallHooks().getOrThrow()
+        assertEquals(Json.parseToJsonElement(user), hooksOf(home))
+        assertEquals(listOf("model", "hooks", "zeta"), hooksOf(home).keys.toList())
+        assertTrue(!settings(home).readText().contains("claude-device-manager"))
+        assertEquals(InstallStatus.NotInstalled, inst.hookStatus(47823))
+    }
+
+    @Test
+    fun uninstallKeepsUserHookSharingOurGroup() {
+        val shared = """{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo hi"},{"type":"http","url":"http://127.0.0.1:1/hooks/pre-tool-use","statusMessage":"claude-device-manager"}]}]}}"""
+        val (home, inst) = withSettings(shared)
+        inst.uninstallHooks().getOrThrow()
+        assertEquals(
+            Json.parseToJsonElement("""{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo hi"}]}]}}"""),
+            hooksOf(home),
+        )
+    }
+
+    @Test
+    fun uninstallWhenNotInstalledIsNoop() {
+        val original = """{"model":"opus",  "hooks":{"Stop":[]}}"""
+        val (home, inst) = withSettings(original)
+        inst.uninstallHooks().getOrThrow()
+        assertEquals(original, settings(home).readText())
+        assertEquals(1, Files.list(home.resolve(".claude")).count())
+        val empty = tmpHome()
+        Installer(empty).uninstallHooks().getOrThrow()
+        assertTrue(!settings(empty).exists())
+    }
+
+    @Test
+    fun uninstallRefusesUnreadableSettings() {
+        val (home, inst) = withSettings("""{"broken":""")
+        assertTrue(inst.uninstallHooks().isFailure)
+        assertEquals("""{"broken":""", settings(home).readText())
+    }
+
+    @Test
+    fun uninstallDeletesSettingsWeCreated() {
+        val home = tmpHome()
+        val inst = Installer(home)
+        inst.installHooks(47823).getOrThrow()
+        // A crash and restart in between must not forget that we created the file.
+        Installer(home).installHooks(47823).getOrThrow()
+        Installer(home).uninstallHooks().getOrThrow()
+        assertTrue(!settings(home).exists())
+    }
+
+    @Test
+    fun uninstallKeepsCreatedSettingsTheUserAddedTo() {
+        val home = tmpHome()
+        val inst = Installer(home)
+        inst.installHooks(47823).getOrThrow()
+        val root = hooksOf(home)
+        settings(home).writeText(JsonObject(root + ("model" to Json.parseToJsonElement("\"opus\""))).toString())
+        inst.uninstallHooks().getOrThrow()
+        assertEquals(Json.parseToJsonElement("""{"model":"opus"}"""), hooksOf(home))
+    }
+
+    @Test
+    fun uninstallKeepsPreExistingEmptySettings() {
+        val (home, inst) = withSettings("{}")
+        inst.installHooks(47823).getOrThrow()
+        inst.uninstallHooks().getOrThrow()
+        assertTrue(settings(home).exists())
+        assertEquals(Json.parseToJsonElement("{}"), hooksOf(home))
+    }
+
+    @Test
+    fun removeSnippetRestoresOriginalClaudeMd() {
+        for (original in listOf("# Mine\nkeep me\n", "no newline", "blank after\n\n", "\n", "")) {
+            val home = tmpHome()
+            val md = home.resolve(".claude/CLAUDE.md")
+            md.parent.createDirectories()
+            md.writeText(original)
+            val inst = Installer(home)
+            inst.appendSnippet().getOrThrow()
+            assertTrue(md.readText().contains("cdm:start"))
+            inst.removeSnippet().getOrThrow()
+            assertTrue(md.exists(), "a file that existed before stays: ${original.length}")
+            assertEquals(original, md.readText())
+        }
+    }
+
+    @Test
+    fun removeSnippetDeletesClaudeMdWeCreated() {
+        val home = tmpHome()
+        val md = home.resolve(".claude/CLAUDE.md")
+        val inst = Installer(home)
+        inst.appendSnippet().getOrThrow()
+        inst.appendSnippet().getOrThrow()
+        inst.removeSnippet().getOrThrow()
+        assertTrue(!md.exists())
+    }
+
+    @Test
+    fun removeSnippetKeepsCreatedClaudeMdTheUserAddedTo() {
+        val home = tmpHome()
+        val md = home.resolve(".claude/CLAUDE.md")
+        val inst = Installer(home)
+        inst.appendSnippet().getOrThrow()
+        md.writeText("mine\n" + md.readText())
+        inst.removeSnippet().getOrThrow()
+        assertEquals("mine\n", md.readText())
+    }
+
+    @Test
+    fun removeSnippetMidFileDropsOneBlankLine() {
+        val home = tmpHome()
+        val md = home.resolve(".claude/CLAUDE.md")
+        md.parent.createDirectories()
+        md.writeText("top\n\n<!-- cdm:start -->\nOLD\n<!-- cdm:end -->\n\nbottom\n")
+        Installer(home).removeSnippet().getOrThrow()
+        assertEquals("top\n\nbottom\n", md.readText())
+    }
+
+    @Test
+    fun removeSnippetNoopWhenAbsent() {
+        val home = tmpHome()
+        val md = home.resolve(".claude/CLAUDE.md")
+        Installer(home).removeSnippet().getOrThrow()
+        assertTrue(!md.exists())
+        md.parent.createDirectories()
+        md.writeText("plain\n")
+        Installer(home).removeSnippet().getOrThrow()
+        assertEquals("plain\n", md.readText())
+    }
+
+    @Test
+    fun uninstallCdmOnlyDeletesOurScript() {
+        val home = tmpHome()
+        val inst = Installer(home)
+        val ours = inst.installCdm()
+        assertTrue(inst.cdmInstalled())
+        inst.uninstallCdm()
+        assertTrue(!ours.exists())
+        assertTrue(!inst.cdmInstalled())
+        // A foreign cdm is kept, both at uninstall and at install.
+        ours.writeText("#!/bin/sh\necho someone else's cdm\n")
+        inst.uninstallCdm()
+        assertEquals("#!/bin/sh\necho someone else's cdm\n", ours.readText())
+        assertFailsWith<IllegalStateException> { inst.installCdm() }
+        assertEquals("#!/bin/sh\necho someone else's cdm\n", ours.readText())
+        inst.uninstallCdm() // missing file: no-op
+    }
+
+    @Test
+    fun installCdmReplacesAnOlderCopyOfOurs() {
+        val home = tmpHome()
+        val inst = Installer(home)
+        val p = inst.installCdm()
+        p.writeText(p.readText() + "\n# older build\n")
+        assertTrue(!inst.cdmInstalled())
+        inst.installCdm()
+        assertTrue(inst.cdmInstalled())
+    }
+
+    @Test
+    fun pruneKeepsNewestFive() {
+        val home = tmpHome()
+        val dir = home.resolve(".claude").createDirectories()
+        val names = listOf(
+            "20261101-090000", "20261102-090000", "20261103-090000", "20261105-120000",
+            "20261105-120000-1", "20261105-120000-2", "20261105-120000-10", "20261104-090000",
+        ).map { "settings.json.cdm-backup-$it" }
+        names.forEach { dir.resolve(it).writeText("{}") }
+        dir.resolve("settings.json").writeText("{}")
+        dir.resolve("settings.json.cdm-backup-junk").writeText("{}")
+        Installer(home).pruneBackups()
+        val left = Files.list(dir).map { it.fileName.toString() }.toList().toSet()
+        assertEquals(
+            setOf(
+                "settings.json", "settings.json.cdm-backup-junk",
+                "settings.json.cdm-backup-20261104-090000", "settings.json.cdm-backup-20261105-120000",
+                "settings.json.cdm-backup-20261105-120000-1", "settings.json.cdm-backup-20261105-120000-2",
+                "settings.json.cdm-backup-20261105-120000-10",
+            ),
+            left,
+        )
+        Installer(home).pruneBackups(keep = 2)
+        assertTrue(dir.resolve("settings.json.cdm-backup-20261105-120000-10").exists())
+        assertTrue(dir.resolve("settings.json.cdm-backup-20261105-120000-2").exists())
+        assertTrue(!dir.resolve("settings.json.cdm-backup-20261105-120000-1").exists())
+        Installer(tmpHome()).pruneBackups() // no .claude dir: no-op
+    }
+
+    @Test
+    fun installStateLivesUnderHome() {
+        val home = tmpHome()
+        Installer(home).installHooks(47823).getOrThrow()
+        assertTrue(home.resolve(".claude-device-manager/install-state.json").exists())
     }
 }

@@ -1,6 +1,7 @@
 package com.jacobrein.cdm.install
 
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermissions
@@ -28,10 +29,16 @@ sealed interface InstallStatus {
     data object SettingsUnreadable : InstallStatus
 }
 
-/** Installs hooks, the cdm script and the CLAUDE.md snippet under an explicit [home]. */
+/**
+ * Installs and removes hooks, the cdm script and the CLAUDE.md snippet under an explicit [home]. Whether we created
+ * settings.json / CLAUDE.md ourselves is kept in `~/.claude-device-manager/install-state.json`, so removal can delete
+ * a file only we ever wrote to, even across a crash and restart.
+ */
 class Installer(private val home: Path) {
     private val settingsPath get() = home.resolve(".claude/settings.json")
     private val claudeMdPath get() = home.resolve(".claude/CLAUDE.md")
+    private val cdmPath get() = home.resolve(".local/bin/cdm")
+    private val statePath get() = home.resolve(".claude-device-manager/install-state.json")
     private val json = Json { prettyPrint = true; prettyPrintIndent = "  " }
 
     private data class Spec(val event: String, val matcher: String?, val path: String, val timeout: Int)
@@ -70,6 +77,25 @@ class Installer(private val home: Path) {
         return JsonObject(LinkedHashMap(g).apply { put("hooks", JsonArray(ours)) })
     }
 
+    /** [hooks] without our entries: groups left empty by that go, and so do events left empty by that. */
+    private fun stripOurs(hooks: Map<String, JsonArray>): Map<String, JsonArray> {
+        val out = LinkedHashMap<String, JsonArray>()
+        hooks.forEach { (event, groups) ->
+            var changed = false
+            val kept = groups.mapNotNull { g ->
+                val obj = g as? JsonObject
+                val arr = obj?.get("hooks") as? JsonArray
+                if (obj == null || arr == null || arr.none(::isOurHook)) return@mapNotNull g
+                changed = true
+                val rest = arr.filterNot(::isOurHook)
+                if (rest.isEmpty()) null
+                else JsonObject(LinkedHashMap(obj).apply { put("hooks", JsonArray(rest)) })
+            }
+            if (!(changed && kept.isEmpty())) out[event] = JsonArray(kept)
+        }
+        return out
+    }
+
     fun hookStatus(port: Int): InstallStatus {
         val root = readRoot().getOrElse { return InstallStatus.SettingsUnreadable }
         val found = strictHooks(root).flatMap { (event, groups) ->
@@ -100,26 +126,14 @@ class Installer(private val home: Path) {
     fun installHooks(port: Int): Result<Path> = runCatching {
         val root = readRoot().getOrThrow()
         val existed = settingsPath.exists()
-        val newHooks = LinkedHashMap<String, JsonElement>()
-        strictHooks(root).forEach { (event, groups) ->
-            var changed = false
-            val kept = groups.mapNotNull { g ->
-                val obj = g as? JsonObject
-                val arr = obj?.get("hooks") as? JsonArray
-                if (obj == null || arr == null || arr.none(::isOurHook)) return@mapNotNull g
-                changed = true
-                val rest = arr.filterNot(::isOurHook)
-                if (rest.isEmpty()) null
-                else JsonObject(LinkedHashMap(obj).apply { put("hooks", JsonArray(rest)) })
-            }
-            if (!(changed && kept.isEmpty())) newHooks[event] = JsonArray(kept)
-        }
+        val newHooks = LinkedHashMap<String, JsonElement>(stripOurs(strictHooks(root)))
         specs.forEach { s ->
             val cur = (newHooks[s.event] as? JsonArray).orEmpty()
             newHooks[s.event] = JsonArray(cur + buildGroup(s, port))
         }
         val newRoot = LinkedHashMap(root).apply { put("hooks", JsonObject(newHooks)) }
         settingsPath.parent.createDirectories()
+        if (!existed) setCreated(SETTINGS_CREATED, true)
         val backup = if (existed) {
             val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
             var n = 0
@@ -133,13 +147,64 @@ class Installer(private val home: Path) {
         backup
     }
 
+    /**
+     * Removes only our marked hook entries (and the groups and events that leaves empty, and a "hooks" object left
+     * empty). No backup is restored, so other edits made meanwhile survive. A settings.json we created that ends up
+     * `{}` is deleted. No-op (file untouched) when none of our entries are there.
+     */
+    fun uninstallHooks(): Result<Unit> = runCatching {
+        if (!settingsPath.exists()) return@runCatching
+        val root = readRoot().getOrThrow()
+        val hooks = strictHooks(root)
+        if (hooks.values.none { groups -> groups.any { ourPart(it) != null } }) return@runCatching
+        val newHooks = stripOurs(hooks)
+        val newRoot = LinkedHashMap(root).apply {
+            if (newHooks.isEmpty()) remove("hooks") else put("hooks", JsonObject(newHooks))
+        }
+        if (newRoot.isEmpty() && isCreated(SETTINGS_CREATED)) Files.delete(settingsPath)
+        else atomicWrite(settingsPath, json.encodeToString(JsonObject.serializer(), JsonObject(newRoot)) + "\n")
+        setCreated(SETTINGS_CREATED, false)
+    }
+
+    private fun bundledCdm(): ByteArray =
+        (Installer::class.java.getResourceAsStream("/cdm") ?: error("cdm resource missing")).use { it.readAllBytes() }
+
+    /** ~/.local/bin/cdm is a regular file with exactly the bundled script's bytes. */
+    fun cdmInstalled(): Boolean =
+        Files.isRegularFile(cdmPath, LinkOption.NOFOLLOW_LINKS) && Files.readAllBytes(cdmPath).contentEquals(bundledCdm())
+
+    /** Copies the script to ~/.local/bin/cdm. Refuses to replace a `cdm` that isn't some version of ours. */
     fun installCdm(): Path {
-        val target = home.resolve(".local/bin/cdm")
+        val target = cdmPath
         target.parent.createDirectories()
-        val stream = Installer::class.java.getResourceAsStream("/cdm") ?: error("cdm resource missing")
-        stream.use { Files.copy(it, target, StandardCopyOption.REPLACE_EXISTING) }
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            val ours = Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) &&
+                CDM_SIGNATURE in String(Files.readAllBytes(target), Charsets.UTF_8)
+            check(ours) { "$target exists and isn't Claude Device Manager's cdm; move it away, then Repair." }
+        }
+        val bytes = bundledCdm()
+        if (!cdmInstalled()) Files.write(target, bytes)
         Files.setPosixFilePermissions(target, PosixFilePermissions.fromString("rwxr-xr-x"))
         return target
+    }
+
+    /** Deletes ~/.local/bin/cdm only if it is our script, byte for byte. */
+    fun uninstallCdm() {
+        if (cdmInstalled()) Files.deleteIfExists(cdmPath)
+    }
+
+    /** Keeps the newest [keep] `settings.json.cdm-backup-*` files (by their timestamp and counter). */
+    fun pruneBackups(keep: Int = 5) {
+        val dir = settingsPath.parent
+        if (!Files.isDirectory(dir)) return
+        val backups = Files.list(dir).use { files ->
+            files.toList().mapNotNull { p -> BACKUP_RE.matchEntire(p.fileName.toString())?.let { m ->
+                Triple(p, m.groupValues[1], m.groupValues[2].ifEmpty { "0" }.toLong())
+            } }
+        }
+        backups.sortedWith(compareByDescending<Triple<Path, String, Long>> { it.second }.thenByDescending { it.third })
+            .drop(keep.coerceAtLeast(0))
+            .forEach { Files.deleteIfExists(it.first) }
     }
 
     fun localBinOnPath(pathEnv: String = System.getenv("PATH") ?: ""): Boolean {
@@ -161,16 +226,59 @@ class Installer(private val home: Path) {
         val updated = if (s >= 0 && e >= 0) {
             existing.substring(0, s) + block + existing.substring(e + END.length)
         } else {
-            val sep = when {
-                existing.isEmpty() -> ""
-                existing.endsWith("\n\n") -> ""
-                existing.endsWith("\n") -> "\n"
-                else -> "\n\n"
-            }
-            existing + sep + block + "\n"
+            // Always exactly "\n\n" before the block, so removeSnippet can restore the file byte for byte.
+            existing + (if (existing.isEmpty()) "" else "\n\n") + block + "\n"
         }
         claudeMdPath.parent.createDirectories()
+        if (!claudeMdPath.exists()) setCreated(CLAUDE_MD_CREATED, true)
         atomicWrite(claudeMdPath, updated)
+    }
+
+    /** CLAUDE.md holds a complete cdm block. */
+    fun snippetInstalled(): Boolean {
+        if (!claudeMdPath.exists()) return false
+        val text = claudeMdPath.readText()
+        val s = text.indexOf(START)
+        return s >= 0 && text.indexOf(END, s) >= 0
+    }
+
+    /**
+     * Removes the cdm block and its line break. At the end of the file it also drops the "\n\n" appendSnippet put
+     * before it, restoring the exact earlier bytes; in mid-file it drops one of the blank lines around it. A CLAUDE.md
+     * we created that ends up empty is deleted. No-op if there is no block.
+     */
+    fun removeSnippet(): Result<Unit> = runCatching {
+        if (!claudeMdPath.exists()) return@runCatching
+        val text = claudeMdPath.readText()
+        val s = text.indexOf(START)
+        if (s < 0) return@runCatching
+        val e = text.indexOf(END, s)
+        if (e < 0) error("CLAUDE.md has a \"$START\" marker without \"$END\"; fix it by hand")
+        var end = e + END.length
+        if (text.startsWith("\n", end)) end++
+        var before = text.substring(0, s)
+        var after = text.substring(end)
+        if (after.isEmpty()) {
+            if (before.endsWith("\n\n")) before = before.dropLast(2)
+        } else if (before.endsWith("\n\n") && after.startsWith("\n")) {
+            after = after.drop(1)
+        }
+        val updated = before + after
+        if (updated.isEmpty() && isCreated(CLAUDE_MD_CREATED)) Files.delete(claudeMdPath)
+        else atomicWrite(claudeMdPath, updated)
+        setCreated(CLAUDE_MD_CREATED, false)
+    }
+
+    private fun readState(): JsonObject =
+        runCatching { Json.parseToJsonElement(statePath.readText()).jsonObject }.getOrDefault(JsonObject(emptyMap()))
+
+    private fun isCreated(key: String): Boolean = (readState()[key] as? JsonPrimitive)?.content == "true"
+
+    private fun setCreated(key: String, value: Boolean) {
+        val cur = readState()
+        if (isCreated(key) == value && statePath.exists()) return
+        statePath.parent.createDirectories()
+        atomicWrite(statePath, JsonObject(LinkedHashMap(cur).apply { put(key, JsonPrimitive(value)) }).toString() + "\n")
     }
 
     private fun atomicWrite(requested: Path, text: String) {
@@ -192,5 +300,9 @@ class Installer(private val home: Path) {
         const val START = "<!-- cdm:start -->"
         const val END = "<!-- cdm:end -->"
         val PORT_RE = Regex("""127\.0\.0\.1:(\d+)""")
+        val BACKUP_RE = Regex("""settings\.json\.cdm-backup-(\d{8}-\d{6})(?:-(\d+))?""")
+        const val CDM_SIGNATURE = "cdm: Claude Device Manager CLI"
+        const val SETTINGS_CREATED = "settingsCreated"
+        const val CLAUDE_MD_CREATED = "claudeMdCreated"
     }
 }

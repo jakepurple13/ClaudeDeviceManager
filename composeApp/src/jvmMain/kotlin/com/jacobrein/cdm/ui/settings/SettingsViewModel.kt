@@ -4,8 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jacobrein.cdm.data.AppSettings
 import com.jacobrein.cdm.data.SettingsRepository
-import com.jacobrein.cdm.install.InstallStatus
-import com.jacobrein.cdm.install.Installer
+import com.jacobrein.cdm.install.InstallLifecycle
+import com.jacobrein.cdm.install.IntegrationState
 import com.jacobrein.cdm.server.ServerControl
 import com.jacobrein.cdm.server.ServerStatus
 import com.jacobrein.cdm.ui.UiActions
@@ -18,7 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/** The outcome of an installer action, shown under its button. */
+/** The outcome of an action, shown under its button. */
 data class ActionResult(val ok: Boolean, val text: String)
 
 data class SettingsState(
@@ -35,14 +35,12 @@ data class SettingsState(
     /** Set when saving failed. */
     val saveResult: ActionResult? = null,
     val serverError: String? = null,
-    /** Null while being read. */
-    val hookStatus: InstallStatus? = null,
-    val hookResult: ActionResult? = null,
-    val cdmResult: ActionResult? = null,
+    /** Hooks, cdm and the CLAUDE.md snippet: installed while the app runs, removed on exit. */
+    val integration: IntegrationState = IntegrationState(),
+    val repairing: Boolean = false,
+    val repairResult: ActionResult? = null,
     val snippet: String = "",
     val copied: Boolean = false,
-    val confirmAppend: Boolean = false,
-    val appendResult: ActionResult? = null,
 ) {
     /** The fields differ from what's stored. */
     val dirty: Boolean get() = loaded && (port != "${saved.port}" || idle != "${saved.idleMinutes}" || editing != "${saved.editingMinutes}")
@@ -53,6 +51,9 @@ data class SettingsState(
 
     /** The HTTP server is up (no start failure recorded). */
     val listening: Boolean get() = serverError == null
+
+    /** Repair re-runs the startup install, which only makes sense while the server is up. */
+    val canRepair: Boolean get() = listening && !repairing && integration.port != null
 }
 
 /**
@@ -64,11 +65,11 @@ data class SettingsState(
 class SettingsViewModel(
     private val actions: UiActions,
     private val settings: SettingsRepository,
-    private val installer: Installer,
+    private val integration: InstallLifecycle,
     private val server: ServerControl,
     serverStatus: ServerStatus,
 ) : ViewModel() {
-    private val state = MutableStateFlow(SettingsState(snippet = installer.claudeMdSnippet))
+    private val state = MutableStateFlow(SettingsState(snippet = integration.snippet, integration = integration.state.value))
     val uiState: StateFlow<SettingsState> = state.asStateFlow()
     private var copiedJob: Job? = null
 
@@ -82,10 +83,12 @@ class SettingsViewModel(
                         st.copy(loaded = true, saved = s, port = "${s.port}", idle = "${s.idleMinutes}", editing = "${s.editingMinutes}", portError = null, idleError = null, editingError = null)
                     } else st.copy(saved = s)
                 }
-                if (!wasLoaded) refreshHooks()
             }
         }
         viewModelScope.launch { serverStatus.serverError.collect { e -> state.update { it.copy(serverError = e) } } }
+        viewModelScope.launch { integration.state.collect { i -> state.update { it.copy(integration = i) } } }
+        // Pick up hand edits made since the last install; off the UI thread (app scope, Dispatchers.Default + IO).
+        actions.launch { integration.refresh() }
     }
 
     fun onPortChanged(text: String) = state.update { it.copy(port = text, portError = portError(text)) }
@@ -93,7 +96,8 @@ class SettingsViewModel(
     fun onEditingChanged(text: String) = state.update { it.copy(editing = text, editingError = minutesError(text)) }
 
     /**
-     * Persists valid, changed fields; a new port also restarts the server (and leaves the hooks Outdated). While the
+     * Persists valid, changed fields; a new port also restarts the server, whose successful bind re-installs the hooks
+     * for that port (InstallLifecycle listens to the server). While the
      * server is down (a failed start), Save also retries it on the saved port even with nothing edited.
      */
     fun onSave() {
@@ -122,7 +126,6 @@ class SettingsViewModel(
                 result = ActionResult(false, "Could not save settings: ${e.message ?: e}")
             } finally {
                 state.update { it.copy(saving = false, saveResult = result) }
-                if (portChanged && result == null) refreshHooksNow(new.port)
             }
         }
     }
@@ -133,32 +136,22 @@ class SettingsViewModel(
         actions.launch { server.restart(port) }
     }
 
-    fun onInstallHooks() = actions.launch {
-        val port = settings.current().port
-        val r = installer.installHooks(port)
-        val result = r.fold(
-            { path ->
-                val where = if (path.fileName.toString() == "settings.json") "Created $path." else "Previous file backed up to $path."
-                ActionResult(true, "Hooks installed for port $port. $where")
-            },
-            { ActionResult(false, it.message ?: it.toString()) },
-        )
-        state.update { it.copy(hookResult = result) }
-        refreshHooksNow(port)
-    }
-
-    fun onInstallCdm() = actions.launch {
-        val result = try {
-            val path = installer.installCdm()
-            val hint = if (installer.localBinOnPath()) "" else
-                " ~/.local/bin isn't on your PATH: add `export PATH=\"\$HOME/.local/bin:\$PATH\"` to your shell profile."
-            ActionResult(true, "Installed $path.$hint")
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            ActionResult(false, e.message ?: e.toString())
+    /** Re-runs the startup install (hooks for the current port, cdm, snippet). */
+    fun onRepair() {
+        if (!state.value.canRepair) return
+        state.update { it.copy(repairing = true, repairResult = null) }
+        actions.launch {
+            var result: ActionResult
+            try {
+                result = if (integration.repair()) ActionResult(true, "Repaired.")
+                else ActionResult(false, "Some parts could not be installed; see above.")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                result = ActionResult(false, e.message ?: e.toString())
+            }
+            state.update { it.copy(repairing = false, repairResult = result) }
         }
-        state.update { it.copy(cdmResult = result) }
     }
 
     /** The screen has put the snippet on the clipboard; show "Copied" for a moment. */
@@ -169,34 +162,6 @@ class SettingsViewModel(
             delay(COPIED_MS)
             state.update { it.copy(copied = false) }
         }
-    }
-
-    /** Appending writes ~/.claude/CLAUDE.md, so ask first (in the page, no OS dialog). */
-    fun onAppendSnippet() = state.update { it.copy(confirmAppend = true, appendResult = null) }
-    fun onCancelAppend() = state.update { it.copy(confirmAppend = false) }
-
-    fun onConfirmAppend() {
-        if (!state.value.confirmAppend) return
-        state.update { it.copy(confirmAppend = false) }
-        actions.launch {
-            val r = installer.appendSnippet()
-            val result = r.fold(
-                { ActionResult(true, "Added to ~/.claude/CLAUDE.md.") },
-                { ActionResult(false, it.message ?: it.toString()) },
-            )
-            state.update { it.copy(appendResult = result) }
-        }
-    }
-
-    /** Off the UI thread: the app scope runs on Dispatchers.Default. */
-    private fun refreshHooks() {
-        val port = state.value.saved.port
-        actions.launch { refreshHooksNow(port) }
-    }
-
-    private suspend fun refreshHooksNow(port: Int) {
-        val s = installer.hookStatus(port)
-        state.update { it.copy(hookStatus = s) }
     }
 
     private companion object {

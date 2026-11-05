@@ -20,6 +20,11 @@ interface ServerControl {
     suspend fun restart(port: Int)
 }
 
+/** Told after every successful bind (startup, Retry, port change); the install lifecycle listens. */
+fun interface ServerListener {
+    suspend fun onListening(port: Int)
+}
+
 /**
  * Owns the one [CdmServer]: Main starts it, Settings restarts it on a new port. Every start rewrites the port
  * file (CdmServer does that); a failed start leaves no port file and puts the reason in [ServerStatus].
@@ -28,18 +33,30 @@ class ServerController(
     private val manager: DeviceManager,
     private val status: ServerStatus,
     private val portFile: Path = defaultPortFile(),
+    private val listener: ServerListener = ServerListener {},
 ) : ServerControl {
     private val mutex = Mutex()
 
     @Volatile private var server: CdmServer? = null
 
     /** Returns true when the server is listening on [port]. */
-    suspend fun start(port: Int): Boolean = mutex.withLock { startLocked(port) }
+    suspend fun start(port: Int): Boolean = mutex.withLock { startLocked(port).also { if (it) notifyLocked(port) } }
 
     override suspend fun restart(port: Int) {
         mutex.withLock {
             stopLocked()
-            startLocked(port)
+            if (startLocked(port)) notifyLocked(port)
+        }
+    }
+
+    /** Under the mutex, so installs happen in the order of the binds. A listener failure never fails the start. */
+    private suspend fun notifyLocked(port: Int) {
+        try {
+            listener.onListening(port)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            System.err.println("cdm: after start on port $port: $e")
         }
     }
 

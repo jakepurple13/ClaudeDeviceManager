@@ -10,9 +10,11 @@ import com.jacobrein.cdm.data.fileDatabase
 import com.jacobrein.cdm.devices.AdbClient
 import com.jacobrein.cdm.devices.DeviceTracker
 import com.jacobrein.cdm.devices.ProcessAdbClient
+import com.jacobrein.cdm.install.InstallLifecycle
 import com.jacobrein.cdm.install.Installer
 import com.jacobrein.cdm.server.ServerControl
 import com.jacobrein.cdm.server.ServerController
+import com.jacobrein.cdm.server.ServerListener
 import com.jacobrein.cdm.server.ServerStatus
 import com.jacobrein.cdm.service.DeviceManager
 import com.jacobrein.cdm.service.DeviceManagerService
@@ -63,8 +65,9 @@ fun appModules(): List<Module> = listOf(
         single { DeviceTracker(get()) }
         single { PermissionMirror(Path(System.getProperty("user.home"))) }
         single { ServerStatus() }
-        single { ServerController(get(), get()) } bind ServerControl::class
         single { Installer(Path(System.getProperty("user.home"))) }
+        single { InstallLifecycle(get()) } bind ServerListener::class
+        single { ServerController(get(), get(), listener = get()) } bind ServerControl::class
         single { DeviceManagerService(get(), get(), get(), get(), get(), get(), get()) } bind DeviceManager::class
         single { Navigator() }
         single<CoroutineScope>(named(APP_SCOPE)) {

@@ -16,6 +16,7 @@ import com.jacobrein.cdm.data.ActivityRepository
 import com.jacobrein.cdm.data.DeviceConfigRepository
 import com.jacobrein.cdm.data.SettingsRepository
 import com.jacobrein.cdm.data.ProjectRepository
+import com.jacobrein.cdm.install.InstallLifecycle
 import com.jacobrein.cdm.install.Installer
 import com.jacobrein.cdm.server.ServerControl
 import com.jacobrein.cdm.server.ServerStatus
@@ -62,6 +63,7 @@ class AppNavigationTest {
                     single { ProjectRepository(db.projectDao()) }
                     // A temp home: the Settings screen must never read or write the real ~/.claude.
                     single { Installer(Files.createTempDirectory("cdm-nav-home")) }
+                    single { InstallLifecycle(get()) }
                     single { ServerStatus() }
                     single<ServerControl> { object : ServerControl { override suspend fun restart(port: Int) = Unit } }
                 },
@@ -97,7 +99,7 @@ class AppNavigationTest {
         onNodeWithText("Settings").performClick()
         waitForIdle()
         assertEquals(listOf<Route>(Route.Settings), navigator.backStack.toList())
-        waitUntil(timeoutMillis = 3_000) { onAllNodesWithText("Install cdm").fetchSemanticsNodes().isNotEmpty() }
+        waitUntil(timeoutMillis = 3_000) { onAllNodesWithText("Repair").fetchSemanticsNodes().isNotEmpty() }
 
         onNodeWithText("Devices").performClick()
         waitForIdle()

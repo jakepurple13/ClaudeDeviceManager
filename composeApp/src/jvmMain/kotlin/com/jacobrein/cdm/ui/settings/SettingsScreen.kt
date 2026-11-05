@@ -34,7 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.jacobrein.cdm.install.InstallStatus
+import com.jacobrein.cdm.install.PartState
 import com.jacobrein.cdm.ui.components.AnimatedLine
 import com.jacobrein.cdm.ui.components.AnimatedValue
 import com.jacobrein.cdm.ui.components.CardBox
@@ -82,7 +82,7 @@ fun SettingsScreen(vm: SettingsViewModel = koinViewModel()) {
                 }
                 Crossfade(s.listening, animationSpec = tween(200), label = "listening") { up ->
                     Muted(
-                        if (up) "Listening on 127.0.0.1:${s.saved.port}. Changing the port restarts the server; then repair the hooks."
+                        if (up) "Listening on 127.0.0.1:${s.saved.port}. Changing the port restarts the server and re-installs the hooks."
                         else "Not listening. Save retries on port ${s.saved.port}, or pick another port.",
                     )
                 }
@@ -90,34 +90,23 @@ fun SettingsScreen(vm: SettingsViewModel = koinViewModel()) {
             ResultLine(s.saveResult)
         }
 
-        SectionLabel("Claude Code hooks")
+        SectionLabel("Claude Code integration")
         CardBox {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AnimatedContent(
-                    s.hookStatus,
-                    transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(200)) },
-                    label = "hookStatus",
-                ) { st ->
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        StatusDot(st.dot())
-                        Text(st.text(s.saved.port), style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-                Crossfade(s.hookStatus.buttonLabel(), animationSpec = tween(200), label = "hookButton") { label ->
-                    if (label != null) SmallButton(label, onClick = vm::onInstallHooks)
-                }
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                StatusRow("Hooks in ~/.claude/settings.json", s.integration.hooks, s.integration.port?.let { "port $it" })
+                StatusRow("cdm in ~/.local/bin", s.integration.cdm, null)
+                StatusRow("Snippet in ~/.claude/CLAUDE.md", s.integration.snippet, null)
             }
-            Muted("Merges into ~/.claude/settings.json after backing it up; other hooks are left alone.", Modifier.padding(top = 4.dp))
-            ResultLine(s.hookResult)
-        }
-
-        SectionLabel("cdm command")
-        CardBox {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SmallButton("Install cdm", onClick = vm::onInstallCdm)
-                Muted("Copies the cdm script to ~/.local/bin/cdm.")
+            AnimatedLine(s.integration.cdm == PartState.Installed && !s.integration.cdmOnPath) {
+                Muted("~/.local/bin isn't on your PATH: add `export PATH=\"\$HOME/.local/bin:\$PATH\"` to your shell profile.", Modifier.padding(top = 6.dp))
             }
-            ResultLine(s.cdmResult)
+            Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Crossfade(s.repairing, animationSpec = tween(200), label = "repairing") { repairing ->
+                    SmallButton(if (repairing) "Repairing…" else "Repair", onClick = vm::onRepair, enabled = s.canRepair)
+                }
+                Muted("Installed when the server starts and removed when the app quits; other hooks and text are left alone.")
+            }
+            ResultLine(s.repairResult)
         }
 
         SectionLabel("CLAUDE.md snippet")
@@ -140,26 +129,8 @@ fun SettingsScreen(vm: SettingsViewModel = koinViewModel()) {
                         vm.onCopied()
                     })
                 }
-                SmallButton("Append to ~/.claude/CLAUDE.md", onClick = vm::onAppendSnippet, enabled = !s.confirmAppend)
+                Muted("Added to ~/.claude/CLAUDE.md while the app runs; copy it to use it elsewhere.")
             }
-            AnimatedLine(s.confirmAppend) {
-                Row(
-                    Modifier.padding(top = 8.dp).fillMaxWidth()
-                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(4.dp))
-                        .padding(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        "Add this snippet to ~/.claude/CLAUDE.md? An earlier copy between the cdm markers is replaced.",
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f),
-                    )
-                    SmallButton("Append", onClick = vm::onConfirmAppend)
-                    SmallButton("Cancel", onClick = vm::onCancelAppend)
-                }
-            }
-            ResultLine(s.appendResult)
         }
     }
 }
@@ -190,23 +161,33 @@ private fun ResultLine(result: ActionResult?) {
     }
 }
 
-private fun InstallStatus?.dot(): DotStatus = when (this) {
-    InstallStatus.Installed -> DotStatus.Free
-    is InstallStatus.Outdated -> DotStatus.InUse
-    InstallStatus.SettingsUnreadable -> DotStatus.Offline
-    InstallStatus.NotInstalled, null -> DotStatus.DontUse
+/** One integration part: dot, name, and its state (animated as it changes). */
+@Composable
+private fun StatusRow(name: String, part: PartState, detail: String?) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        StatusDot(part.dot())
+        Text(name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(230.dp))
+        AnimatedContent(
+            part,
+            transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(200)) },
+            label = "part",
+        ) { p ->
+            val color by animateColorAsState(if (p is PartState.Failed) ErrorFg else MaterialTheme.colorScheme.onSurfaceVariant, tween(200))
+            SelectionContainer {
+                Text(p.text(detail), color = color, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
 }
 
-private fun InstallStatus?.text(port: Int): String = when (this) {
-    null -> "Checking…"
-    InstallStatus.Installed -> "Installed (port $port)"
-    is InstallStatus.Outdated -> "Outdated" + (installedPort?.takeIf { it != port }?.let { " (they point at port $it, server is on $port)" } ?: "")
-    InstallStatus.NotInstalled -> "Not installed"
-    InstallStatus.SettingsUnreadable -> "~/.claude/settings.json can't be read; fix it by hand"
+private fun PartState.dot(): DotStatus = when (this) {
+    PartState.Installed -> DotStatus.Free
+    PartState.NotInstalled -> DotStatus.DontUse
+    is PartState.Failed -> DotStatus.Offline
 }
 
-private fun InstallStatus?.buttonLabel(): String? = when (this) {
-    InstallStatus.NotInstalled -> "Install hooks"
-    is InstallStatus.Outdated -> "Repair hooks"
-    else -> null
+private fun PartState.text(detail: String?): String = when (this) {
+    PartState.Installed -> "Installed while the app runs" + (detail?.let { " ($it)" } ?: "")
+    PartState.NotInstalled -> "Not installed"
+    is PartState.Failed -> message
 }
