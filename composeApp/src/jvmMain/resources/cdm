@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# cdm: Claude Device Manager CLI. Run it through Claude Code's Bash tool, which injects --holder/--cwd.
+set -uo pipefail
+
+PORT_FILE="${CDM_PORT_FILE:-$HOME/.claude-device-manager/port}"
+RETRY_SECONDS="${CDM_RETRY_SECONDS:-30}"
+ACQUIRE_TIMEOUT="${CDM_ACQUIRE_TIMEOUT:-570}"
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+holder="" cwd="" category=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --holder) holder="${2:-}"; shift 2 || shift ;;
+    --cwd) cwd="${2:-}"; shift 2 || shift ;;
+    --category) category="${2:-}"; shift 2 || shift ;;
+    *) shift ;;
+  esac
+done
+
+case "$cmd" in
+  acquire|release|status) ;;
+  *) echo "Usage: cdm acquire [--category phone|watch|phone,watch|any] | cdm release | cdm status"; exit 2 ;;
+esac
+if [ -z "$holder" ]; then
+  echo "cdm must be run through Claude Code's Bash tool (it injects the holder identity)."
+  exit 2
+fi
+
+not_running() {
+  echo "Device Manager not running; proceeding without a device lock."
+  exit 0
+}
+
+# Prints the port, retrying while the port file or app is missing.
+deadline=$((SECONDS + RETRY_SECONDS))
+port=""
+while :; do
+  [ -f "$PORT_FILE" ] && port="$(tr -d '[:space:]' < "$PORT_FILE")"
+  if [ -n "$port" ] && curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/cdm/status" 2>/dev/null; then
+    break
+  fi
+  [ "$SECONDS" -ge "$deadline" ] && not_running
+  sleep 1
+done
+base="http://127.0.0.1:$port/cdm"
+
+# curl -G turns --data-urlencode pairs into a properly escaped query string.
+q=(-G --data-urlencode "holder=$holder" --data-urlencode "cwd=$cwd")
+wanted="${category:-}"
+
+say_grant() {
+  local serial="$1" name="$2"
+  echo "Got $name ($serial). Your adb and Gradle commands are now pinned to it."
+}
+
+case "$cmd" in
+  acquire)
+    label="${wanted:-device}"
+    label="${label//,/ or }"
+    [ "$label" = "any" ] && label="device"
+    while IFS= read -r line; do
+      case "$line" in
+        QUEUED\ *) echo "Waiting for a $label device… position ${line#QUEUED }" ;;
+        GRANTED\ *) rest="${line#GRANTED }"; say_grant "${rest%% *}" "${rest#* }"; exit 0 ;;
+        TIMEOUT\ *) echo "Still queued at position ${line#TIMEOUT }. Run \`cdm acquire\` again to keep waiting."; exit 0 ;;
+        BLOCKED) echo "You're blocked in Claude Device Manager. Ask the user to unblock you."; exit 1 ;;
+      esac
+    done < <(curl -sN --no-buffer -X POST "${q[@]}" --data-urlencode "category=$wanted" --data-urlencode "timeoutSec=$ACQUIRE_TIMEOUT" "$base/acquire")
+    # Stream ended without a verdict: the app went away mid-wait.
+    not_running
+    ;;
+  release)
+    out="$(curl -s -X POST "${q[@]}" "$base/release")" || not_running
+    case "$out" in
+      RELEASED*) echo "Released your device." ;;
+      *) echo "You weren't holding a device." ;;
+    esac
+    ;;
+  status)
+    out="$(curl -s "${q[@]}" "$base/status")" || not_running
+    case "$out" in
+      HOLDING\ *) rest="${out#HOLDING }"; echo "Holding ${rest#* } (${rest%% *})." ;;
+      QUEUED\ *) echo "Queued at position ${out#QUEUED }." ;;
+      BLOCKED*) echo "You're blocked in Claude Device Manager. Ask the user to unblock you." ;;
+      *) echo "No device held and not queued." ;;
+    esac
+    ;;
+esac
