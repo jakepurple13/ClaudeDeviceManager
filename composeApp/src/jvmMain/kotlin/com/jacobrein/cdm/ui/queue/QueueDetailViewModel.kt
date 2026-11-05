@@ -5,8 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.jacobrein.cdm.core.model.Category
 import com.jacobrein.cdm.core.model.DeviceKey
 import com.jacobrein.cdm.core.model.HolderId
-import com.jacobrein.cdm.service.DeviceManager
 import com.jacobrein.cdm.ui.DeviceRef
+import com.jacobrein.cdm.ui.UiActions
 import com.jacobrein.cdm.ui.UiSources
 import com.jacobrein.cdm.ui.WaitReason
 import com.jacobrein.cdm.ui.handOffTargets
@@ -19,7 +19,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 
 data class QueueDetailState(
     val holder: HolderId,
@@ -36,7 +35,7 @@ data class QueueDetailState(
 
 class QueueDetailViewModel(
     private val holder: HolderId,
-    private val manager: DeviceManager,
+    private val actions: UiActions,
     sources: UiSources,
 ) : ViewModel() {
     val uiState: StateFlow<QueueDetailState> = sources.world
@@ -57,15 +56,9 @@ class QueueDetailViewModel(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), QueueDetailState(holder))
 
-    fun onMoveToTop() {
-        viewModelScope.launch { manager.moveInQueue(holder, 0) }
-    }
+    fun onMoveToTop() = actions.run { moveInQueue(holder, 0) }
 
-    fun onHandOff(device: DeviceKey) {
-        viewModelScope.launch { manager.handOff(device, holder) }
-    }
+    fun onHandOff(device: DeviceKey) = actions.run { handOff(device, holder) }
 
-    fun onRemove() {
-        viewModelScope.launch { manager.removeFromQueue(holder) }
-    }
+    fun onRemove() = actions.run { removeFromQueue(holder) }
 }

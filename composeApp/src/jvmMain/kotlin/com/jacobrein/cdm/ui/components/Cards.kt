@@ -1,6 +1,9 @@
 package com.jacobrein.cdm.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -39,6 +42,9 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.time.Instant
 import kotlin.time.toJavaInstant
+
+/** Chip text for a device marked don't use while held: it goes out of rotation when its holder releases it. */
+const val DONT_USE_PENDING = "don't use · after release"
 
 private val CardShape = RoundedCornerShape(6.dp)
 private val ClockFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
@@ -128,6 +134,9 @@ fun DeviceCard(row: DeviceRow, detailed: Boolean, selected: Boolean, onClick: ()
                 }
                 DeviceState.OFFLINE -> Chip("offline", ChipStyle.Offline)
                 else -> CategoryChip(row.category)
+            }
+            AnimatedVisibility(row.dontUsePending, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) {
+                Chip(DONT_USE_PENDING, ChipStyle.DontUse)
             }
         }
         val line = when {

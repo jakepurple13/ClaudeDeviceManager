@@ -40,7 +40,7 @@ class DeviceDetailViewModelTest {
             statuses = mapOf(h to HolderStatus.Holding(key, t, t, editing = false)),
         )
         val manager = RecordingManager(MutableStateFlow(snap))
-        val vm = DeviceDetailViewModel(key, manager, testSources(manager))
+        val vm = DeviceDetailViewModel(key, testActions(manager), testSources(manager))
 
         vm.onDontUseToggled(true)
 

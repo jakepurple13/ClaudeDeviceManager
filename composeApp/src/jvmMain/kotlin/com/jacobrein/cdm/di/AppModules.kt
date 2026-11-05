@@ -18,7 +18,13 @@ import com.jacobrein.cdm.service.PermissionMirror
 import kotlin.io.path.Path
 import com.jacobrein.cdm.ui.nav.Navigator
 import com.jacobrein.cdm.ui.nav.ShellViewModel
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import org.koin.core.module.Module
+import org.koin.core.qualifier.named
+import com.jacobrein.cdm.ui.UiActions
 import org.koin.core.module.dsl.viewModelOf
 import com.jacobrein.cdm.ui.SystemUiClock
 import com.jacobrein.cdm.ui.UiClock
@@ -30,6 +36,9 @@ import com.jacobrein.cdm.ui.queue.QueueDetailViewModel
 import com.jacobrein.cdm.ui.queue.QueueViewModel
 import org.koin.dsl.bind
 import org.koin.dsl.module
+
+/** The app-lifetime scope: the service's loops and every UI action run here (single source; Main.kt uses it too). */
+const val APP_SCOPE = "appScope"
 
 /** Every later task adds its Koin definitions here. */
 fun appModules(): List<Module> = listOf(
@@ -52,6 +61,12 @@ fun appModules(): List<Module> = listOf(
         single { Installer(Path(System.getProperty("user.home"))) }
         single { DeviceManagerService(get(), get(), get(), get(), get(), get(), get()) } bind DeviceManager::class
         single { Navigator() }
+        single<CoroutineScope>(named(APP_SCOPE)) {
+            CoroutineScope(
+                SupervisorJob() + Dispatchers.Default +
+                    CoroutineExceptionHandler { _, e -> System.err.println("cdm: background action failed: $e") },
+            )
+        }
     },
     uiModule,
 )
@@ -60,6 +75,7 @@ fun appModules(): List<Module> = listOf(
 val uiModule: Module = module {
     single<UiClock> { SystemUiClock }
     single { UiSources(get(), get(), get(), get(), get()) }
+    single { UiActions(get(), get(named(APP_SCOPE))) }
     viewModelOf(::ShellViewModel)
     viewModelOf(::OverviewViewModel)
     viewModelOf(::DevicesViewModel)

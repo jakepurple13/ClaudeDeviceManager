@@ -5,9 +5,9 @@ import androidx.lifecycle.viewModelScope
 import com.jacobrein.cdm.core.model.Category
 import com.jacobrein.cdm.core.model.DeviceKey
 import com.jacobrein.cdm.core.model.HolderId
-import com.jacobrein.cdm.service.DeviceManager
 import com.jacobrein.cdm.ui.ActivityRow
 import com.jacobrein.cdm.ui.DeviceRow
+import com.jacobrein.cdm.ui.UiActions
 import com.jacobrein.cdm.ui.UiSources
 import com.jacobrein.cdm.ui.World
 import com.jacobrein.cdm.ui.activityRows
@@ -23,7 +23,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 
 /** The holder card on the device detail. */
 data class HolderCard(
@@ -53,7 +52,7 @@ data class DeviceDetailState(
 
 class DeviceDetailViewModel(
     private val key: DeviceKey,
-    private val manager: DeviceManager,
+    private val actions: UiActions,
     sources: UiSources,
 ) : ViewModel() {
     private val confirm = MutableStateFlow(false)
@@ -98,26 +97,22 @@ class DeviceDetailViewModel(
     }
 
     /** `null` goes back to the auto-detected category. */
-    fun onCategorySelected(category: Category?) {
-        viewModelScope.launch { manager.setCategory(key, category) }
-    }
+    fun onCategorySelected(category: Category?) = actions.run { setCategory(key, category) }
 
-    fun onRelease(block: Boolean) {
-        viewModelScope.launch { manager.releaseDevice(key, block) }
-    }
+    fun onRelease(block: Boolean) = actions.run { releaseDevice(key, block) }
 
     /** Turning don't-use on while someone holds the device asks first (release now, or after they release). */
     fun onDontUseToggled(on: Boolean) {
-        if (on && manager.snapshot.value.holds.containsKey(key)) {
+        if (on && actions.manager.snapshot.value.holds.containsKey(key)) {
             confirm.value = true
             return
         }
-        viewModelScope.launch { manager.setDontUse(key, on, releaseNow = false) }
+        actions.run { setDontUse(key, on, releaseNow = false) }
     }
 
     fun onConfirmDontUse(releaseNow: Boolean) {
         confirm.value = false
-        viewModelScope.launch { manager.setDontUse(key, true, releaseNow) }
+        actions.run { setDontUse(key, true, releaseNow) }
     }
 
     fun onDismissDontUse() {

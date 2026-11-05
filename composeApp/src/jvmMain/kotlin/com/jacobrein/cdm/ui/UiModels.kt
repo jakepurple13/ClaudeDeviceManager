@@ -38,6 +38,8 @@ data class DeviceRow(
     val heldFor: Duration?,
     /** "idle 1m" or "editing · releases in 4m"; null when nobody holds the device. */
     val timerLabel: String?,
+    /** Marked don't use while held: it stops being handed out once the current holder releases it. */
+    val dontUsePending: Boolean = false,
 )
 
 data class QueueRow(val holder: HolderId, val label: String, val position: Int, val wants: Set<Category>, val waited: Duration)
@@ -99,6 +101,7 @@ fun deviceRows(w: World): List<DeviceRow> {
             holderLabel = holder?.let { w.labelOf(it) },
             heldFor = st?.let { w.now - it.since },
             timerLabel = st?.let { w.timerLabel(it) },
+            dontUsePending = holder != null && d.dontUse,
         )
     }
 }

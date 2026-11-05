@@ -44,6 +44,23 @@ class UiModelsTest {
     }
 
     @Test
+    fun dontUsePendingWhileHeld() {
+        val h = HolderId("a41f9c00")
+        val snap = AllocatorSnapshot(
+            devices = listOf(dev(p, "Pixel 8", Category.PHONE, dontUse = true)),
+            holds = mapOf(p to h),
+            queue = emptyList(),
+            statuses = mapOf(h to HolderStatus.Holding(p, now - 2.minutes, now, editing = false)),
+        )
+        val row = deviceRows(world(snap, listOf(tracked(p, Category.PHONE)))).single()
+        assertEquals(DeviceState.IN_USE, row.state)
+        assertEquals(true, row.dontUsePending)
+        val free = deviceRows(world(snap.copy(holds = emptyMap(), statuses = emptyMap()), listOf(tracked(p, Category.PHONE)))).single()
+        assertEquals(DeviceState.DONT_USE, free.state)
+        assertEquals(false, free.dontUsePending)
+    }
+
+    @Test
     fun offlineHeld() {
         val h = HolderId("a41f9c00")
         val snap = AllocatorSnapshot(

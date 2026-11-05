@@ -12,7 +12,10 @@ import com.jacobrein.cdm.data.inMemoryDatabase
 import com.jacobrein.cdm.server.FakeManager
 import com.jacobrein.cdm.service.DeviceManager
 import kotlin.time.Instant
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -59,3 +62,7 @@ fun testSources(manager: DeviceManager, clock: UiClock = FixedClock()): UiSource
         clock,
     )
 }
+
+/** [UiActions] on a scope that runs launched actions at once unless the test passes its own. */
+@OptIn(ExperimentalCoroutinesApi::class)
+fun testActions(manager: DeviceManager, scope: CoroutineScope = CoroutineScope(UnconfinedTestDispatcher())) = UiActions(manager, scope)

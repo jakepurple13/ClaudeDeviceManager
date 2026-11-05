@@ -59,4 +59,15 @@ class NavigatorTest {
         )
         assertEquals(TopLevel.DEVICES, Route.DeviceDetail(a).topLevel)
     }
+
+    @Test
+    fun devStartRouteMalformedIsInert() {
+        val nav = Navigator()
+        applyDevStartRoute(nav, "devices:")
+        applyDevStartRoute(nav, "bogus:x")
+        applyDevStartRoute(nav, ":::")
+        assertEquals(listOf<Route>(Route.Devices), nav.backStack.toList())
+        applyDevStartRoute(nav, "queue:s1:main")
+        assertEquals(listOf<Route>(Route.Queue, Route.QueueDetail(HolderId("s1"))), nav.backStack.toList())
+    }
 }

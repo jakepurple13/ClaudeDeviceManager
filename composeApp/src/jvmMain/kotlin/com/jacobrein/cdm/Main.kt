@@ -12,8 +12,6 @@ import com.jacobrein.cdm.server.ServerStatus
 import com.jacobrein.cdm.service.DeviceManager
 import com.jacobrein.cdm.service.DeviceManagerService
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import com.jacobrein.cdm.ui.nav.AppNavigation
@@ -24,12 +22,14 @@ import com.jacobrein.cdm.ui.window.TitleBarStatus
 import com.jacobrein.cdm.ui.window.windowChrome
 import java.awt.Dimension
 import org.koin.core.context.startKoin
+import org.koin.core.qualifier.named
+import com.jacobrein.cdm.di.APP_SCOPE
 
 private const val APP_TITLE = "Claude Device Manager"
 
 fun main() {
     val koin = startKoin { modules(appModules()) }.koin
-    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val appScope = koin.get<CoroutineScope>(named(APP_SCOPE))
     // Ruling L: start() first, then accept hooks.
     koin.get<DeviceManagerService>().start(appScope)
     val port = runBlocking { koin.get<SettingsRepository>().current().port }

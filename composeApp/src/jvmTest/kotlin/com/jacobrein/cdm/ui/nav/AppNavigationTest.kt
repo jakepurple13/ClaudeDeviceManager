@@ -15,7 +15,12 @@ import com.jacobrein.cdm.core.model.DeviceKey
 import com.jacobrein.cdm.data.ActivityRepository
 import com.jacobrein.cdm.data.DeviceConfigRepository
 import com.jacobrein.cdm.data.SettingsRepository
+import com.jacobrein.cdm.di.APP_SCOPE
 import com.jacobrein.cdm.di.uiModule
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import org.koin.core.qualifier.named
 import com.jacobrein.cdm.service.DeviceManager
 import com.jacobrein.cdm.ui.FixedClock
 import com.jacobrein.cdm.ui.openedInMemoryDatabase
@@ -45,6 +50,7 @@ class AppNavigationTest {
                 module {
                     single<DeviceManager> { manager }
                     single<UiClock> { FixedClock() }
+                    single<CoroutineScope>(named(APP_SCOPE)) { CoroutineScope(SupervisorJob() + Dispatchers.Unconfined) }
                     single { DeviceConfigRepository(db.deviceConfigDao()) }
                     single { ActivityRepository(db.activityDao()) }
                     single { SettingsRepository(db.settingDao()) }

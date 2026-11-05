@@ -27,7 +27,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jacobrein.cdm.core.model.DeviceKey
+import com.jacobrein.cdm.ui.components.AnimatedLine
+import com.jacobrein.cdm.ui.components.AnimatedRows
+import com.jacobrein.cdm.ui.components.AnimatedValue
 import com.jacobrein.cdm.ui.components.CardBox
+import com.jacobrein.cdm.ui.components.Chip
+import com.jacobrein.cdm.ui.components.ChipStyle
+import com.jacobrein.cdm.ui.components.DONT_USE_PENDING
 import com.jacobrein.cdm.ui.components.LogLine
 import com.jacobrein.cdm.ui.components.Muted
 import com.jacobrein.cdm.ui.components.SectionLabel
@@ -44,13 +50,16 @@ fun DeviceDetailScreen(
     val state by vm.uiState.collectAsStateWithLifecycle()
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
-            Text(state.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(state.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                AnimatedLine(state.row?.dontUsePending == true) { Chip(DONT_USE_PENDING, ChipStyle.DontUse) }
+            }
             Muted(state.facts)
             CategoryPicker(state, vm::onCategorySelected, Modifier.padding(vertical = 8.dp))
             HolderSection(state.holder, vm::onRelease)
             SectionLabel("Recent commands", Modifier.padding(top = 6.dp))
-            if (state.commands.isEmpty()) Muted("No device commands yet")
-            state.commands.forEach { LogLine(it) }
+            AnimatedLine(state.loaded && state.commands.isEmpty()) { Muted("No device commands yet") }
+            AnimatedRows(state.commands, key = { it.id }) { LogLine(it) }
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Switch(checked = state.dontUse, onCheckedChange = vm::onDontUseToggled)
@@ -88,7 +97,7 @@ private fun HolderSection(holder: HolderCard?, onRelease: (block: Boolean) -> Un
                     Muted("#" + card.label.substringAfter(" #", ""))
                 }
                 Muted(listOf(card.cwd.ifBlank { null }, card.timing.ifBlank { null }).filterNotNull().joinToString(" · "), maxLines = 3)
-                card.lastCommand?.let { Muted("last: $it", maxLines = 1) }
+                AnimatedValue(card.lastCommand) { Muted("last: $it", maxLines = 1) }
                 Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     SmallButton("Release", onClick = { onRelease(false) })
                     SmallButton("Release + block", onClick = { onRelease(true) }, danger = true)
