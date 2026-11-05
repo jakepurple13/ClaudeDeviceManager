@@ -90,7 +90,7 @@ class Allocator(
         val old = holds[device] ?: return
         if (old == to || to in blockedHolders || holds.containsValue(to)) return
         val d = known[device] ?: return
-        if (d.dontUse) return
+        if (d.dontUse || devices.firstOrNull { it.key == device }?.connectedSerials.isNullOrEmpty()) return
         free(device, old, ReleaseReason.USER_HANDOFF)
         grant(to, d)
     }

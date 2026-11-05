@@ -156,4 +156,13 @@ class AllocatorQueueTest {
         a.setDevices(listOf(p, w))
         assertIs<HolderStatus.Holding>(a.statusOf(h2))
     }
+
+    @Test fun handOffOfflineDeviceIsNoOp() {
+        val a = alloc()
+        a.tryGrab(h1, watch); a.enqueue(h2, watch)
+        a.setDevices(listOf(p, w.copy(connectedSerials = emptyList())))
+        a.handOff(w.key, h2)
+        assertEquals(h1, a.snapshot().holds[w.key])
+        assertEquals(HolderStatus.Queued(1, watch), a.statusOf(h2))
+    }
 }
