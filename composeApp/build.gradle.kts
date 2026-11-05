@@ -85,10 +85,13 @@ compose.desktop {
         }
         // JDK 25 warns when JNI libraries (skiko, sqlite-bundled) load without this.
         jvmArgs += "--enable-native-access=ALL-UNNAMED"
+        // Unpackaged runs: name the macOS Dock/app menu entry instead of "MainKt".
+        jvmArgs += listOf("-Xdock:name=Claude Device Manager", "-Dapple.awt.application.name=Claude Device Manager")
         nativeDistributions {
             targetFormats(TargetFormat.Dmg)
             packageName = "Claude Device Manager"
             packageVersion = "1.0.0"
+            macOS { iconFile.set(project.file("icons/app-icon.icns")) }
         }
     }
 }

@@ -16,6 +16,7 @@ import kotlinx.coroutines.runBlocking
 import com.programmersbox.cdm.ui.nav.AppNavigation
 import com.programmersbox.cdm.ui.nav.Navigator
 import com.programmersbox.cdm.ui.nav.applyDevStartRoute
+import com.programmersbox.cdm.ui.window.AppIcon
 import com.programmersbox.cdm.ui.window.AppWindow
 import com.programmersbox.cdm.ui.window.TitleBarStatus
 import com.programmersbox.cdm.ui.window.windowChrome
@@ -48,6 +49,7 @@ fun main() {
     // SIGTERM (and any System.exit) skips the window-close path.
     Runtime.getRuntime().addShutdownHook(Thread { shutdown() })
     routeQuitThroughWindowClose()
+    AppIcon.applyToDock()
     runBlocking { server.start(port) }
     applyDevStartRoute(koin.get<Navigator>())
     val chrome = windowChrome()

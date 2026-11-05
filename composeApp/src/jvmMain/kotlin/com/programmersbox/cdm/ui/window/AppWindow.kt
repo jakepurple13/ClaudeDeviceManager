@@ -16,6 +16,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.positionInParent
@@ -81,13 +82,14 @@ fun AppWindow(
     title: String,
     chrome: WindowChrome,
     state: WindowState = rememberWindowState(),
+    icon: Painter? = AppIcon.painter,
     titleBarHeight: Dp = 38.dp,
     titleBar: @Composable AppTitleBarScope.() -> Unit,
     content: @Composable FrameWindowScope.() -> Unit,
 ) {
     val dark = isSystemInDarkTheme()
     when (chrome) {
-        WindowChrome.System -> Window(onCloseRequest = onCloseRequest, state = state, title = title) {
+        WindowChrome.System -> Window(onCloseRequest = onCloseRequest, state = state, title = title, icon = icon) {
             AppTheme(dark) {
                 Column(Modifier.fillMaxSize()) {
                     CompositionLocalProvider(LocalContentColor provides barColors(MaterialTheme.colorScheme).content) {
@@ -108,7 +110,7 @@ fun AppWindow(
             ) {
                 // Jewel's theme replaces LocalIndication and friends; give the window Material's locals back.
                 AppTheme(dark) {
-                    DecoratedWindow(onCloseRequest = onCloseRequest, state = state, title = title) {
+                    DecoratedWindow(onCloseRequest = onCloseRequest, state = state, title = title, icon = icon) {
                         TitleBar { _ ->
                             BoundedSlot {
                                 CompositionLocalProvider(LocalContentColor provides bar.content) {
