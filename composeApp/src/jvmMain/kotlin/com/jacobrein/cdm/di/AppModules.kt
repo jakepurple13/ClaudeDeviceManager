@@ -10,7 +10,10 @@ import com.jacobrein.cdm.data.fileDatabase
 import com.jacobrein.cdm.devices.AdbClient
 import com.jacobrein.cdm.devices.DeviceTracker
 import com.jacobrein.cdm.devices.ProcessAdbClient
+import com.jacobrein.cdm.service.DeviceManager
+import com.jacobrein.cdm.service.DeviceManagerService
 import org.koin.core.module.Module
+import org.koin.dsl.bind
 import org.koin.dsl.module
 
 /** Every later task adds its Koin definitions here. */
@@ -29,5 +32,6 @@ fun appModules(): List<Module> = listOf(
         single { BlockedRepository(get()) }
         single<AdbClient> { ProcessAdbClient() }
         single { DeviceTracker(get()) }
+        single { DeviceManagerService(get(), get(), get(), get(), get(), get()) } bind DeviceManager::class
     },
 )
