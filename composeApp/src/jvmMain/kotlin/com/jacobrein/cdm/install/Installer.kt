@@ -45,25 +45,36 @@ class Installer(private val home: Path) {
 
     private fun url(port: Int, path: String) = "http://127.0.0.1:$port$path"
 
-    private fun isOurs(group: JsonElement): Boolean =
-        (group as? JsonObject)?.get("hooks")?.let { it as? JsonArray }?.any {
-            (it as? JsonObject)?.get("statusMessage")?.jsonPrimitive?.content == MARKER
-        } == true
+    private fun isOurHook(h: JsonElement): Boolean =
+        (h as? JsonObject)?.get("statusMessage")?.let { it as? JsonPrimitive }?.content == MARKER
 
-    private fun readRoot(): Result<JsonObject> = runCatching {
-        if (!settingsPath.exists()) JsonObject(emptyMap())
-        else Json.parseToJsonElement(settingsPath.readText()).jsonObject
+    /** Strict view of the hooks section: event -> groups. Throws if the shape is not object-of-arrays. */
+    private fun strictHooks(root: JsonObject): Map<String, JsonArray> {
+        val h = root["hooks"] ?: return emptyMap()
+        val obj = h as? JsonObject ?: error("settings.json: \"hooks\" is not an object")
+        return obj.mapValues { (k, v) -> v as? JsonArray ?: error("settings.json: hooks.$k is not an array") }
     }
 
-    private fun hooksOf(root: JsonObject): JsonObject = root["hooks"] as? JsonObject ?: JsonObject(emptyMap())
+    private fun readRoot(): Result<JsonObject> = runCatching {
+        val root = if (!settingsPath.exists()) JsonObject(emptyMap())
+        else Json.parseToJsonElement(settingsPath.readText()).jsonObject
+        strictHooks(root)
+        root
+    }
+
+    /** Our hook entries inside [group], as a group holding only them (null if none). */
+    private fun ourPart(group: JsonElement): JsonObject? {
+        val g = group as? JsonObject ?: return null
+        val ours = (g["hooks"] as? JsonArray).orEmpty().filter(::isOurHook)
+        if (ours.isEmpty()) return null
+        return JsonObject(LinkedHashMap(g).apply { put("hooks", JsonArray(ours)) })
+    }
 
     fun hookStatus(port: Int): InstallStatus {
         val root = readRoot().getOrElse { return InstallStatus.SettingsUnreadable }
-        val found = runCatching {
-            hooksOf(root).flatMap { (event, groups) ->
-                (groups as? JsonArray).orEmpty().filter(::isOurs).map { event to it.jsonObject }
-            }
-        }.getOrElse { return InstallStatus.SettingsUnreadable }
+        val found = strictHooks(root).flatMap { (event, groups) ->
+            groups.mapNotNull { g -> ourPart(g)?.let { event to it } }
+        }
         if (found.isEmpty()) return InstallStatus.NotInstalled
         val expected = specs.map { it.event to buildGroup(it, port) }
         val installedPort = found.firstNotNullOfOrNull { (_, g) ->
@@ -89,11 +100,19 @@ class Installer(private val home: Path) {
     fun installHooks(port: Int): Result<Path> = runCatching {
         val root = readRoot().getOrThrow()
         val existed = settingsPath.exists()
-        val hooks = hooksOf(root)
         val newHooks = LinkedHashMap<String, JsonElement>()
-        hooks.forEach { (event, groups) ->
-            val kept = (groups as? JsonArray).orEmpty().filterNot(::isOurs)
-            newHooks[event] = JsonArray(kept)
+        strictHooks(root).forEach { (event, groups) ->
+            var changed = false
+            val kept = groups.mapNotNull { g ->
+                val obj = g as? JsonObject
+                val arr = obj?.get("hooks") as? JsonArray
+                if (obj == null || arr == null || arr.none(::isOurHook)) return@mapNotNull g
+                changed = true
+                val rest = arr.filterNot(::isOurHook)
+                if (rest.isEmpty()) null
+                else JsonObject(LinkedHashMap(obj).apply { put("hooks", JsonArray(rest)) })
+            }
+            if (!(changed && kept.isEmpty())) newHooks[event] = JsonArray(kept)
         }
         specs.forEach { s ->
             val cur = (newHooks[s.event] as? JsonArray).orEmpty()
@@ -103,9 +122,12 @@ class Installer(private val home: Path) {
         settingsPath.parent.createDirectories()
         val backup = if (existed) {
             val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
-            settingsPath.resolveSibling("settings.json.cdm-backup-$stamp").also {
-                Files.copy(settingsPath, it, StandardCopyOption.REPLACE_EXISTING)
+            var n = 0
+            while (true) {
+                val cand = settingsPath.resolveSibling("settings.json.cdm-backup-$stamp" + if (n == 0) "" else "-$n")
+                try { Files.copy(settingsPath, cand); break } catch (_: java.nio.file.FileAlreadyExistsException) { n++ }
             }
+            settingsPath.resolveSibling("settings.json.cdm-backup-$stamp" + if (n == 0) "" else "-$n")
         } else settingsPath
         atomicWrite(settingsPath, json.encodeToString(JsonObject.serializer(), JsonObject(newRoot)) + "\n")
         backup
@@ -135,6 +157,7 @@ class Installer(private val home: Path) {
         val existing = if (claudeMdPath.exists()) claudeMdPath.readText() else ""
         val s = existing.indexOf(START)
         val e = if (s >= 0) existing.indexOf(END, s) else -1
+        if (s >= 0 && e < 0) error("CLAUDE.md has a \"$START\" marker without \"$END\"; fix it by hand")
         val updated = if (s >= 0 && e >= 0) {
             existing.substring(0, s) + block + existing.substring(e + END.length)
         } else {
@@ -150,10 +173,14 @@ class Installer(private val home: Path) {
         atomicWrite(claudeMdPath, updated)
     }
 
-    private fun atomicWrite(target: Path, text: String) {
+    private fun atomicWrite(requested: Path, text: String) {
+        val target = if (requested.exists()) requested.toRealPath() else requested
         val tmp = Files.createTempFile(target.parent, target.fileName.toString(), ".tmp")
         try {
             Files.writeString(tmp, text)
+            if (Files.exists(target)) runCatching {
+                Files.setPosixFilePermissions(tmp, Files.getPosixFilePermissions(target))
+            }
             Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
         } finally {
             Files.deleteIfExists(tmp)

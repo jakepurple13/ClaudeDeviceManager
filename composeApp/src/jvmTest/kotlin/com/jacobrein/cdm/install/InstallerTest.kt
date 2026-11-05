@@ -137,4 +137,81 @@ class InstallerTest {
         assertTrue(inst.localBinOnPath("/usr/bin:${home.resolve(".local/bin")}"))
         assertTrue(!inst.localBinOnPath("/usr/bin"))
     }
+
+    private fun withSettings(content: String): Pair<Path, Installer> {
+        val home = tmpHome()
+        home.resolve(".claude").createDirectories()
+        settings(home).writeText(content)
+        return home to Installer(home)
+    }
+
+    @Test
+    fun malformedHooksShapeRefusedUnchanged() {
+        for (bad in listOf("""{"hooks":[1]}""", """{"hooks":{"PreToolUse":{"a":1}}}""", """{"hooks":"x"}""")) {
+            val (home, inst) = withSettings(bad)
+            assertTrue(inst.installHooks(47823).isFailure)
+            assertEquals(bad, settings(home).readText())
+            assertEquals(InstallStatus.SettingsUnreadable, inst.hookStatus(47823))
+            assertEquals(1, Files.list(home.resolve(".claude")).count())
+        }
+    }
+
+    @Test
+    fun sharedGroupKeepsUserHook() {
+        val shared = """{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo hi"},{"type":"http","url":"http://127.0.0.1:1/hooks/pre-tool-use","statusMessage":"claude-device-manager"}]}],"Stop":[{"hooks":[{"type":"http","url":"http://127.0.0.1:1/x","statusMessage":"claude-device-manager"}]}]}}"""
+        val (home, inst) = withSettings(shared)
+        inst.installHooks(47823).getOrThrow()
+        val root = Json.parseToJsonElement(settings(home).readText()).jsonObject
+        val pre = root["hooks"]!!.jsonObject["PreToolUse"]!!.jsonArray
+        assertEquals(
+            Json.parseToJsonElement("""{"matcher":"Bash","hooks":[{"type":"command","command":"echo hi"}]}"""),
+            pre[0],
+        )
+        assertEquals(3, pre.size)
+        assertTrue("Stop" !in root["hooks"]!!.jsonObject)
+        assertEquals(InstallStatus.Installed, inst.hookStatus(47823))
+    }
+
+    @Test
+    fun backupsNeverOverwrite() {
+        val (home, inst) = withSettings("""{"a":1}""")
+        val backups = (1..3).map { inst.installHooks(47823).getOrThrow() }
+        assertEquals(3, backups.toSet().size)
+        assertEquals("""{"a":1}""", backups[0].readText())
+        assertTrue(backups.all { it.exists() })
+        assertEquals(4, Files.list(home.resolve(".claude")).filter { it.fileName.toString().contains("backup") }.count() + 1)
+    }
+
+    @Test
+    fun symlinkedFilesStayLinksAndKeepPerms() {
+        val home = tmpHome()
+        val dot = tmpHome()
+        home.resolve(".claude").createDirectories()
+        val realS = dot.resolve("settings.json").also { it.writeText("{}") }
+        val realM = dot.resolve("CLAUDE.md").also { it.writeText("hi\n") }
+        for (f in listOf(realS, realM)) Files.setPosixFilePermissions(f, java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--"))
+        Files.createSymbolicLink(settings(home), realS)
+        Files.createSymbolicLink(home.resolve(".claude/CLAUDE.md"), realM)
+        val inst = Installer(home)
+        inst.installHooks(47823).getOrThrow()
+        inst.appendSnippet().getOrThrow()
+        assertTrue(Files.isSymbolicLink(settings(home)))
+        assertTrue(Files.isSymbolicLink(home.resolve(".claude/CLAUDE.md")))
+        assertTrue(realS.readText().contains("claude-device-manager"))
+        assertTrue(realM.readText().contains("cdm:start"))
+        for (f in listOf(realS, realM)) {
+            assertEquals(java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--"), Files.getPosixFilePermissions(f))
+        }
+    }
+
+    @Test
+    fun orphanStartMarkerFailsWithoutWriting() {
+        val home = tmpHome()
+        val md = home.resolve(".claude/CLAUDE.md")
+        md.parent.createDirectories()
+        md.writeText("x\n<!-- cdm:start -->\nhalf\n")
+        val r = Installer(home).appendSnippet()
+        assertTrue(r.isFailure)
+        assertEquals("x\n<!-- cdm:start -->\nhalf\n", md.readText())
+    }
 }
