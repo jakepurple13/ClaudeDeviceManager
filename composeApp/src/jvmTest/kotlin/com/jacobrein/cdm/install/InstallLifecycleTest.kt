@@ -98,6 +98,71 @@ class InstallLifecycleTest {
     }
 
     @Test
+    fun failedRestartRemovesIntegrationAndRetryReinstalls() = runBlocking {
+        md.parent.createDirectories()
+        md.writeText("# mine\n")
+        val life = InstallLifecycle(installer)
+        val portFile = Files.createTempDirectory("cdm-life-port").resolve("port")
+        val server = ServerController(FakeManager(), ServerStatus(), portFile, listener = life)
+        try {
+            val port = freePort()
+            assertTrue(server.start(port))
+            assertAllInstalled(life, port)
+            ServerSocket(0, 50, InetAddress.getByName("127.0.0.1")).use { taken ->
+                server.restart(taken.localPort)
+            }
+            // The server is down: Claude must not be pointed at it.
+            assertFalse(settings.exists())
+            assertEquals("# mine\n", md.readText())
+            assertFalse(cdm.exists())
+            assertEquals(PartState.NotInstalled, life.state.value.hooks)
+            val retry = freePort()
+            server.restart(retry)
+            assertAllInstalled(life, retry)
+        } finally {
+            life.onExit()
+            server.stop()
+        }
+        assertFalse(settings.exists())
+        assertEquals("# mine\n", md.readText())
+    }
+
+    @Test
+    fun failedFirstStartRemovesNothing() = runBlocking {
+        // Another instance's install must survive this instance failing to bind.
+        installer.installHooks(47823).getOrThrow()
+        val life = InstallLifecycle(installer)
+        val server = ServerController(FakeManager(), ServerStatus(), Files.createTempDirectory("cdm-p").resolve("port"), listener = life)
+        ServerSocket(0, 50, InetAddress.getByName("127.0.0.1")).use { taken -> assertFalse(server.start(taken.localPort)) }
+        assertEquals(InstallStatus.Installed, installer.hookStatus(47823))
+    }
+
+    @Test
+    fun losingExitCallerWaitsForTheUninstall() {
+        val life = InstallLifecycle(installer)
+        runBlocking { life.onStarted(47823) }
+        val started = java.util.concurrent.CountDownLatch(1)
+        // Hold the lifecycle's lock from outside, as an in-flight uninstall would.
+        val lockField = InstallLifecycle::class.java.getDeclaredField("lock").apply { isAccessible = true }
+        val lock = lockField.get(life)
+        val first = Thread { life.onExit() }
+        var secondReturned = false
+        val second = Thread { started.countDown(); life.onExit(); secondReturned = true }
+        synchronized(lock) {
+            first.start()
+            while (first.state != Thread.State.BLOCKED) Thread.sleep(1)
+            second.start()
+            started.await()
+            Thread.sleep(100)
+            assertFalse(secondReturned, "the losing caller returned before the uninstall finished")
+        }
+        first.join(5_000)
+        second.join(5_000)
+        assertTrue(secondReturned)
+        assertEquals(InstallStatus.NotInstalled, installer.hookStatus(47823))
+    }
+
+    @Test
     fun exitWithoutInstallLeavesAnotherInstancesEntries() {
         installer.installHooks(47823).getOrThrow()
         installer.installCdm()

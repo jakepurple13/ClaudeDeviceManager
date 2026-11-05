@@ -37,6 +37,8 @@ class InstallLifecycle(private val installer: Installer) : ServerListener {
     private val lock = Any()
     private val exited = AtomicBoolean(false)
     @Volatile private var installedPort: Int? = null
+    /** Our integration is on disk (guarded by [lock]). Only then do we remove anything. */
+    private var installed = false
     private val errors = arrayOfNulls<String>(3) // hooks, cdm, snippet: the last operation's failure
 
     private val _state = MutableStateFlow(IntegrationState())
@@ -45,6 +47,15 @@ class InstallLifecycle(private val installer: Installer) : ServerListener {
     val snippet: String get() = installer.claudeMdSnippet
 
     override suspend fun onListening(port: Int) = onStarted(port)
+
+    /**
+     * A restart failed and nothing listens now: remove the integration so Claude doesn't reach for a dead port. A
+     * later successful Retry or port change re-installs it. A first start that failed installed nothing, so this
+     * removes nothing (another instance's install stays).
+     */
+    override suspend fun onNotListening() {
+        withContext(Dispatchers.IO) { synchronized(lock) { if (!exited.get()) uninstallLocked() } }
+    }
 
     suspend fun onStarted(port: Int) { withContext(Dispatchers.IO) { install(port) } }
 
@@ -58,19 +69,27 @@ class InstallLifecycle(private val installer: Installer) : ServerListener {
     suspend fun refresh() = withContext(Dispatchers.IO) { synchronized(lock) { publish() } }
 
     fun onExit() {
-        if (!exited.compareAndSet(false, true)) return
-        synchronized(lock) {
-            if (installedPort == null) return
-            errors[0] = installer.uninstallHooks().exceptionOrNull()?.let(::logged)
-            errors[2] = installer.removeSnippet().exceptionOrNull()?.let(::logged)
-            errors[1] = runCatching { installer.uninstallCdm() }.exceptionOrNull()?.let(::logged)
-            runCatching { publish() }
+        if (!exited.compareAndSet(false, true)) {
+            // The other caller (window close vs shutdown hook) may be mid-uninstall: don't let the JVM halt under it.
+            synchronized(lock) {}
+            return
         }
+        synchronized(lock) { uninstallLocked() }
+    }
+
+    private fun uninstallLocked() {
+        if (!installed) return
+        errors[0] = installer.uninstallHooks().exceptionOrNull()?.let(::logged)
+        errors[2] = installer.removeSnippet().exceptionOrNull()?.let(::logged)
+        errors[1] = runCatching { installer.uninstallCdm() }.exceptionOrNull()?.let(::logged)
+        installed = false
+        runCatching { publish() }
     }
 
     private fun install(port: Int): Boolean = synchronized(lock) {
         if (exited.get()) return false
         installedPort = port
+        installed = true
         errors[0] = installer.installHooks(port).exceptionOrNull()?.let(::logged)
         errors[1] = runCatching { installer.installCdm() }.exceptionOrNull()?.let(::logged)
         errors[2] = installer.appendSnippet().exceptionOrNull()?.let(::logged)

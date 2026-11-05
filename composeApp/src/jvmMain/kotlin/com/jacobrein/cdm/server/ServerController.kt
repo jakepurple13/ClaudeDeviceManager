@@ -23,6 +23,9 @@ interface ServerControl {
 /** Told after every successful bind (startup, Retry, port change); the install lifecycle listens. */
 fun interface ServerListener {
     suspend fun onListening(port: Int)
+
+    /** A start or restart failed, so nothing is listening now. */
+    suspend fun onNotListening() {}
 }
 
 /**
@@ -40,19 +43,19 @@ class ServerController(
     @Volatile private var server: CdmServer? = null
 
     /** Returns true when the server is listening on [port]. */
-    suspend fun start(port: Int): Boolean = mutex.withLock { startLocked(port).also { if (it) notifyLocked(port) } }
+    suspend fun start(port: Int): Boolean = mutex.withLock { startLocked(port).also { notifyLocked(port, it) } }
 
     override suspend fun restart(port: Int) {
         mutex.withLock {
             stopLocked()
-            if (startLocked(port)) notifyLocked(port)
+            notifyLocked(port, startLocked(port))
         }
     }
 
     /** Under the mutex, so installs happen in the order of the binds. A listener failure never fails the start. */
-    private suspend fun notifyLocked(port: Int) {
+    private suspend fun notifyLocked(port: Int, listening: Boolean) {
         try {
-            listener.onListening(port)
+            if (listening) listener.onListening(port) else listener.onNotListening()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {

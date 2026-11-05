@@ -182,8 +182,17 @@ class Installer(private val home: Path) {
                 CDM_SIGNATURE in String(Files.readAllBytes(target), Charsets.UTF_8)
             check(ours) { "$target exists and isn't Claude Device Manager's cdm; move it away, then Repair." }
         }
-        val bytes = bundledCdm()
-        if (!cdmInstalled()) Files.write(target, bytes)
+        if (!cdmInstalled()) {
+            // Temp file + rename: a running `cdm` never sees a half-written script.
+            val tmp = Files.createTempFile(target.parent, "cdm", ".tmp")
+            try {
+                Files.write(tmp, bundledCdm())
+                Files.setPosixFilePermissions(tmp, PosixFilePermissions.fromString("rwxr-xr-x"))
+                Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } finally {
+                Files.deleteIfExists(tmp)
+            }
+        }
         Files.setPosixFilePermissions(target, PosixFilePermissions.fromString("rwxr-xr-x"))
         return target
     }

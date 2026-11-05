@@ -203,6 +203,13 @@ class InstallerTest {
         for (f in listOf(realS, realM)) {
             assertEquals(java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--"), Files.getPosixFilePermissions(f))
         }
+        // The remove path also writes through the links and keeps them links.
+        inst.uninstallHooks().getOrThrow()
+        inst.removeSnippet().getOrThrow()
+        assertTrue(Files.isSymbolicLink(settings(home)))
+        assertTrue(Files.isSymbolicLink(home.resolve(".claude/CLAUDE.md")))
+        assertEquals(Json.parseToJsonElement("{}"), Json.parseToJsonElement(realS.readText()))
+        assertEquals("hi\n", realM.readText())
     }
 
     @Test
@@ -370,6 +377,23 @@ class InstallerTest {
         assertFailsWith<IllegalStateException> { inst.installCdm() }
         assertEquals("#!/bin/sh\necho someone else's cdm\n", ours.readText())
         inst.uninstallCdm() // missing file: no-op
+    }
+
+    @Test
+    fun installCdmReplacesAtomicallyNotInPlace() {
+        val home = tmpHome()
+        val inst = Installer(home)
+        val p = inst.installCdm()
+        val older = p.readText() + "\n# older build\n"
+        p.writeText(older)
+        // A second name for the same inode: an in-place write would change it too, a rename leaves it alone.
+        val link = home.resolve("cdm-hardlink")
+        Files.createLink(link, p)
+        inst.installCdm()
+        assertTrue(inst.cdmInstalled())
+        assertEquals(older, link.readText())
+        assertTrue(PosixFilePermission.OWNER_EXECUTE in Files.getPosixFilePermissions(p))
+        assertEquals(listOf("cdm"), Files.list(p.parent).map { it.fileName.toString() }.toList())
     }
 
     @Test
