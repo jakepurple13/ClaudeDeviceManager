@@ -153,6 +153,12 @@ Clickable mockups from the brainstorming session are in `.superpowers/brainstorm
 
 The mockups use a dark theme. Following the system light/dark setting is fine.
 
+**Custom title bar (Jewel), requested by Jacob.** The main window uses Jewel's `DecoratedWindow` and `TitleBar` (`org.jetbrains.jewel:jewel-int-ui-decorated-window`), coloured from the app's Material 3 scheme so the bar and the nav rail read as one surface. Model it on ScrcpyViewerV2's `ui/window/AppWindow.kt`, `WindowChrome.kt`, and `TitleBarColors.kt` (github.com/jakepurple13/ScrcpyViewerV2).
+
+- Jewel's decorated window needs JetBrains Runtime 25, so run and packaging tasks use a JBR 25 toolchain. Compilation stays on JDK 21.
+- On a runtime that can't load it, the app falls back to the normal system title bar.
+- The bar shows the app name and a compact live status, for example "2 in use · 1 waiting". My call.
+
 **Animation matters to Jacob.** Motion is a requirement, not polish:
 
 - Navigation transitions between rail sections and when a detail pane opens or closes. Use Navigation 3 transition specs.

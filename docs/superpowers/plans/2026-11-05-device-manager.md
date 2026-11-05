@@ -469,8 +469,20 @@ The snippet text covers what the spec's `cdm acquire` section says agents must b
 
 **Files:**
 - Create: `…/ui/nav/Routes.kt`, `…/ui/nav/AppNavigation.kt`, `…/ui/theme/Theme.kt`, `…/ui/components/Chips.kt` (category chip, status dot)
-- Modify: `…/Main.kt`
-- Test: `…/ui/nav/NavigatorTest.kt`
+- Create: `…/ui/window/AppWindow.kt`, `…/ui/window/WindowChrome.kt`, `…/ui/window/TitleBarColors.kt` (Jewel title bar)
+- Modify: `…/Main.kt`, `gradle/libs.versions.toml`, `composeApp/build.gradle.kts`, `settings.gradle.kts`
+- Test: `…/ui/nav/NavigatorTest.kt`, `…/ui/window/WindowChromeTest.kt`
+
+**Jewel title bar (spec: "Custom title bar").** Port the pattern from ScrcpyViewerV2. A read-only reference copy is at `/private/tmp/claude-501/-Users-jacobrein-Downloads-claude-device-manager/9a420eff-4985-4ba1-9f42-db478f6e5415/scratchpad/scrcpy-ref/composeApp/src/jvmMain/kotlin/com/programmersbox/scrcpyviewer/ui/window/`. Treat it as reference only: don't copy scrcpy-specific settings, the mirror window, or Nucleus packaging.
+- Dependency: `org.jetbrains.jewel:jewel-int-ui-decorated-window:0.41.0-262.10968.63`.
+- Gradle: substitute `org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core-jvm` with the real `kotlinx-coroutines-core-jvm` at the catalog's coroutines version.
+- Settings: apply the `org.gradle.toolchains.foojay-resolver-convention` plugin (1.0.0).
+- Runtime: in `compose.desktop.application`, set `javaHome` to a JBR 25 toolchain (`JvmVendorSpec.JETBRAINS`, `languageVersion 25`), but only when a run or package task is requested, so tests don't download it. Add `jvmArgs += "--enable-native-access=ALL-UNNAMED"`.
+- `WindowChrome { Custom, System }`, `windowChrome(supported: Boolean = customTitleBarSupported): WindowChrome`, and `customTitleBarSupported` (JBR available, Java feature ≥ 25, and Jewel's `DecoratedWindowKt` loads; any failure → false).
+- `AppWindow(onCloseRequest, title, chrome, state, titleBar: @Composable AppTitleBarScope.() -> Unit, content)`. `Custom` uses `IntUiTheme` + `DecoratedWindow` + `TitleBar` with a `BoundedSlot`, with colours from `barColors(MaterialTheme.colorScheme)`. `System` is a plain `Window`.
+- Title bar slot content: the text "Claude Device Manager" plus a live status ("N in use · M waiting", from `DeviceManagerService.snapshot`), with the numbers in `AnimatedContent`.
+- Tests (`WindowChromeTest`): `unsupportedRuntimeFallsBackToSystem` (`windowChrome(supported = false) == System`); `supportedUsesCustom`; `barColorsFromScheme` (`barColors(darkColorScheme()).background == darkColorScheme().surfaceContainer`).
+- Verify: `./gradlew :composeApp:run` shows the custom bar with native traffic lights, the window drags by the bar, and the status text updates.
 
 **Interfaces — Produces:**
 
