@@ -33,6 +33,7 @@ import androidx.compose.material3.adaptive.navigation3.ListDetailSceneStrategy
 import androidx.compose.material3.adaptive.navigation3.rememberListDetailSceneStrategy
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -167,13 +168,16 @@ private fun RailGlyph(t: TopLevel) {
 
 @Composable
 private fun QueueBadge(waiting: Int) {
+    // While the badge fades out after the queue empties, keep showing the last non-zero count, not "0".
+    val shown = remember { mutableIntStateOf(waiting) }
+    if (waiting > 0) shown.intValue = waiting
     AnimatedVisibility(
         visible = waiting > 0,
         enter = fadeIn(tween(200)) + scaleIn(tween(200)),
         exit = fadeOut(tween(200)) + scaleOut(tween(200)),
     ) {
         Badge(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary) {
-            AnimatedCount(waiting)
+            AnimatedCount(shown.intValue)
         }
     }
 }
