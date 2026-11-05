@@ -34,6 +34,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jacobrein.cdm.core.model.HolderId
 import com.jacobrein.cdm.ui.components.AnimatedLine
 import com.jacobrein.cdm.ui.components.AnimatedRows
+import com.jacobrein.cdm.ui.components.AnimatedValue
 import com.jacobrein.cdm.ui.components.CardBox
 import com.jacobrein.cdm.ui.components.Chip
 import com.jacobrein.cdm.ui.components.ChipStyle
@@ -86,7 +87,7 @@ private fun SessionCard(g: SessionGroup, expanded: Boolean, onToggle: () -> Unit
                 Muted("${agents.size} subagent${if (agents.size == 1) "" else "s"}")
             }
         }
-        g.cwd?.let { Muted(it, Modifier.padding(top = 1.dp), maxLines = 1) }
+        AnimatedValue(g.cwd) { Muted(it, Modifier.padding(top = 1.dp), maxLines = 1) }
         g.main?.let { HolderLine(it, indent = false, onUnblock) }
         AnimatedVisibility(
             expanded,
@@ -122,6 +123,6 @@ private fun HolderLine(row: SessionHolderRow, indent: Boolean, onUnblock: (Holde
                 SmallButton("Unblock", onClick = { onUnblock(row.holder) })
             }
         }
-        row.lastCommand?.let { Muted("last: $it", Modifier.padding(start = if (indent) 14.dp else 0.dp, top = 1.dp), maxLines = 1) }
+        AnimatedValue(row.lastCommand) { Muted("last: $it", Modifier.padding(start = if (indent) 14.dp else 0.dp, top = 1.dp), maxLines = 1) }
     }
 }

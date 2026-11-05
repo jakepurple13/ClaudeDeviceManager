@@ -31,9 +31,10 @@ class ServerControllerTest {
     @Test
     fun restartMovesServerAndPortFile() = runBlocking {
         val a = freePort()
-        val b = freePort()
         try {
             assertTrue(controller.start(a))
+            // Picked after a is bound, so it can't be the same port.
+            val b = freePort()
             assertEquals("$a", portFile.readText())
             controller.restart(b)
             assertTrue(pings(b))
@@ -44,6 +45,19 @@ class ServerControllerTest {
             controller.stop()
         }
         assertFalse(portFile.exists())
+    }
+
+    @Test
+    fun failedStartLeavesAnotherInstancesPortFileAlone() = runBlocking {
+        ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1")).use { taken ->
+            // Another instance is up on this port and wrote the file.
+            Files.createDirectories(portFile.parent)
+            Files.writeString(portFile, "${taken.localPort}")
+            assertFalse(controller.start(taken.localPort))
+            assertEquals("${taken.localPort}", portFile.readText())
+            controller.stop()
+            assertEquals("${taken.localPort}", portFile.readText())
+        }
     }
 
     @Test

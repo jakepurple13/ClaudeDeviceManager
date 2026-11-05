@@ -33,6 +33,13 @@ class RecordingServer : ServerControl {
     override suspend fun restart(port: Int) { restarts += port }
 }
 
+/** A settings table that reads as empty (defaults) and whose writes fail. */
+class FailingSettingDao : com.jacobrein.cdm.data.SettingDao {
+    override fun observeAll() = kotlinx.coroutines.flow.flowOf(emptyList<com.jacobrein.cdm.data.SettingEntity>())
+    override suspend fun getAll() = emptyList<com.jacobrein.cdm.data.SettingEntity>()
+    override suspend fun put(entity: com.jacobrein.cdm.data.SettingEntity): Unit = error("disk full")
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class SettingsViewModelTest {
     @BeforeTest fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
@@ -128,6 +135,60 @@ class SettingsViewModelTest {
         vm.onInstallHooks()
         val s = withTimeout(5_000) { vm.uiState.first { it.hookResult != null && it.hookStatus == InstallStatus.Installed } }
         assertTrue(s.hookResult!!.ok)
+    }
+
+    @Test
+    fun saveFailureIsShown() = runBlocking {
+        val failing = SettingsRepository(FailingSettingDao())
+        val vm = SettingsViewModel(testActions(manager), failing, Installer(home), server, status).also { vms += it }
+        vm.loaded()
+        vm.onIdleChanged("30")
+        vm.onSave()
+        val r = withTimeout(5_000) { vm.uiState.first { it.saveResult != null } }.saveResult!!
+        assertFalse(r.ok)
+        assertTrue("disk full" in r.text, r.text)
+        assertFalse(vm.uiState.value.saving)
+    }
+
+    @Test
+    fun saveRetriesServerOnSamePortAfterFailure() = runBlocking {
+        val vm = vm()
+        vm.loaded()
+        status.fail("Port 47823 is in use — change the port below.")
+        withTimeout(5_000) { vm.uiState.first { it.serverError != null } }
+        assertTrue(vm.uiState.value.canSave, "Save must be usable to retry even with nothing edited")
+        vm.onSave()
+        assertEquals(listOf(47823), server.restarts)
+    }
+
+    @Test
+    fun retryButtonRestartsOnSavedPort() = runBlocking {
+        val vm = vm()
+        vm.loaded()
+        vm.onRetryServer()
+        assertEquals(listOf(47823), server.restarts)
+    }
+
+    @Test
+    fun fieldsNormalizedAfterSave() = runBlocking {
+        val vm = vm()
+        vm.loaded()
+        vm.onIdleChanged("030")
+        vm.onSave()
+        val s = withTimeout(5_000) { vm.uiState.first { it.saved.idleMinutes == 30 && !it.saving } }
+        assertEquals("30", s.idle)
+        assertFalse(s.dirty)
+    }
+
+    @Test
+    fun leadingZeroOnlyEditIsNotASave() = runBlocking {
+        val vm = vm()
+        vm.loaded()
+        vm.onIdleChanged("015")
+        vm.onSave()
+        assertEquals("15", vm.uiState.value.idle)
+        assertFalse(vm.uiState.value.dirty)
+        assertTrue(server.restarts.isEmpty())
     }
 
     @Test

@@ -66,7 +66,7 @@ class ServerController(
             // of this caller is a real one.
             if (e is CancellationException) currentCoroutineContext().ensureActive()
             System.err.println("cdm: server failed to start on port $port: $e")
-            runCatching { s.stop() }
+            runCatching { s.stop() } // engine only: it never wrote the port file, so it leaves it alone
             status.fail(failureMessage(port, e))
             false
         }

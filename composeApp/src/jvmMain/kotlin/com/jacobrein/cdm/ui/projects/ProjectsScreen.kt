@@ -53,7 +53,7 @@ fun ProjectsScreen(vm: ProjectsViewModel = koinViewModel()) {
                             Text(row.name, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Muted(row.path, maxLines = 1)
                         }
-                        ChoicePicker(row.choice) { vm.onSelect(row.path, it) }
+                        ChoicePicker(row.choice, row.label) { vm.onSelect(row.path, it) }
                     }
                 }
             }
@@ -61,18 +61,18 @@ fun ProjectsScreen(vm: ProjectsViewModel = koinViewModel()) {
     }
 }
 
-private fun ProjectChoice.style() = when (this) {
+private fun ProjectChoice?.style() = when (this) {
     ProjectChoice.PHONE -> ChipStyle.Phone
     ProjectChoice.WATCH -> ChipStyle.Watch
     else -> ChipStyle.Neutral
 }
 
 @Composable
-private fun ChoicePicker(current: ProjectChoice, onSelect: (ProjectChoice) -> Unit) {
+private fun ChoicePicker(current: ProjectChoice?, label: String, onSelect: (ProjectChoice) -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
-        Crossfade(current, animationSpec = tween(200), label = "projectCategory") { c ->
-            Chip("${c.label} ▾", c.style(), Modifier.clip(RoundedCornerShape(9.dp)).clickable { open = true })
+        Crossfade(current to label, animationSpec = tween(200), label = "projectCategory") { (c, text) ->
+            Chip("$text ▾", c.style(), Modifier.clip(RoundedCornerShape(9.dp)).clickable { open = true })
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             ProjectChoice.entries.forEach { c ->

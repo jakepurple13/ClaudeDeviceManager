@@ -19,22 +19,24 @@ enum class ProjectChoice(val label: String, val category: Category) {
     ;
 
     companion object {
-        /** Matches by member set, so "watch,phone" reads as Phone+Watch; anything unknown reads as Any. */
-        fun of(c: Category): ProjectChoice {
+        /** Matches by member set, so "watch,phone" reads as Phone+Watch; null for anything else (e.g. "tablet"). */
+        fun of(c: Category): ProjectChoice? {
             val m = c.members()
-            return entries.firstOrNull { it.category.members() == m } ?: ANY
+            return entries.firstOrNull { it.category.members() == m }
         }
     }
 }
 
-data class ProjectRow(val path: String, val name: String, val choice: ProjectChoice)
+/** [choice] is null when the stored category isn't one of the menu's; [label] then shows its raw id. */
+data class ProjectRow(val path: String, val name: String, val choice: ProjectChoice?, val label: String)
 
 class ProjectsViewModel(private val actions: UiActions, private val projects: ProjectRepository) : ViewModel() {
     /** Null until the first emission, so the screen doesn't flash its empty state. */
     val rows: StateFlow<List<ProjectRow>?> = projects.all
         .map { list ->
             list.sortedBy { it.path.lowercase() }.map { p ->
-                ProjectRow(p.path, p.path.trimEnd('/').substringAfterLast('/').ifBlank { p.path }, ProjectChoice.of(p.defaultCategory))
+                val choice = ProjectChoice.of(p.defaultCategory)
+                ProjectRow(p.path, p.path.trimEnd('/').substringAfterLast('/').ifBlank { p.path }, choice, choice?.label ?: p.defaultCategory.id)
             }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)

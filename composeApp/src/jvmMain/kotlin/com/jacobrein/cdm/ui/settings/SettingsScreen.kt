@@ -59,12 +59,14 @@ fun SettingsScreen(vm: SettingsViewModel = koinViewModel()) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         AnimatedValue(s.serverError) { err ->
-            Text(
-                "⚠ $err",
-                color = ErrorFg,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.fillMaxWidth().background(ErrorBg, RoundedCornerShape(6.dp)).padding(10.dp),
-            )
+            Row(
+                Modifier.fillMaxWidth().background(ErrorBg, RoundedCornerShape(6.dp)).padding(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("⚠ $err", color = ErrorFg, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                SmallButton("Retry", onClick = vm::onRetryServer, enabled = !s.saving)
+            }
         }
 
         SectionLabel("Server and timers")
@@ -76,10 +78,16 @@ fun SettingsScreen(vm: SettingsViewModel = koinViewModel()) {
             }
             Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Crossfade(s.saving, animationSpec = tween(200), label = "saving") { saving ->
-                    SmallButton(if (saving) "Saving…" else "Save", onClick = vm::onSave, enabled = s.dirty && s.valid && !saving)
+                    SmallButton(if (saving) "Saving…" else "Save", onClick = vm::onSave, enabled = s.canSave)
                 }
-                Muted("Listening on 127.0.0.1:${s.saved.port}. Changing the port restarts the server; then repair the hooks.")
+                Crossfade(s.listening, animationSpec = tween(200), label = "listening") { up ->
+                    Muted(
+                        if (up) "Listening on 127.0.0.1:${s.saved.port}. Changing the port restarts the server; then repair the hooks."
+                        else "Not listening. Save retries on port ${s.saved.port}, or pick another port.",
+                    )
+                }
             }
+            ResultLine(s.saveResult)
         }
 
         SectionLabel("Claude Code hooks")

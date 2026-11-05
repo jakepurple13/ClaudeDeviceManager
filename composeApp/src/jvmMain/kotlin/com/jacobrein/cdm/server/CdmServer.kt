@@ -53,6 +53,9 @@ class CdmServer(
 ) {
     private var engine: EmbeddedServer<*, *>? = null
 
+    /** Only a server that wrote the port file deletes it: a failed start must not remove another instance's file. */
+    @Volatile private var wroteFile = false
+
     /** Binds, then writes the port file. Returns the bound port. */
     suspend fun start(): Int {
         val e = embeddedServer(CIO, port = port, host = "127.0.0.1") { cdmModule(manager, heartbeat) }
@@ -61,13 +64,17 @@ class CdmServer(
         val bound = e.engine.resolvedConnectors().first().port
         Files.createDirectories(portFile.parent)
         Files.writeString(portFile, bound.toString())
+        wroteFile = true
         return bound
     }
 
     fun stop() {
         engine?.stop(100, 1000)
         engine = null
-        runCatching { Files.deleteIfExists(portFile) }
+        if (wroteFile) {
+            wroteFile = false
+            runCatching { Files.deleteIfExists(portFile) }
+        }
     }
 }
 

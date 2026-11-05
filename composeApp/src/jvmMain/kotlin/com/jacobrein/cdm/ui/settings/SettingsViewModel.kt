@@ -32,6 +32,8 @@ data class SettingsState(
     val idleError: String? = null,
     val editingError: String? = null,
     val saving: Boolean = false,
+    /** Set when saving failed. */
+    val saveResult: ActionResult? = null,
     val serverError: String? = null,
     /** Null while being read. */
     val hookStatus: InstallStatus? = null,
@@ -45,6 +47,12 @@ data class SettingsState(
     /** The fields differ from what's stored. */
     val dirty: Boolean get() = loaded && (port != "${saved.port}" || idle != "${saved.idleMinutes}" || editing != "${saved.editingMinutes}")
     val valid: Boolean get() = portError == null && idleError == null && editingError == null
+
+    /** Save does something: there are edits, or the server is down and Save retries it. */
+    val canSave: Boolean get() = loaded && valid && !saving && (dirty || serverError != null)
+
+    /** The HTTP server is up (no start failure recorded). */
+    val listening: Boolean get() = serverError == null
 }
 
 /**
@@ -84,26 +92,45 @@ class SettingsViewModel(
     fun onIdleChanged(text: String) = state.update { it.copy(idle = text, idleError = minutesError(text)) }
     fun onEditingChanged(text: String) = state.update { it.copy(editing = text, editingError = minutesError(text)) }
 
-    /** Persists valid, changed fields; a new port also restarts the server (and leaves the hooks Outdated). */
+    /**
+     * Persists valid, changed fields; a new port also restarts the server (and leaves the hooks Outdated). While the
+     * server is down (a failed start), Save also retries it on the saved port even with nothing edited.
+     */
     fun onSave() {
         val st = state.value
         val pe = portError(st.port)
         val ie = minutesError(st.idle)
         val ee = minutesError(st.editing)
         state.update { it.copy(portError = pe, idleError = ie, editingError = ee) }
-        if (pe != null || ie != null || ee != null || !st.dirty || st.saving) return
+        if (pe != null || ie != null || ee != null || st.saving || !st.loaded) return
         val new = AppSettings(st.port.trim().toInt(), st.idle.trim().toInt(), st.editing.trim().toInt())
+        // "030" -> "30", so a value equal to the stored one doesn't leave the form dirty forever.
+        state.update { it.copy(port = "${new.port}", idle = "${new.idleMinutes}", editing = "${new.editingMinutes}") }
+        val changed = new != st.saved
         val portChanged = new.port != st.saved.port
-        state.update { it.copy(saving = true) }
+        val restart = portChanged || st.serverError != null
+        if (!changed && !restart) return
+        state.update { it.copy(saving = true, saveResult = null) }
         actions.launch {
+            var result: ActionResult? = null
             try {
-                settings.update { it.copy(port = new.port, idleMinutes = new.idleMinutes, editingMinutes = new.editingMinutes) }
-                if (portChanged) server.restart(new.port)
+                if (changed) settings.update { it.copy(port = new.port, idleMinutes = new.idleMinutes, editingMinutes = new.editingMinutes) }
+                if (restart) server.restart(new.port)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                result = ActionResult(false, "Could not save settings: ${e.message ?: e}")
             } finally {
-                state.update { it.copy(saving = false) }
-                if (portChanged) refreshHooksNow(new.port)
+                state.update { it.copy(saving = false, saveResult = result) }
+                if (portChanged && result == null) refreshHooksNow(new.port)
             }
         }
+    }
+
+    /** The error banner's Retry: start the server again on the stored port. */
+    fun onRetryServer() {
+        val port = state.value.saved.port
+        actions.launch { server.restart(port) }
     }
 
     fun onInstallHooks() = actions.launch {
