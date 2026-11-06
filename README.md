@@ -25,11 +25,22 @@ When several Claude sessions test on the same phone at once, they fight over the
 
 - macOS (Linux should work but isn't tested).
 - JDK 21 to build.
-- `adb` on your `PATH`.
 - For iOS (macOS only): Xcode, with `xcrun` working. Without it the app is Android-only and shows no iOS section.
 - Claude Code.
 
 JetBrains Runtime 25 is downloaded automatically the first time you run or package the app. The custom title bar needs it.
+
+### adb
+
+The app ships with Google's `adb` (platform-tools r37.0.2) for macOS, Windows and Linux x86-64, so you don't need to install it. Settings → adb picks which adb the app runs:
+
+- **Automatic** (default): your own adb when one is found (`ANDROID_HOME`, `ANDROID_SDK_ROOT`, `PATH`, the Android Studio SDK folder, Homebrew), otherwise the bundled copy.
+- **Bundled**: always the copy shipped with the app.
+- **Custom**: an adb file you choose.
+
+Every adb on a computer shares one adb server. A client of a different server version restarts it, which drops device connections for a moment, so Automatic prefers the adb your Claude sessions already run. Claude sessions still run their own `adb` from `PATH`. The bundled copy is for the app's device scan.
+
+The build downloads platform-tools for the OS it runs on (`./gradlew :composeApp:downloadAdb`), checks its SHA-256, and keeps only `adb`, the two Windows DLLs and Google's `NOTICE.txt`. To update it, change `platformToolsVersion` and the checksums in `composeApp/build.gradle.kts`. Linux arm64 builds ship no adb, because Google publishes none.
 
 ## Install
 
@@ -144,7 +155,7 @@ Commands that are only `cdm` are always allowed.
 - **Queue:** drag to reorder, see why a session is waiting, hand it a device now, or remove it.
 - **Sessions:** every session with its subagents, and their state. Blocked sessions can be unblocked here.
 - **Projects:** a default device category for each project.
-- **Settings:** port, release timers, pinned-command permissions, install status with Repair, and the `CLAUDE.md` snippet.
+- **Settings:** port, release timers, pinned-command permissions, which adb to use, install status with Repair, and the `CLAUDE.md` snippet.
 
 ## Troubleshooting
 

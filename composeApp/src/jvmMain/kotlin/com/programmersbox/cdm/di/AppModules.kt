@@ -8,6 +8,7 @@ import com.programmersbox.cdm.data.ProjectRepository
 import com.programmersbox.cdm.data.SettingsRepository
 import com.programmersbox.cdm.data.fileDatabase
 import com.programmersbox.cdm.devices.AdbClient
+import com.programmersbox.cdm.devices.AdbSelection
 import com.programmersbox.cdm.devices.DeviceSource
 import com.programmersbox.cdm.devices.DeviceTracker
 import com.programmersbox.cdm.devices.IosTracker
@@ -42,6 +43,7 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import org.koin.core.module.Module
 import org.koin.core.qualifier.named
 import com.programmersbox.cdm.ui.UiActions
@@ -81,7 +83,14 @@ fun appModules(): List<Module> = listOf(
         single { SettingsRepository(get()) }
         single { ActivityRepository(get()) }
         single { BlockedRepository(get()) }
-        single<AdbClient> { ProcessAdbClient() }
+        single {
+            // Follow the stored adb choice for the app's lifetime; ProcessAdbClient waits for the first value.
+            AdbSelection().also { sel ->
+                val settings = get<SettingsRepository>()
+                get<CoroutineScope>(named(APP_SCOPE)).launch { settings.settings.collect { sel.apply(it.adbMode, it.adbPath) } }
+            }
+        }
+        single<AdbClient> { val sel = get<AdbSelection>(); ProcessAdbClient(adbPath = sel::path) }
         single { DeviceTracker(get()) }
         single { DeviceSource(get(), if (iosSupported()) IosTracker(ProcessIosClient()) else null, get(named(APP_SCOPE))) }
         single { PermissionMirror(Path(System.getProperty("user.home"))) }

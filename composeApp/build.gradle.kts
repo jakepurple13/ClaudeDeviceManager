@@ -2,6 +2,9 @@ import dev.nucleusframework.desktop.application.dsl.PublishMode
 import dev.nucleusframework.desktop.application.dsl.ReleaseChannel
 import dev.nucleusframework.desktop.application.dsl.ReleaseType
 import dev.nucleusframework.desktop.application.dsl.TargetFormat
+import java.net.URI
+import java.security.MessageDigest
+import java.util.zip.ZipInputStream
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -77,9 +80,9 @@ val needsAppRuntime: Boolean = gradle.startParameter.taskNames.any { requested -
         .any { name.contains(it, ignoreCase = true) }
 }
 
-// Release CI passes -PappVersion=<tag without the leading v>; local builds stay 1.0.0. The updater compares this
+// Release CI passes -PappVersion=<tag without the leading v>; local builds default to 1.0.2. The updater compares this
 // version with the one in the release's latest-*.yml, so every tag must be a higher semver than the last.
-val appVersion: String = providers.gradleProperty("appVersion").getOrElse("1.0.0")
+val appVersion: String = providers.gradleProperty("appVersion").getOrElse("1.0.2")
 
 // Nucleus 2.5.18 writes package.json beside each format's output only when it is missing, and electron-builder takes
 // the artifact and latest-*.yml version from it. A leftover file from an earlier build would label a new build with
@@ -91,6 +94,66 @@ tasks.matching { it.name.startsWith("package") }.configureEach {
         binaries.get().asFile.walkTopDown().filter { it.name == "package.json" }.forEach { it.delete() }
     }
 }
+
+// Bundled adb: Google's platform-tools for the OS doing the build (each OS packages its own installer). Only adb
+// and the files it needs are kept, plus Google's NOTICE.txt. The app prefers an adb the user already has (see
+// AdbLocator) and only falls back to this copy. Linux platform-tools are x86-64 only, so Linux arm64 builds ship none.
+// Bump: change the version, then copy each zip's sha256 from `shasum -a 256 platform-tools_r<v>-<os>.zip`.
+val platformToolsVersion = "37.0.2"
+val platformToolsSha256 = mapOf(
+    "darwin" to "de86d62321ad38049d488fb1854c7b9a29f7e1b17e8dfb597c304b038cc37ae7",
+    "linux" to "dfc80a84a6710e5674415d4b55ae599c01aa4961822f53097d747472f410f157",
+    "win" to "6d93a5e63bc1654b70b7b94bec5c6ab46db113df0265beb314055dd253772b58",
+)
+
+abstract class DownloadAdbTask : DefaultTask() {
+    @get:Input abstract val zipUrl: Property<String>
+    @get:Input abstract val sha256: Property<String>
+    @get:Input abstract val keep: ListProperty<String>
+    @get:OutputDirectory abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun download() {
+        val bytes = URI(zipUrl.get()).toURL().openStream().use { it.readBytes() }
+        val actual = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        check(actual == sha256.get()) { "platform-tools checksum mismatch for ${zipUrl.get()}: got $actual" }
+        val out = outputDir.get().asFile.apply { deleteRecursively(); mkdirs() }
+        ZipInputStream(bytes.inputStream()).use { zip ->
+            generateSequence { zip.nextEntry }.filter { !it.isDirectory && it.name.substringAfter('/') in keep.get() }
+                .forEach { entry ->
+                    val file = File(out, entry.name) // entry names are "platform-tools/<file>"
+                    file.parentFile.mkdirs()
+                    file.outputStream().use { zip.copyTo(it) }
+                    if (file.name == "adb") file.setExecutable(true, false)
+                }
+        }
+    }
+}
+
+val hostOs = System.getProperty("os.name")
+val hostArch = System.getProperty("os.arch")
+// Nucleus copies <appResourcesRootDir>/{common,<os>,<os>-<arch>} into the app; the app reads them from
+// System.getProperty("compose.application.resources.dir").
+val adbTarget: Pair<String, String>? = when {
+    hostOs.startsWith("Mac") -> "darwin" to "macos" // universal binary (arm64 + x86_64)
+    hostOs.startsWith("Windows") -> "win" to "windows"
+    hostArch == "amd64" || hostArch == "x86_64" -> "linux" to "linux-x64"
+    else -> null
+}
+val bundledAdbRoot = layout.buildDirectory.dir("bundled-adb")
+val downloadAdb = tasks.register<DownloadAdbTask>("downloadAdb") {
+    description = "Downloads Google's platform-tools adb for the current OS into the app resources."
+    val (zipOs, resourceDir) = adbTarget ?: ("" to "none")
+    // A local, not the script property: the configuration cache can't serialize a reference to the script.
+    val supported = adbTarget != null
+    onlyIf { supported }
+    zipUrl = "https://dl.google.com/android/repository/platform-tools_r$platformToolsVersion-$zipOs.zip"
+    sha256 = platformToolsSha256[zipOs].orEmpty()
+    keep = listOf("adb", "adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll", "NOTICE.txt")
+    outputDir = bundledAdbRoot.map { it.dir(resourceDir) }
+}
+
+tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(downloadAdb) }
 
 // Packaging is Nucleus (the compose.desktop DSL plus electron-builder formats and the update metadata the in-app
 // updater reads). The Compose plugin stays for its dependencies and compiler wiring.
@@ -123,6 +186,8 @@ nucleus.application {
         }
         packageName = "Claude Device Manager"
         packageVersion = appVersion
+        // downloadAdb writes <root>/<os>/platform-tools; prepareAppResources (run and packaging) depends on it below.
+        appResourcesRootDir.set(bundledAdbRoot)
         description = "Shares connected Android devices between Claude Code sessions."
         vendor = "programmersbox"
         homepage = "https://github.com/jakepurple13/ClaudeDeviceManager"

@@ -25,12 +25,21 @@ data class Project(val path: String, val defaultCategory: Category)
  */
 enum class PinnedPermission { MIRROR, ALWAYS_ALLOW, ALWAYS_ASK }
 
+/**
+ * Which `adb` the app runs. [AUTO] uses the user's own adb when one is found and the bundled copy otherwise;
+ * [BUNDLED] always uses the copy shipped with the app; [CUSTOM] uses [AppSettings.adbPath].
+ */
+enum class AdbMode { AUTO, BUNDLED, CUSTOM }
+
 data class AppSettings(
     val port: Int = 47823,
     val idleMinutes: Int = 15,
     val editingMinutes: Int = 5,
     val pinnedPermission: PinnedPermission = PinnedPermission.MIRROR,
     val notifications: NotificationSettings = NotificationSettings(),
+    val adbMode: AdbMode = AdbMode.AUTO,
+    /** The adb file for [AdbMode.CUSTOM]; kept when another mode is picked so switching back restores it. */
+    val adbPath: String = "",
 )
 
 /** Which allocator events show a system notification. */
@@ -98,14 +107,20 @@ class SettingsRepository(private val dao: SettingDao) {
 
     suspend fun update(transform: (AppSettings) -> AppSettings) {
         val n = transform(current())
-        dao.put(SettingEntity(PORT, n.port.toString()))
-        dao.put(SettingEntity(IDLE, n.idleMinutes.toString()))
-        dao.put(SettingEntity(EDITING, n.editingMinutes.toString()))
-        dao.put(SettingEntity(PINNED, n.pinnedPermission.name))
-        dao.put(SettingEntity(NOTIFY_GRAB, n.notifications.grab.toString()))
-        dao.put(SettingEntity(NOTIFY_RELEASE, n.notifications.release.toString()))
-        dao.put(SettingEntity(NOTIFY_QUEUED, n.notifications.queued.toString()))
-        dao.put(SettingEntity(NOTIFY_QUEUE_START, n.notifications.queueStart.toString()))
+        dao.putAll(
+            listOf(
+                SettingEntity(PORT, n.port.toString()),
+                SettingEntity(IDLE, n.idleMinutes.toString()),
+                SettingEntity(EDITING, n.editingMinutes.toString()),
+                SettingEntity(PINNED, n.pinnedPermission.name),
+                SettingEntity(NOTIFY_GRAB, n.notifications.grab.toString()),
+                SettingEntity(NOTIFY_RELEASE, n.notifications.release.toString()),
+                SettingEntity(NOTIFY_QUEUED, n.notifications.queued.toString()),
+                SettingEntity(NOTIFY_QUEUE_START, n.notifications.queueStart.toString()),
+                SettingEntity(ADB_MODE, n.adbMode.name),
+                SettingEntity(ADB_PATH, n.adbPath),
+            ),
+        )
     }
 
     private fun List<SettingEntity>.toSettings(): AppSettings {
@@ -122,6 +137,8 @@ class SettingsRepository(private val dao: SettingDao) {
                 m[NOTIFY_QUEUED]?.toBooleanStrictOrNull() ?: d.notifications.queued,
                 m[NOTIFY_QUEUE_START]?.toBooleanStrictOrNull() ?: d.notifications.queueStart,
             ),
+            m[ADB_MODE]?.let { v -> AdbMode.entries.firstOrNull { it.name == v } } ?: d.adbMode,
+            m[ADB_PATH] ?: d.adbPath,
         )
     }
 
@@ -134,6 +151,8 @@ class SettingsRepository(private val dao: SettingDao) {
         const val NOTIFY_RELEASE = "notifyRelease"
         const val NOTIFY_QUEUED = "notifyQueued"
         const val NOTIFY_QUEUE_START = "notifyQueueStart"
+        const val ADB_MODE = "adbMode"
+        const val ADB_PATH = "adbPath"
     }
 }
 
