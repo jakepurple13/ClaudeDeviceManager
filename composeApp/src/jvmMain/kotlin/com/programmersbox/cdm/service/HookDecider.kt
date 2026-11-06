@@ -289,6 +289,15 @@ class HookDecider(
             }
             else -> {}
         }
+        // A queued holder's first-use grab asks for what it is queued for, not the project default.
+        val queued = queuedFor(holder, Platform.IOS)
+        if (named == null && queued != null) {
+            return when (allocator.tryGrab(holder, queued.second.copy(platform = Platform.IOS))) {
+                is GrabResult.Granted -> null
+                GrabResult.Blocked -> HookReply.Deny(releasedByUser(blocked = true))
+                else -> HookReply.Deny(stillQueued(queued.first, queued.second, Platform.IOS))
+            }
+        }
         val category = named?.category ?: defaultCategory(req.cwd)
         val g = if (named != null) {
             allocator.tryGrab(holder, Wants(emptySet()), named.key)
@@ -422,6 +431,14 @@ class HookDecider(
                 pin = target.connectedSerials.first(pred)
             }
             else -> {
+                // A queued holder's first-use grab asks for what it is queued for, not the project default.
+                queuedFor(req.holder, Platform.ANDROID)?.let { (position, wants) ->
+                    return when (val g = allocator.tryGrab(req.holder, wants.copy(platform = Platform.ANDROID))) {
+                        is GrabResult.Granted -> req.pin(g.serial)
+                        GrabResult.Blocked -> deny(releasedByUser(blocked = true))
+                        else -> deny(stillQueued(position, wants, Platform.ANDROID))
+                    }
+                }
                 val category = defaultCategory(req.cwd)
                 return when (val g = allocator.tryGrab(req.holder, Wants(category.members(), Platform.ANDROID))) {
                     is GrabResult.Granted -> req.pin(g.serial)
@@ -464,6 +481,28 @@ class HookDecider(
     private fun differentDevice(held: AllocDevice) =
         "This command targets a different device, but you hold ${label(held)}. " +
             "Drop the -s/-d/-e flag or ANDROID_SERIAL so it runs on your device, or run `cdm release --android` first."
+
+    /** The holder's queue position and request, when its queue entry covers [platform] (that platform, or none named). */
+    private fun queuedFor(holder: HolderId, platform: Platform): Pair<Int, Wants>? {
+        val st = allocator.statusOf(holder) as? HolderStatus.Queued ?: return null
+        return if (st.wants.platform == null || st.wants.platform == platform) st.position to st.wants else null
+    }
+
+    /** Denial for a queued holder that nothing free fits; worded with [Wants.limits], like the queue in the app. */
+    private fun stillQueued(position: Int, wants: Wants, platform: Platform): String {
+        val cats = wants.categories.takeUnless { it.isEmpty() || Category.ANY in it }
+        val what = cats?.joinToString(" or ") { it.id }?.let { "a $it device" } ?: "a device"
+        val limits = wants.limits.takeIf { it.isNotEmpty() }?.joinToString(prefix = " (", postfix = ")").orEmpty()
+        val category = cats?.joinToString(",") { it.id } ?: Category.ANY.id
+        val flags = (if (platform == Platform.IOS) " --ios" else " --android") +
+            when (wants.virtual) {
+                true -> " --virtual"
+                false -> " --real"
+                null -> ""
+            }
+        return "You're waiting for $what$limits (queue position $position). " +
+            "Run `cdm acquire --category $category$flags` to keep waiting."
+    }
 
     private fun label(d: AllocDevice) = "${d.name} (${d.connectedSerials.firstOrNull() ?: d.key.hardwareSerial})"
 

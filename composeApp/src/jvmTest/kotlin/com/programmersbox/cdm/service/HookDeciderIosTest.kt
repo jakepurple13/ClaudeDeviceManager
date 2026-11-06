@@ -250,6 +250,53 @@ class HookDeciderIosTest {
         }
     }
 
+    @Test fun udidTextInArgumentsIsNotAnAssignment() = runTest {
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS)) // holds u1
+        for (c in listOf(
+            "xcrun simctl openurl booted https://example.com && echo \"CDM_IOS_UDID=\$CDM_IOS_UDID\"",
+            "grep CDM_IOS_UDID= file",
+            "printf 'CDM_IOS_UDID=%s' x",
+        )) {
+            assertFalse(bash(c) is HookReply.Deny, c)
+        }
+    }
+
+    @Test fun realUdidAssignmentFormsDenied() = runTest {
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS)) // holds u1
+        for (c in listOf(
+            "declare CDM_IOS_UDID=$u2; ./t.sh",
+            "echo \${CDM_IOS_UDID:=$u2}; ./t.sh",
+            "(CDM_IOS_UDID=$u2 xcrun simctl install \$CDM_IOS_UDID a.app)",
+            "CDM_IOS_UDID=\"$u2\" ./t.sh",
+        )) {
+            assertIs<HookReply.Deny>(bash(c), c)
+        }
+    }
+
+    @Test fun queuedForRealIosOnlySimulatorFreeDenied() = runTest {
+        allocator.enqueue(h, Wants(setOf(Category.ANY), Platform.IOS, virtual = false))
+        val r = bash("xcrun simctl install booted a.app").reason()
+        assertTrue("iOS, real only" in r && "queue position 1" in r, r)
+        assertTrue("`cdm acquire --category any --ios --real`" in r, r)
+        assertEquals(null, iosHold())
+        assertTrue(allocator.holdingsOf(h).isEmpty())
+    }
+
+    @Test fun queuedForRealIosGrabsRealDeviceOnFirstUse() = runTest {
+        val realUdid = "00008110-001A2B3C4D5E6F78"
+        val real = AllocDevice(DeviceKey(realUdid), "iPhone Real", Category.PHONE, false, listOf(realUdid), Platform.IOS, virtual = false)
+        allocator.setDevices(listOf(p, w, i1, i2, real))
+        allocator.enqueue(h, Wants(setOf(Category.ANY), Platform.IOS, virtual = false))
+        // The project default (any) would take the simulator listed first; the queued request wants a real device.
+        bash("xcrun simctl install \$CDM_IOS_UDID a.app").cmd()
+        assertEquals(real.key, iosHold())
+    }
+
+    @Test fun queuedForIosAndroidCommandUsesProjectDefault() = runTest {
+        allocator.enqueue(h, Wants(setOf(Category.ANY), Platform.IOS, virtual = false))
+        assertEquals(pinPrefix("p-usb") + "adb shell ls", bash("adb shell ls").cmd())
+    }
+
     @Test fun udidAssignmentEqualToOwnAllowed() = runTest {
         allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS))
         val c = "export CDM_IOS_UDID=$u1; xcrun simctl install \$CDM_IOS_UDID a.app"

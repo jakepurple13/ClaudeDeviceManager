@@ -165,6 +165,33 @@ class IosCommandClassifierTest {
         assertEquals(emptyList(), a("MY_CDM_IOS_UDID=$u ./t.sh; echo \$CDM_IOS_UDID"))
     }
 
+    @Test fun iosUdidAssignmentsOnlyRealAssignments() {
+        val a = CommandClassifier::iosUdidAssignments
+        val lit = listOf(CommandClassifier.IosAssignment(false, u))
+        // Text inside another command's argument doesn't assign anything.
+        assertEquals(emptyList(), a("xcrun simctl openurl booted https://example.com && echo \"CDM_IOS_UDID=\$CDM_IOS_UDID\""))
+        assertEquals(emptyList(), a("grep CDM_IOS_UDID= file"))
+        assertEquals(emptyList(), a("printf 'CDM_IOS_UDID=%s' x"))
+        assertEquals(emptyList(), a("echo CDM_IOS_PAIR_UDID=$u"))
+        assertEquals(emptyList(), a("./t.sh CDM_IOS_UDID=$u"))
+        // Assignment-prefix position, through wrappers and grouping.
+        assertEquals(lit, a("(CDM_IOS_UDID=$u xcrun simctl install \$CDM_IOS_UDID a.app)"))
+        assertEquals(lit, a("{ CDM_IOS_UDID=$u ./t.sh; }"))
+        assertEquals(lit, a("sudo -u me CDM_IOS_UDID=$u ./t.sh"))
+        assertEquals(lit, a("timeout 30 env CDM_IOS_UDID=$u ./t.sh"))
+        assertEquals(lit, a("A=1 CDM_IOS_UDID=\"$u\" ./t.sh"))
+        assertEquals(lit, a("ls; CDM_IOS_UDID=$u ./t.sh"))
+        // Declaration builtins.
+        for (b in listOf("export", "declare", "declare -x", "typeset", "local", "readonly", "env")) {
+            assertEquals(lit, a("$b A=1 CDM_IOS_UDID=$u; ./t.sh"), b)
+        }
+        // ${VAR=…} / ${VAR:=…} assign wherever they appear.
+        assertEquals(lit, a("echo \${CDM_IOS_UDID:=$u}"))
+        assertEquals(lit, a("echo \"\${CDM_IOS_UDID=$u}\""))
+        assertEquals(listOf(CommandClassifier.IosAssignment(true, null)), a(": \${CDM_IOS_PAIR_UDID:=\$(pick)}"))
+        assertEquals(emptyList(), a("echo \${CDM_IOS_UDID:-$u} \${CDM_IOS_UDID}"))
+    }
+
     @Test fun multipleDestinations() {
         assertEquals(
             IosDevice(listOf(u), false, false),

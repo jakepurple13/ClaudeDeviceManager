@@ -28,7 +28,8 @@ sealed interface CommandKind {
 
 object CommandClassifier {
     private val gradleDeviceTask = Regex("""^(:?[\w-]+:)*(install|uninstall|connected)\w*$""")
-    private val assignment = Regex("""^[A-Za-z_][A-Za-z0-9_]*=.*""", RegexOption.DOT_MATCHES_ALL)
+    /** `NAME=value` or `NAME+=value` (bash appends): both are assignment words before the command. */
+    private val assignment = Regex("""^[A-Za-z_][A-Za-z0-9_]*\+?=.*""", RegexOption.DOT_MATCHES_ALL)
     private const val SERIAL_VAR = "ANDROID_SERIAL="
     private val serialAssignment =
         Regex("""(?<![A-Za-z0-9_])ANDROID_SERIAL=("(?:[^"\\]|\\.)*"|'[^']*'|[^\s;&|()<>]*)""")
@@ -78,17 +79,65 @@ object CommandClassifier {
     private val iosUdidAssignment =
         Regex("""(?<![A-Za-z0-9_])CDM_IOS_(PAIR_)?UDID(\+?)=("(?:[^"\\]|\\.)*"|'[^']*'|[^\s;&|()<>]*)""")
 
+    /** `${CDM_IOS_UDID=…}` / `${CDM_IOS_UDID:=…}` (and PAIR): these expansions assign wherever they appear. */
+    private val iosUdidExpansion = Regex("""\$\{CDM_IOS_(PAIR_)?UDID:?=([^}]*)}""")
+
+    /** Builtins whose arguments are assignments (`export X=1`, `declare -x X=1`, …). */
+    private val declarationBuiltins = setOf("export", "declare", "typeset", "local", "readonly", "env")
+
     /**
-     * Every `CDM_IOS_UDID=<value>` and `CDM_IOS_PAIR_UDID=<value>` in the raw text, wherever it appears. Like
-     * [serialAssignments] it over-matches on purpose: a later assignment would override the hook's exported UDID.
+     * Every real `CDM_IOS_UDID=<value>` and `CDM_IOS_PAIR_UDID=<value>` assignment: a word in a segment's
+     * assignment-prefix position (before the command word, after `(`/`{` and wrappers like env/sudo/timeout), an
+     * argument of export/declare/typeset/local/readonly/env, or a `${CDM_IOS_UDID=…}` / `${CDM_IOS_UDID:=…}`
+     * expansion anywhere. The same text inside another command's argument (`echo "CDM_IOS_UDID=$x"`) doesn't count.
      */
-    fun iosUdidAssignments(command: String): List<IosAssignment> =
-        iosUdidAssignment.findAll(command).map { m ->
+    fun iosUdidAssignments(command: String): List<IosAssignment> {
+        val starts = assignmentWordStarts(command)
+        val words = iosUdidAssignment.findAll(command).filter { m ->
+            val at = m.range.first
+            at in starts || (at - 1 in starts && (command[at - 1] == '"' || command[at - 1] == '\''))
+        }.map { m ->
             val raw = m.groupValues[3]
             // `+=` appends to the current value; an unquoted or double-quoted `$` / backtick expands at run time.
             val dynamic = m.groupValues[2].isNotEmpty() || (!raw.startsWith("'") && ('$' in raw || '`' in raw))
-            IosAssignment(m.groupValues[1].isNotEmpty(), if (dynamic) null else unquote(raw))
-        }.toList()
+            m.range.first to IosAssignment(m.groupValues[1].isNotEmpty(), if (dynamic) null else unquote(raw))
+        }
+        val expansions = iosUdidExpansion.findAll(command).map { m ->
+            val raw = m.groupValues[2]
+            val dynamic = '$' in raw || '`' in raw
+            m.range.first to IosAssignment(m.groupValues[1].isNotEmpty(), if (dynamic) null else unquote(raw))
+        }
+        return (words + expansions).sortedBy { it.first }.map { it.second }.toList()
+    }
+
+    /** Start offsets (in [command]) of every word that assigns: prefix assignments and declaration-builtin arguments. */
+    private fun assignmentWordStarts(command: String): Set<Int> {
+        val out = HashSet<Int>()
+        for ((s, e) in ranges(command)) {
+            val seg = command.substring(s, e)
+            val p = prefixLength(seg)
+            // Assignment words in the prefix (the wrappers themselves and their options never match the regex).
+            var i = skipWs(seg, 0)
+            while (i < p) {
+                val te = tokenEnd(seg, i)
+                // A leading `(` / `{` is glued to the first word only when written without a space, e.g. `(X=1 cmd)`.
+                var w = i
+                while (w < te && (seg[w] == '(' || seg[w] == '{')) w++
+                if (assignment.matches(seg.substring(w, te))) out += s + w
+                i = skipWs(seg, te)
+            }
+            // Arguments of a declaration builtin.
+            if (p < seg.length && words(seg.substring(p, tokenEnd(seg, p))).firstOrNull() in declarationBuiltins) {
+                var j = skipWs(seg, tokenEnd(seg, p))
+                while (j < seg.length) {
+                    val te = tokenEnd(seg, j)
+                    out += s + j
+                    j = skipWs(seg, te)
+                }
+            }
+        }
+        return out
+    }
 
     /**
      * Every `ANDROID_SERIAL=<value>` in the raw text, wherever it appears (inline, `export`, `env`, inside a subshell).

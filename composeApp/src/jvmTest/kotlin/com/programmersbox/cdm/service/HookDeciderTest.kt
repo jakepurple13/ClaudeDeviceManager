@@ -312,4 +312,34 @@ class HookDeciderTest {
         allocator.tryGrab(h2, Wants(setOf(Category.WATCH)))
         assertTrue("`cdm acquire --category watch --android`" in bash("adb shell ls").reason())
     }
+
+    // ---- first-use grab honours the queued request ----
+
+    private val emu = AllocDevice(
+        DeviceKey("E"), "Emu", Category.PHONE, false, listOf("emulator-5554"),
+        com.programmersbox.cdm.core.model.Platform.ANDROID, virtual = true,
+    )
+    private val android = com.programmersbox.cdm.core.model.Platform.ANDROID
+
+    @Test fun queuedForVirtualOnlyRealFreeDenied() = runTest {
+        allocator.enqueue(h, Wants(setOf(Category.PHONE), android, virtual = true))
+        val r = bash("adb shell am start -n a/.Main").reason()
+        assertTrue("Android, virtual only" in r && "queue position 1" in r, r)
+        assertTrue("`cdm acquire --category phone --android --virtual`" in r, r)
+        assertTrue(allocator.holdingsOf(h).isEmpty())
+        assertIs<HolderStatus.Queued>(allocator.statusOf(h))
+    }
+
+    @Test fun queuedForVirtualGrabsEmulator() = runTest {
+        allocator.setDevices(listOf(p, w, emu))
+        allocator.enqueue(h, Wants(setOf(Category.PHONE), android, virtual = true))
+        assertEquals(pinPrefix("emulator-5554") + "adb shell ls", bash("adb shell ls").cmd())
+        assertEquals(emu.key, allocator.holdingsOf(h).single().device)
+    }
+
+    @Test fun queuedForAnyPlatformUsesQueuedCategories() = runTest {
+        // Project default is watch; queued for phone with no platform limit, the grab takes the phone.
+        allocator.enqueue(h, Wants(setOf(Category.PHONE)))
+        assertEquals(pinPrefix("p-usb") + "adb shell ls", bash("adb shell ls").cmd())
+    }
 }
