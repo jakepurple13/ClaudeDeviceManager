@@ -119,4 +119,20 @@ class IosTrackerTest {
         }
         assertEquals(3, IosTracker(client).scan().size)
     }
+
+    @Test
+    fun pollsAtMostOnceEvery5s() = runTest {
+        var now = 1_000L
+        val client = FakeIos(sims = sims)
+        val t = IosTracker(client) { now }
+        assertEquals(3, t.scan().size)
+        now += 2_000
+        assertEquals(3, t.scan().size)
+        assertEquals(1, client.simCalls)
+        assertEquals(1, client.physCalls)
+        now += 3_000
+        t.scan()
+        assertEquals(2, client.simCalls)
+        assertEquals(2, client.physCalls)
+    }
 }

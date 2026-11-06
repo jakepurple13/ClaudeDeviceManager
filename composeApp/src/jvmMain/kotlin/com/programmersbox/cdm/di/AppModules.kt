@@ -83,7 +83,7 @@ fun appModules(): List<Module> = listOf(
         single { BlockedRepository(get()) }
         single<AdbClient> { ProcessAdbClient() }
         single { DeviceTracker(get()) }
-        single { DeviceSource(get(), if (iosSupported()) IosTracker(ProcessIosClient()) else null) }
+        single { DeviceSource(get(), if (iosSupported()) IosTracker(ProcessIosClient()) else null, get(named(APP_SCOPE))) }
         single { PermissionMirror(Path(System.getProperty("user.home"))) }
         single { ServerStatus() }
         single { Installer(Path(System.getProperty("user.home"))) }

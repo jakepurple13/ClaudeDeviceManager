@@ -70,7 +70,7 @@ class DeviceManagerServiceTest {
         configs: DeviceConfigRepository = this@DeviceManagerServiceTest.configs,
         settings: SettingsRepository = this@DeviceManagerServiceTest.settings,
     ): DeviceManagerService {
-        val s = DeviceManagerService(DeviceSource(DeviceTracker(adb), null), configs, projects, settings, activity, blocked, mirror, clock = { now })
+        val s = DeviceManagerService(DeviceSource(DeviceTracker(adb), null, backgroundScope), configs, projects, settings, activity, blocked, mirror, clock = { now })
         s.start(scope)
         s.snapshot.first { it.devices.size == 2 }
         return s
@@ -230,7 +230,7 @@ class DeviceManagerServiceTest {
         val home = java.nio.file.Files.createTempDirectory("cdm-h")
         java.nio.file.Files.createDirectories(home.resolve(".claude"))
         home.resolve(".claude/settings.json").toFile().writeText("{\"permissions\":{\"allow\":[\"Bash\"]}}")
-        val s2 = DeviceManagerService(DeviceSource(DeviceTracker(adb), null), configs, projects, settings, activity, blocked, PermissionMirror(home), clock = { now })
+        val s2 = DeviceManagerService(DeviceSource(DeviceTracker(adb), null, backgroundScope), configs, projects, settings, activity, blocked, PermissionMirror(home), clock = { now })
         s2.start(backgroundScope)
         val plain = s2.preToolUse(HookInput("PreToolUse", "s9", null, null, "/w", "Bash", "echo hi"))
         assertEquals(HookDecision(HookReply.NoOpinion, null), plain)
@@ -289,7 +289,7 @@ class DeviceManagerServiceTest {
 
     @Test fun subagentStopReleasesAndEndedHoldersDropAfterAnHour() = runTest {
         val s = DeviceManagerService(
-            DeviceSource(DeviceTracker(adb), null), configs, projects, settings, activity, blocked, mirror, clock = { now },
+            DeviceSource(DeviceTracker(adb), null, backgroundScope), configs, projects, settings, activity, blocked, mirror, clock = { now },
             scanInterval = 2.seconds, tickInterval = 5.seconds,
         )
         s.start(backgroundScope)

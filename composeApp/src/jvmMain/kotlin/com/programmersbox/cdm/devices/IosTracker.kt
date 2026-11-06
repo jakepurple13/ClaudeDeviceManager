@@ -24,8 +24,19 @@ class IosTracker(
     private val json = Json { ignoreUnknownKeys = true }
     private var simsFailedUntil = 0L
     private var physicalFailedUntil = 0L
+    private var cached: List<TrackedDevice> = emptyList()
+    private var lastScanAt: Long? = null
+    private var polled = false
 
+    /** At most one pair of xcrun calls per [POLL_TTL_MS]; scans inside the window return the last result. */
     suspend fun scan(): List<TrackedDevice> {
+        val last = lastScanAt
+        if (last != null && clock() - last < POLL_TTL_MS) return cached
+        polled = false
+        return refresh().also { cached = it; if (polled) lastScanAt = clock() } // backoff-only passes don't reset the TTL
+    }
+
+    private suspend fun refresh(): List<TrackedDevice> {
         val sims = guarded("simctl", { simsFailedUntil }, { simsFailedUntil = it }) { simulators(client.bootedSimulatorsJson()) }
         val real = guarded("devicectl", { physicalFailedUntil }, { physicalFailedUntil = it }) { physical(client.physicalDevicesJson()) }
         return sims + real
@@ -38,6 +49,7 @@ class IosTracker(
         f: suspend () -> List<TrackedDevice>,
     ): List<TrackedDevice> {
         if (failedUntil() > clock()) return emptyList()
+        polled = true
         return try {
             f()
         } catch (e: CancellationException) {
@@ -122,5 +134,6 @@ class IosTracker(
 
     private companion object {
         const val FAIL_BACKOFF_MS = 30_000L
+        const val POLL_TTL_MS = 5_000L
     }
 }
