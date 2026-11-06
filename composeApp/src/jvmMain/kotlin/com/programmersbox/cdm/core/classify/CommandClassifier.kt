@@ -43,7 +43,7 @@ object CommandClassifier {
     fun firstWord(segment: String): String =
         words(segment).firstOrNull()?.substringAfterLast('/') ?: ""
 
-    /** One kind per non-empty segment, in order. ANDROID_SERIAL assignments/exports fill in explicitSerial. */
+    /** One kind per non-empty segment, in order (a mixed Android+iOS Gradle segment yields two). ANDROID_SERIAL assignments/exports fill in explicitSerial. */
     fun classifyAll(command: String): List<CommandKind> {
         var exported: String? = null
         val out = mutableListOf<CommandKind>()
@@ -60,6 +60,8 @@ object CommandClassifier {
             val k = classifySegment(seg)
             val envSerial = inline ?: exported
             out += if (k is CommandKind.Device && k.explicitSerial == null && envSerial != null) k.copy(explicitSerial = envSerial) else k
+            // A Gradle segment naming both an Android device task and an iOS test task yields both kinds.
+            if (k is CommandKind.Device) mixedGradleIos(seg)?.let { out += it }
         }
         return out
     }
@@ -158,9 +160,16 @@ object CommandClassifier {
         CommandKind.Other -> 0
     }
 
-    private fun classifySegment(seg: String): CommandKind = classifyWords(words(seg))
+    private fun classifySegment(seg: String): CommandKind = classifyWords(words(seg), words(seg, protectSingle = true))
 
-    private fun classifyWords(w: List<String>): CommandKind {
+    private fun mixedGradleIos(seg: String): CommandKind? {
+        val w = words(seg)
+        if (w.firstOrNull()?.substringAfterLast('/') !in setOf("gradle", "gradlew")) return null
+        return if (w.drop(1).any { !it.startsWith("-") && gradleIosTask.matches(it) }) iosDevice(emptyList(), booted = false, allowPin = false) else null
+    }
+
+    /** [w] are the words as the shell passes them; [wi] the same but with `$` in single quotes made inert (never expanded). */
+    private fun classifyWords(w: List<String>, wi: List<String> = w): CommandKind {
         if (w.isEmpty()) return CommandKind.Other
         return when (w[0].substringAfterLast('/')) {
             "cdm" -> CommandKind.Cdm(w.getOrNull(1)?.takeIf { !it.startsWith("-") } ?: "")
@@ -168,16 +177,16 @@ object CommandClassifier {
                 if (w.drop(1).any { !it.startsWith("-") && gradleDeviceTask.matches(it) }) {
                     CommandKind.Device(null, false, false)
                 } else if (w.drop(1).any { !it.startsWith("-") && gradleIosTask.matches(it) }) {
-                    iosDevice(w, booted = false, allowPin = false)
+                    iosDevice(emptyList(), booted = false, allowPin = false)
                 } else CommandKind.GradleNonDevice
             "adb" -> classifyAdb(w.drop(1))
-            "xcodebuild" -> classifyXcodebuild(w)
-            "xcrun" -> classifyXcrun(w)
-            "maestro" -> iosDevice(w, booted = false)
+            "xcodebuild" -> classifyXcodebuild(w, wi)
+            "xcrun" -> classifyXcrun(w, wi)
+            "maestro" -> iosDevice(valuesAfter(wi, "--device", "--udid"), booted = false)
             "fastlane" ->
-                if (w.drop(1).any { it in fastlaneDeviceActions }) iosDevice(w, booted = false) else CommandKind.Other
+                if (w.drop(1).any { it in fastlaneDeviceActions }) iosDevice(emptyList(), booted = false) else CommandKind.Other
             "killall" -> if ("Simulator" in w.drop(1)) CommandKind.IosGlobalDangerous("killall Simulator") else CommandKind.Other
-            else -> if (w[0].substringAfterLast('/').startsWith("idevice")) iosDevice(w, booted = false) else CommandKind.Other
+            else -> if (w[0].substringAfterLast('/').startsWith("idevice")) iosDevice(valuesAfter(wi, "-u", "--udid"), booted = false) else CommandKind.Other
         }
     }
 
@@ -191,21 +200,38 @@ object CommandClassifier {
     private val cdmUdidRef = Regex("""\$\{?CDM_IOS_UDID\}?(?![A-Za-z0-9_])""")
     private val xcrunOptsWithArg = setOf("-sdk", "--sdk", "-toolchain", "--toolchain", "-log")
 
-    private fun iosDevice(w: List<String>, booted: Boolean, allowPin: Boolean = true): CommandKind.IosDevice {
-        val udids = w.drop(1).flatMap { t -> udidRegex.findAll(t).map { it.value }.toList() }.distinct()
-        val ref = w.drop(1).any { cdmUdidRef.containsMatchIn(it) }
-        return CommandKind.IosDevice(udids, booted, allowPin && (udids.isNotEmpty() || ref || booted))
+    /** Values of `flag value` / `flag=value` pairs in [w]. */
+    private fun valuesAfter(w: List<String>, vararg flags: String): List<String> {
+        val out = mutableListOf<String>()
+        for (i in 1 until w.size) {
+            val t = w[i]
+            if (t in flags) out += w.getOrNull(i + 1) ?: ""
+            else flags.firstOrNull { t.startsWith("$it=") }?.let { out += t.removePrefix("$it=") }
+        }
+        return out
     }
 
-    private fun classifyXcodebuild(w: List<String>): CommandKind {
-        val args = w.drop(1)
-        val dests = args.indices.filter { args[it] == "-destination" }.mapNotNull { args.getOrNull(it + 1) }
+    /**
+     * [selectors] are the argument values that select a device (empty: the command names none). It is pinnable when it
+     * uses `booted`, or when there are selectors and every one is a UDID or `$CDM_IOS_UDID`.
+     */
+    private fun iosDevice(selectors: List<String>, booted: Boolean, allowPin: Boolean = true): CommandKind.IosDevice {
+        val udids = selectors.flatMap { t -> udidRegex.findAll(t).map { it.value }.toList() }.distinct()
+        val pinned = selectors.isNotEmpty() && selectors.all { t -> udidRegex.containsMatchIn(t) || cdmUdidRef.containsMatchIn(t) }
+        return CommandKind.IosDevice(udids, booted, allowPin && (booted || pinned))
+    }
+
+    private fun classifyXcodebuild(w: List<String>, wi: List<String>): CommandKind {
+        val dests = valuesAfter(w, "-destination")
         val deviceDest = dests.any { !it.startsWith("generic/") && !it.contains("platform=macOS") }
-        val tests = args.any { it == "test" || it == "test-without-building" }
-        return if (tests || deviceDest) iosDevice(w, booted = false) else CommandKind.IosGlobalSafe
+        val tests = w.drop(1).any { it == "test" || it == "test-without-building" }
+        if (!tests && !deviceDest) return CommandKind.IosGlobalSafe
+        // Only the `id=` part of each destination selects a device.
+        val ids = valuesAfter(wi, "-destination").map { d -> d.split(',').firstOrNull { it.startsWith("id=") } ?: "" }
+        return iosDevice(ids, booted = false)
     }
 
-    private class Simctl(val sub: String?, val subIndex: Int, val bootedIndex: Int?)
+    private class Simctl(val sub: String?, val subIndex: Int, val devIndex: Int?, val bootedIndex: Int?)
 
     /** Parses `xcrun [opts] simctl [opts] <sub> …` from [w] (w[0] is xcrun); null if it is not simctl. */
     private fun simctl(w: List<String>): Simctl? {
@@ -215,22 +241,24 @@ object CommandClassifier {
         if (w.getOrNull(i) != "simctl") return null
         i++
         while (i < w.size && w[i].startsWith("-")) i += if (w[i] == "--set") 2 else 1
-        val sub = w.getOrNull(i) ?: return Simctl(null, i, null)
-        // `list`/`help` take `booted` as a filter, not a device.
-        val booted = if (sub == "list" || sub == "help") null else (i + 1 until w.size).firstOrNull { w[it] == "booted" }
-        return Simctl(sub, i, booted)
+        val sub = w.getOrNull(i) ?: return Simctl(null, i, null, null)
+        // The device is the first positional argument. `list`/`help` take `booted` as a filter, not a device.
+        val dev = (i + 1 until w.size).firstOrNull { !w[it].startsWith("-") }
+        val booted = if (sub == "list" || sub == "help" || dev == null || w[dev] != "booted") null else dev
+        return Simctl(sub, i, dev, booted)
     }
 
-    private fun classifyXcrun(w: List<String>): CommandKind {
-        simctl(w)?.let { sc ->
+    private fun classifyXcrun(w: List<String>, wi: List<String>): CommandKind {
+        simctl(wi)?.let { sc ->
             val sub = sc.sub ?: return CommandKind.IosGlobalSafe
             val first = w.getOrNull(sc.subIndex + 1)
+            val device = sc.devIndex?.let { wi[it] }
             return when {
                 sub == "list" || sub == "help" -> CommandKind.IosGlobalSafe
                 sub == "shutdown" && first == "all" -> CommandKind.IosGlobalDangerous("simctl shutdown all")
                 sub == "erase" && first == "all" -> CommandKind.IosGlobalDangerous("simctl erase all")
                 sub == "delete" -> CommandKind.IosGlobalDangerous("simctl delete")
-                else -> iosDevice(w, booted = sc.bootedIndex != null)
+                else -> iosDevice(listOfNotNull(device).filter { it != "booted" }, booted = sc.bootedIndex != null)
             }
         }
         var i = 1
@@ -244,9 +272,10 @@ object CommandClassifier {
         val tool = w.getOrNull(i) ?: return CommandKind.IosGlobalSafe
         if (tool == "devicectl") {
             val group = w.drop(i + 1).firstOrNull { !it.startsWith("-") }
-            return if (group == null || group == "list") CommandKind.IosGlobalSafe else iosDevice(w, booted = false)
+            return if (group == null || group == "list") CommandKind.IosGlobalSafe
+            else iosDevice(valuesAfter(wi, "--device", "-d"), booted = false)
         }
-        return classifyWords(w.drop(i))
+        return classifyWords(w.drop(i), wi.drop(i))
     }
 
     private fun classifyAdb(args: List<String>): CommandKind {
@@ -327,30 +356,32 @@ object CommandClassifier {
         return minOf(i, s.length)
     }
 
-    private fun unquote(t: String): String {
+    /** With [protect], a `$` the shell would not expand (single-quoted or backslash-escaped) becomes an inert U+0001. */
+    private fun unquote(t: String, protect: Boolean = false): String {
         val sb = StringBuilder()
+        fun add(c: Char, literal: Boolean) { sb.append(if (protect && literal && c == '$') '\u0001' else c) }
         var q = 0.toChar()
         var i = 0
         while (i < t.length) {
             val ch = t[i]
             if (q != 0.toChar()) {
                 if (ch == q) q = 0.toChar()
-                else if (ch == '\\' && q == '"' && i + 1 < t.length) sb.append(t[++i])
-                else sb.append(ch)
+                else if (ch == '\\' && q == '"' && i + 1 < t.length) add(t[++i], true)
+                else add(ch, q == '\'')
             } else if (ch == '\'' || ch == '"') q = ch
-            else if (ch == '\\' && i + 1 < t.length) sb.append(t[++i])
+            else if (ch == '\\' && i + 1 < t.length) add(t[++i], true)
             else sb.append(ch)
             i++
         }
         return sb.toString()
     }
 
-    private fun words(seg: String): List<String> {
+    private fun words(seg: String, protectSingle: Boolean = false): List<String> {
         val out = mutableListOf<String>()
         var i = skipWs(seg, 0)
         while (i < seg.length) {
             val e = tokenEnd(seg, i)
-            out += unquote(seg.substring(i, e))
+            out += unquote(seg.substring(i, e), protectSingle)
             i = skipWs(seg, e)
         }
         return out

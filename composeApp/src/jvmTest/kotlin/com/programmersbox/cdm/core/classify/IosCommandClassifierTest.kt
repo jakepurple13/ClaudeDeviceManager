@@ -94,4 +94,35 @@ class IosCommandClassifierTest {
             CommandClassifier.rewriteBooted("FOO=1 xcrun simctl io 'booted' screenshot a.png", u),
         )
     }
+
+    @Test fun pinOnlyFromDeviceSelectingPositions() {
+        val name = "-destination 'platform=iOS Simulator,name=iPhone 16'"
+        assertEquals(IosDevice(emptyList(), false, false), k("xcodebuild test $name -derivedDataPath out/\$CDM_IOS_UDID"))
+        assertEquals(IosDevice(emptyList(), false, false), k("xcodebuild test $name -resultBundlePath out/$u.xcresult"))
+        assertEquals(IosDevice(listOf(u), false, true), k("xcrun simctl install $u /tmp/$real.app"))
+        assertEquals(IosDevice(emptyList(), true, true), k("xcrun simctl install booted /tmp/$u.app"))
+    }
+
+    @Test fun cdmRefQuoting() {
+        assertEquals(IosDevice(emptyList(), false, false), k("xcodebuild test -destination 'id=\$CDM_IOS_UDID'"))
+        assertEquals(IosDevice(emptyList(), false, true), k("xcodebuild test -destination \"id=\$CDM_IOS_UDID\""))
+        assertEquals(IosDevice(emptyList(), false, true), k("xcodebuild test -destination id=\$CDM_IOS_UDID"))
+    }
+
+    @Test fun multipleDestinations() {
+        assertEquals(
+            IosDevice(listOf(u), false, false),
+            k("xcodebuild test -destination id=$u -destination 'platform=iOS Simulator,name=iPhone 16'"),
+        )
+        assertEquals(
+            IosDevice(listOf(u, real), false, true),
+            k("xcodebuild test -destination id=$u -destination id=$real"),
+        )
+    }
+
+    @Test fun mixedGradleKeepsIos() {
+        val kinds = CommandClassifier.classifyAll("./gradlew connectedDebugAndroidTest iosSimulatorArm64Test")
+        assertEquals(listOf(Device(null, false, false), IosDevice(emptyList(), false, false)), kinds)
+        assertEquals(setOf(Platform.ANDROID, Platform.IOS), CommandClassifier.platformsOf("./gradlew connectedDebugAndroidTest iosSimulatorArm64Test"))
+    }
 }
