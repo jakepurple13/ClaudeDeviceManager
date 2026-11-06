@@ -125,4 +125,69 @@ class IosCommandClassifierTest {
         assertEquals(listOf(Device(null, false, false), IosDevice(emptyList(), false, false)), kinds)
         assertEquals(setOf(Platform.ANDROID, Platform.IOS), CommandClassifier.platformsOf("./gradlew connectedDebugAndroidTest iosSimulatorArm64Test"))
     }
+
+    private val pin = "/Users/me/.claude-device-manager/ios-pin.gradle"
+
+    @Test fun gradleIosTestWithPinInitScriptIsPinnable() {
+        val pinned = IosDevice(emptyList(), false, true)
+        assertEquals(pinned, k("./gradlew --init-script $pin :shared:iosSimulatorArm64Test"))
+        assertEquals(pinned, k("./gradlew :shared:iosSimulatorArm64Test --init-script '$pin'"))
+        assertEquals(pinned, k("./gradlew --init-script=$pin iosX64Test"))
+        assertEquals(pinned, k("./gradlew -I $pin iosSimulatorArm64Test"))
+        assertEquals(pinned, k("gradle -I$pin iosSimulatorArm64Test"))
+    }
+
+    @Test fun gradleIosTestOtherInitScriptStaysUnpinnable() {
+        assertEquals(IosDevice(emptyList(), false, false), k("./gradlew --init-script /tmp/other.gradle iosSimulatorArm64Test"))
+        // The script name only counts as an init-script argument, not as a task or a property value.
+        assertEquals(IosDevice(emptyList(), false, false), k("./gradlew -Pfoo=$pin iosSimulatorArm64Test"))
+    }
+
+    @Test fun gradleDeviceOptionOverridesThePin() {
+        // A task's --device option is applied after the init script, so it decides the simulator.
+        assertEquals(IosDevice(listOf(u), false, true), k("./gradlew --init-script $pin iosSimulatorArm64Test --device $u"))
+        assertEquals(IosDevice(emptyList(), false, true), k("./gradlew iosSimulatorArm64Test --device \$CDM_IOS_UDID"))
+        assertEquals(IosDevice(emptyList(), false, false), k("./gradlew --init-script $pin iosSimulatorArm64Test --device 'iPhone 16'"))
+        assertEquals(IosDevice(emptyList(), false, false), k("./gradlew --init-script $pin iosSimulatorArm64Test --device='iPhone 16'"))
+    }
+
+    @Test fun mixedGradleWithPinInitScript() {
+        val kinds = CommandClassifier.classifyAll("./gradlew --init-script $pin connectedDebugAndroidTest iosSimulatorArm64Test")
+        assertEquals(listOf(Device(null, false, false), IosDevice(emptyList(), false, true)), kinds)
+    }
+
+    @Test fun addIosInitScriptAppendsOnlyToIosGradleSegments() {
+        val q = "'$pin'"
+        assertEquals(
+            "./gradlew --init-script $q :shared:iosSimulatorArm64Test",
+            CommandClassifier.addIosInitScript("./gradlew :shared:iosSimulatorArm64Test", pin),
+        )
+        assertEquals(
+            "./gradlew assembleDebug && ANDROID_SERIAL=x ./gradlew --init-script $q connectedDebugAndroidTest iosX64Test; adb devices",
+            CommandClassifier.addIosInitScript(
+                "./gradlew assembleDebug && ANDROID_SERIAL=x ./gradlew connectedDebugAndroidTest iosX64Test; adb devices", pin,
+            ),
+        )
+        assertEquals(
+            "{ cd app && timeout 600 ./gradlew --init-script $q iosSimulatorArm64Test 2>&1; }",
+            CommandClassifier.addIosInitScript("{ cd app && timeout 600 ./gradlew iosSimulatorArm64Test 2>&1; }", pin),
+        )
+        val other = "./gradlew installDebug; xcrun simctl list; echo iosSimulatorArm64Test"
+        assertEquals(other, CommandClassifier.addIosInitScript(other, pin))
+    }
+
+    @Test fun addIosInitScriptIsIdempotent() {
+        val once = CommandClassifier.addIosInitScript("./gradlew iosSimulatorArm64Test", pin)
+        assertEquals(once, CommandClassifier.addIosInitScript(once, pin))
+        val manual = "./gradlew -I $pin iosSimulatorArm64Test"
+        assertEquals(manual, CommandClassifier.addIosInitScript(manual, pin))
+        assertEquals(IosDevice(emptyList(), false, true), k(once))
+    }
+
+    @Test fun addIosInitScriptQuotesThePath() {
+        val spaced = "/Users/a b/it's/ios-pin.gradle"
+        val out = CommandClassifier.addIosInitScript("./gradlew iosSimulatorArm64Test", spaced)
+        assertEquals("./gradlew --init-script '/Users/a b/it'\\''s/ios-pin.gradle' iosSimulatorArm64Test", out)
+        assertEquals(listOf("./gradlew", "--init-script", spaced, "iosSimulatorArm64Test"), CommandClassifier.unquotedWords(out))
+    }
 }

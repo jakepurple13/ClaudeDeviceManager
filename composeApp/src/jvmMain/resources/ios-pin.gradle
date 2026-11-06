@@ -1,0 +1,13 @@
+// ios-pin.gradle: Claude Device Manager init script
+// Pins Kotlin/Native simulator test tasks (iosSimulatorArm64Test, ...) to the simulator in CDM_IOS_UDID, the one
+// `cdm acquire` handed out. Without CDM_IOS_UDID it does nothing. A task's own `--device` option still wins.
+def udid = System.getenv("CDM_IOS_UDID")
+if (udid) {
+    allprojects {
+        plugins.withId("org.jetbrains.kotlin.multiplatform") { plugin ->
+            // The Kotlin Gradle plugin's classes aren't visible to init scripts; load the task type through the plugin.
+            def type = plugin.class.classLoader.loadClass("org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeSimulatorTest")
+            tasks.withType(type).configureEach { it.device.set(udid) }
+        }
+    }
+}

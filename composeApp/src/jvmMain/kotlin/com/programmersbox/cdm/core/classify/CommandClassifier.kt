@@ -124,11 +124,31 @@ object CommandClassifier {
         return sb.toString()
     }
 
+    /**
+     * Adds `--init-script <path>` right after `gradle`/`gradlew` in every segment that runs a Gradle iOS test task and
+     * doesn't already load an `ios-pin.gradle` init script. Other segments are left exactly as written.
+     */
+    fun addIosInitScript(command: String, path: String): String {
+        val insert = " --init-script " + shellQuote(path)
+        val sb = StringBuilder()
+        var last = 0
+        for ((s, e) in ranges(command)) {
+            val seg = command.substring(s, e)
+            val start = prefixLength(seg)
+            val w = words(seg.substring(start))
+            if (!runsGradleIosTest(w) || loadsIosPin(w)) continue
+            val at = tokenEnd(seg, skipWs(seg, start))
+            sb.append(command, last, s + at).append(insert)
+            last = s + at
+        }
+        sb.append(command, last, command.length)
+        return sb.toString()
+    }
+
     private fun specific(d: CommandKind.Device) = d.explicitSerial != null || d.usbFlag || d.emulatorFlag
 
     fun addCdmIdentity(command: String, holder: HolderId, cwd: String): String {
-        val quoted = "'" + cwd.replace("'", "'\\''") + "'"
-        val insert = " --holder ${holder.key} --cwd $quoted"
+        val insert = " --holder ${holder.key} --cwd ${shellQuote(cwd)}"
         val sb = StringBuilder()
         var last = 0
         for ((s, e) in ranges(command)) {
@@ -145,6 +165,8 @@ object CommandClassifier {
         sb.append(command, last, command.length)
         return sb.toString()
     }
+
+    private fun shellQuote(s: String) = "'" + s.replace("'", "'\\''") + "'"
 
     private fun rank(k: CommandKind) = when (k) {
         is CommandKind.AdbGlobalDangerous -> 6
@@ -164,8 +186,7 @@ object CommandClassifier {
 
     private fun mixedGradleIos(seg: String): CommandKind? {
         val w = words(seg)
-        if (w.firstOrNull()?.substringAfterLast('/') !in setOf("gradle", "gradlew")) return null
-        return if (w.drop(1).any { !it.startsWith("-") && gradleIosTask.matches(it) }) iosDevice(emptyList(), booted = false, allowPin = false) else null
+        return if (runsGradleIosTest(w)) gradleIos(w, words(seg, protectSingle = true)) else null
     }
 
     /** [w] are the words as the shell passes them; [wi] the same but with `$` in single quotes made inert (never expanded). */
@@ -176,9 +197,7 @@ object CommandClassifier {
             "gradle", "gradlew" ->
                 if (w.drop(1).any { !it.startsWith("-") && gradleDeviceTask.matches(it) }) {
                     CommandKind.Device(null, false, false)
-                } else if (w.drop(1).any { !it.startsWith("-") && gradleIosTask.matches(it) }) {
-                    iosDevice(emptyList(), booted = false, allowPin = false)
-                } else CommandKind.GradleNonDevice
+                } else if (runsGradleIosTest(w)) gradleIos(w, wi) else CommandKind.GradleNonDevice
             "adb" -> classifyAdb(w.drop(1))
             "xcodebuild" -> classifyXcodebuild(w, wi)
             "xcrun" -> classifyXcrun(w, wi)
@@ -193,6 +212,37 @@ object CommandClassifier {
     // ---- iOS ----
 
     private val gradleIosTask = Regex("""^(:?[\w-]+:)*(ios\w*Test|\w*Simulator\w*Test)$""")
+    private const val IOS_PIN_SCRIPT = "ios-pin.gradle"
+
+    private fun runsGradleIosTest(w: List<String>): Boolean =
+        w.firstOrNull()?.substringAfterLast('/') in setOf("gradle", "gradlew") &&
+            w.drop(1).any { !it.startsWith("-") && gradleIosTask.matches(it) }
+
+    /** The Gradle words load an init script named `ios-pin.gradle` (`--init-script p`, `--init-script=p`, `-I p`, `-Ip`). */
+    private fun loadsIosPin(w: List<String>): Boolean {
+        for (i in 1 until w.size) {
+            val t = w[i]
+            val script = when {
+                t == "--init-script" || t == "-I" -> w.getOrNull(i + 1)
+                t.startsWith("--init-script=") -> t.removePrefix("--init-script=")
+                t.startsWith("-I") -> t.substring(2)
+                else -> null
+            }
+            if (script?.substringAfterLast('/') == IOS_PIN_SCRIPT) return true
+        }
+        return false
+    }
+
+    /**
+     * A Gradle iOS test run. The simulator test task's `--device` option picks the simulator and wins over the init
+     * script, so with it the usual selector rules apply; without it the run is pinned only by `ios-pin.gradle`.
+     */
+    private fun gradleIos(w: List<String>, wi: List<String>): CommandKind.IosDevice {
+        val devices = valuesAfter(wi, "--device")
+        return if (devices.isNotEmpty()) iosDevice(devices, booted = false)
+        else CommandKind.IosDevice(emptyList(), usesBooted = false, pinnable = loadsIosPin(w))
+    }
+
     private val fastlaneDeviceActions = setOf("scan", "snapshot", "run_tests")
     private val udidRegex = Regex(
         "(?<![0-9A-Fa-f-])([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16})(?![0-9A-Fa-f])",

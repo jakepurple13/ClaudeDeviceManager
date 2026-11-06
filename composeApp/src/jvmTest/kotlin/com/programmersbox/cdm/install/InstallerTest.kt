@@ -397,6 +397,46 @@ class InstallerTest {
     }
 
     @Test
+    fun installCdmAlsoInstallsIosPinScript() {
+        val home = tmpHome()
+        val inst = Installer(home)
+        assertTrue(!inst.iosPinInstalled())
+        inst.installCdm()
+        val pin = home.resolve(".claude-device-manager/ios-pin.gradle")
+        assertEquals(pin, inst.iosPinPath)
+        assertTrue(inst.iosPinInstalled())
+        assertTrue(pin.readText().contains("CDM_IOS_UDID"))
+        assertTrue(pin.readText().contains("KotlinNativeSimulatorTest"))
+        // An older copy is replaced.
+        pin.writeText(pin.readText() + "\n// older build\n")
+        assertTrue(!inst.iosPinInstalled())
+        inst.installCdm()
+        assertTrue(inst.iosPinInstalled())
+        assertEquals(listOf("ios-pin.gradle"), Files.list(pin.parent).map { it.fileName.toString() }.filter { !it.endsWith(".json") }.toList())
+    }
+
+    @Test
+    fun uninstallCdmRemovesOnlyOurIosPinScript() {
+        val home = tmpHome()
+        val inst = Installer(home)
+        inst.installCdm()
+        val pin = inst.iosPinPath
+        inst.uninstallCdm()
+        assertTrue(!pin.exists())
+        assertTrue(!inst.iosPinInstalled())
+        inst.uninstallCdm() // missing file: no-op
+        // A file at that path that isn't ours is kept.
+        pin.writeText("// someone else's script\n")
+        inst.uninstallCdm()
+        assertEquals("// someone else's script\n", pin.readText())
+        // An older copy of ours is still ours.
+        inst.installCdm()
+        pin.writeText(pin.readText() + "\n// older build\n")
+        inst.uninstallCdm()
+        assertTrue(!pin.exists())
+    }
+
+    @Test
     fun installCdmReplacesAnOlderCopyOfOurs() {
         val home = tmpHome()
         val inst = Installer(home)

@@ -194,12 +194,43 @@ class Installer(private val home: Path) {
             }
         }
         Files.setPosixFilePermissions(target, PosixFilePermissions.fromString("rwxr-xr-x"))
+        installIosPin()
         return target
     }
 
-    /** Deletes ~/.local/bin/cdm only if it is our script, byte for byte. */
+    /** Deletes ~/.local/bin/cdm only if it is our script, byte for byte, and our iOS pin script if it is one. */
     fun uninstallCdm() {
         if (cdmInstalled()) Files.deleteIfExists(cdmPath)
+        if (Files.isRegularFile(iosPinPath, LinkOption.NOFOLLOW_LINKS) &&
+            IOS_PIN_SIGNATURE in String(Files.readAllBytes(iosPinPath), Charsets.UTF_8)
+        ) Files.deleteIfExists(iosPinPath)
+    }
+
+    /** The Gradle init script that pins KMP iOS simulator tests to `CDM_IOS_UDID`, installed with `cdm`. */
+    val iosPinPath: Path get() = home.resolve(".claude-device-manager/ios-pin.gradle")
+
+    private fun bundledIosPin(): ByteArray =
+        (Installer::class.java.getResourceAsStream("/ios-pin.gradle") ?: error("ios-pin.gradle resource missing"))
+            .use { it.readAllBytes() }
+
+    /** [iosPinPath] is a regular file with exactly the bundled script's bytes. */
+    fun iosPinInstalled(): Boolean =
+        Files.isRegularFile(iosPinPath, LinkOption.NOFOLLOW_LINKS) &&
+            Files.readAllBytes(iosPinPath).contentEquals(bundledIosPin())
+
+    /** Writes the bundled init script to [iosPinPath]; the directory is ours, so whatever is there is replaced. */
+    private fun installIosPin() {
+        if (iosPinInstalled()) return
+        val target = iosPinPath
+        target.parent.createDirectories()
+        // Temp file + rename: a Gradle run that is starting never reads a half-written script.
+        val tmp = Files.createTempFile(target.parent, "ios-pin", ".tmp")
+        try {
+            Files.write(tmp, bundledIosPin())
+            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } finally {
+            Files.deleteIfExists(tmp)
+        }
     }
 
     /** Keeps the newest [keep] `settings.json.cdm-backup-*` files (by their timestamp and counter). */
@@ -311,6 +342,7 @@ class Installer(private val home: Path) {
         val PORT_RE = Regex("""127\.0\.0\.1:(\d+)""")
         val BACKUP_RE = Regex("""settings\.json\.cdm-backup-(\d{8}-\d{6})(?:-(\d+))?""")
         const val CDM_SIGNATURE = "cdm: Claude Device Manager CLI"
+        const val IOS_PIN_SIGNATURE = "ios-pin.gradle: Claude Device Manager init script"
         const val SETTINGS_CREATED = "settingsCreated"
         const val CLAUDE_MD_CREATED = "claudeMdCreated"
     }
