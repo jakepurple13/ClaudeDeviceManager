@@ -20,12 +20,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -124,6 +126,21 @@ fun SettingsScreen(vm: SettingsViewModel = koinViewModel()) {
             ResultLine(s.pinnedResult)
         }
 
+        SectionLabel("Notifications")
+        CardBox {
+            Muted("Show a system notification when these happen. Changes apply at once.", Modifier.padding(bottom = 4.dp))
+            val n = s.notifications
+            NotificationRow("Device grabbed", "A session takes a device.", DotStatus.InUse, n.grab) { vm.onNotificationsChanged(n.copy(grab = it)) }
+            NotificationRow("Device released", "A device is free again, with the reason.", DotStatus.Free, n.release) { vm.onNotificationsChanged(n.copy(release = it)) }
+            NotificationRow("Added to queue", "A session waits because no device is free.", DotStatus.Offline, n.queued) { vm.onNotificationsChanged(n.copy(queued = it)) }
+            NotificationRow("Queue started", "A waiting session gets its device. Shown instead of Device grabbed.", DotStatus.InUse, n.queueStart) { vm.onNotificationsChanged(n.copy(queueStart = it)) }
+            Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SmallButton("Send test notification", onClick = vm::onSendTestNotification, enabled = n.any)
+                Muted(if (n.any) "Clicking a notification opens the app." else "All notifications are off.")
+            }
+            ResultLine(s.notificationResult)
+        }
+
         SectionLabel("Claude Code integration")
         CardBox {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -191,6 +208,30 @@ private fun PinnedOption(title: String, detail: String, selected: Boolean, onSel
             Text(title, color = titleColor, style = MaterialTheme.typography.bodyMedium)
             Muted(detail)
         }
+    }
+}
+
+/** One notification switch: the whole row toggles it. */
+@Composable
+private fun NotificationRow(title: String, detail: String, dot: DotStatus, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onChange)
+            .padding(vertical = 4.dp, horizontal = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        StatusDot(dot)
+        Column(Modifier.weight(1f)) {
+            val titleColor by animateColorAsState(
+                if (checked) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                tween(200),
+            )
+            Text(title, color = titleColor, style = MaterialTheme.typography.bodyMedium)
+            Muted(detail)
+        }
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 

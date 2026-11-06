@@ -3,6 +3,12 @@ package com.programmersbox.cdm
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.window.Tray
+import androidx.compose.ui.window.TrayState
+import com.programmersbox.cdm.notify.Notifier
+import com.programmersbox.cdm.notify.NucleusNotificationSender
+import com.programmersbox.cdm.ui.window.MainWindowHolder
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.DpSize
@@ -43,6 +49,7 @@ fun main() {
     val appScope = koin.get<CoroutineScope>(named(APP_SCOPE))
     // Ruling L: start() first, then accept hooks.
     koin.get<DeviceManagerService>().start(appScope)
+    koin.get<Notifier>().start(appScope)
     val port = runBlocking { koin.get<SettingsRepository>().current().port }
     // Port in use, second instance, ...: the controller keeps the UI up and puts the error in ServerStatus.
     // A successful bind installs the Claude Code integration (InstallLifecycle is the controller's listener);
@@ -67,15 +74,37 @@ fun main() {
     applyDevStartRoute(navigator)
     val lifecycle = koin.get<LifecycleController>()
     val chrome = windowChrome()
+    val trayState = koin.get<TrayState>()
+    val mainWindow = koin.get<MainWindowHolder>()
+    // Register notification buttons and ask for permission at launch, not on the first event, which would be lost.
+    appScope.launch { koin.get<NucleusNotificationSender>().requestPermission() }
     application {
+        // The clean-up runs at once; the window stays up for the quit checklist, then closes.
+        val quit = {
+            lifecycle.shutdown(cleanup = shutdown) {
+                appScope.cancel()
+                exitApplication()
+            }
+        }
+        // Always shown: a quick way back to the window, and the Compose tray is the notification fallback.
+        AppIcon.painter?.let { trayIcon ->
+            Tray(
+                icon = trayIcon,
+                state = trayState,
+                tooltip = APP_TITLE,
+                onAction = mainWindow::bringToFront,
+            ) {
+                Item("Show $APP_TITLE", onClick = mainWindow::bringToFront)
+                Separator()
+                // Raise the window so the quit checklist is visible.
+                Item("Quit", onClick = {
+                    mainWindow.bringToFront()
+                    quit()
+                })
+            }
+        }
         AppWindow(
-            // The clean-up runs at once; the window stays up for the quit checklist, then closes.
-            onCloseRequest = {
-                lifecycle.shutdown(cleanup = shutdown) {
-                    appScope.cancel()
-                    exitApplication()
-                }
-            },
+            onCloseRequest = quit,
             title = APP_TITLE,
             chrome = chrome,
             state = rememberWindowState(size = DpSize(1100.dp, 720.dp)),
@@ -83,6 +112,7 @@ fun main() {
         ) {
             LaunchedEffect(Unit) {
                 window.minimumSize = Dimension(800, 560)
+                mainWindow.window = window
                 lifecycle.startup(port)
             }
             Box(Modifier.fillMaxSize()) {
