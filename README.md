@@ -127,6 +127,14 @@ An integration picks a stable holder ID such as `myapp:main` and uses these endp
 
 The server listens on `127.0.0.1` only and has no authentication: any local process can use it.
 
+For a working example, see [`sample/`](sample/): a small Compose desktop app that uses every endpoint. It shows the live device list and lets you acquire, renew, check and release a device, with a log of each request and reply. All of the HTTP code is in `CdmClient.kt`. Run it while the app is open:
+
+```bash
+./gradlew :sample:run
+# A second copy needs its own holder ID, so it waits in line for the device:
+./gradlew :sample:run --args="cdm-sample:second"
+```
+
 ## iOS (macOS only)
 
 On macOS with Xcode, the app also manages:
