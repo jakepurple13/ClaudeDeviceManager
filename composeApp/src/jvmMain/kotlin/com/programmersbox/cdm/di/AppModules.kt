@@ -21,6 +21,17 @@ import com.programmersbox.cdm.service.DeviceManager
 import com.programmersbox.cdm.service.DeviceManagerService
 import com.programmersbox.cdm.service.PermissionMirror
 import kotlin.io.path.Path
+import androidx.compose.ui.window.TrayState
+import com.programmersbox.cdm.notify.AppNoticeActions
+import com.programmersbox.cdm.notify.NoticeActions
+import com.programmersbox.cdm.notify.NotificationSender
+import com.programmersbox.cdm.notify.NotificationTester
+import com.programmersbox.cdm.notify.Notifier
+import com.programmersbox.cdm.notify.NucleusNotificationSender
+import com.programmersbox.cdm.notify.TrayNotificationSender
+import com.programmersbox.cdm.ui.window.MainWindowHolder
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import com.programmersbox.cdm.ui.nav.Navigator
 import com.programmersbox.cdm.ui.lifecycle.LifecycleController
 import com.programmersbox.cdm.ui.nav.ShellViewModel
@@ -84,6 +95,20 @@ fun appModules(): List<Module> = listOf(
         single { ServerController(get(), get(), listener = get()) } bind ServerControl::class
         single { DeviceManagerService(get(), get(), get(), get(), get(), get(), get()) } bind DeviceManager::class
         single { Navigator() }
+        single { TrayState() }
+        single { MainWindowHolder() }
+        // Native notifications; the Compose tray is the fallback where Nucleus isn't available (`./gradlew run`).
+        single<NotificationSender> { TrayNotificationSender(get(), get(named(APP_SCOPE))) }
+        single<NoticeActions> { AppNoticeActions(get(), get(), get()) }
+        single { NucleusNotificationSender(fallback = get(), actions = get()) }
+        single {
+            Notifier(
+                events = get<DeviceManagerService>().allocatorEvents,
+                settings = get<SettingsRepository>().settings.map { it.notifications }.distinctUntilChanged(),
+                manager = get(),
+                sender = get<NucleusNotificationSender>(),
+            )
+        } bind NotificationTester::class
         single {
             val service = get<DeviceManagerService>()
             val integration = get<InstallLifecycle>()
