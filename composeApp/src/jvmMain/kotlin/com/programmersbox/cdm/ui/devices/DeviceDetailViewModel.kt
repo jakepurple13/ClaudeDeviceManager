@@ -14,7 +14,7 @@ import com.programmersbox.cdm.ui.World
 import com.programmersbox.cdm.ui.activityRows
 import com.programmersbox.cdm.ui.deviceName
 import com.programmersbox.cdm.ui.deviceRows
-import com.programmersbox.cdm.ui.holding
+import com.programmersbox.cdm.ui.holdingOf
 import com.programmersbox.cdm.ui.kindLabel
 import com.programmersbox.cdm.ui.labelOf
 import com.programmersbox.cdm.ui.minutesCeil
@@ -84,7 +84,7 @@ class DeviceDetailViewModel(
         val holder = w.snapshot.holds[key]
         val card = holder?.let { h ->
             val info = w.info[h]
-            val st = w.holding(h)
+            val st = w.holdingOf(h, key)
             val timing = if (st == null) "" else listOf(
                 "held ${short(w.now - st.since)}",
                 "last device command ${short(w.now - st.lastActivity)} ago",

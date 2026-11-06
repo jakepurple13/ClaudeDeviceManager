@@ -106,6 +106,19 @@ fun World.deviceName(key: DeviceKey): String =
 
 fun World.holding(h: HolderId): HolderStatus.Holding? = snapshot.statuses[h] as? HolderStatus.Holding
 
+/**
+ * [h]'s hold that covers [device] (as its device or a pair's partner). A holder can hold one device per platform, so
+ * this, not [holding], is what times a given device. Falls back to the status when the snapshot lists no holdings.
+ */
+fun World.holdingOf(h: HolderId, device: DeviceKey): HolderStatus.Holding? {
+    fun HolderStatus.Holding.covers() = this.device == device || partner == device
+    val all = snapshot.holdings[h]
+    return if (all != null) all.firstOrNull { it.covers() } else holding(h)?.takeIf { it.covers() }
+}
+
+/** Every hold of [h], one per platform, in grant order (the status's hold when the snapshot lists none). */
+fun World.holdingsOf(h: HolderId): List<HolderStatus.Holding> = snapshot.holdings[h] ?: listOfNotNull(holding(h))
+
 /** Time left before the holder's auto-release timer fires. */
 fun World.releasesIn(st: HolderStatus.Holding): Duration =
     ((if (st.editing) timers.editing else timers.idle) - (now - st.lastActivity)).coerceAtLeast(Duration.ZERO)
@@ -119,7 +132,7 @@ fun deviceRows(w: World): List<DeviceRow> {
     val trackedByKey = w.tracked.associateBy { it.key }
     return w.snapshot.devices.map { d ->
         val holder = w.snapshot.holds[d.key]
-        val st = holder?.let { w.holding(it) }
+        val st = holder?.let { w.holdingOf(it, d.key) }
         val online = d.key in trackedKeys && d.connectedSerials.isNotEmpty()
         val state = when {
             holder != null && !online -> DeviceState.OFFLINE_HELD
@@ -173,7 +186,7 @@ fun waitReasons(h: HolderId, w: World): List<WaitReason> {
         val reason = when {
             d.dontUse -> "marked don't use"
             holder != null -> {
-                val st = w.holding(holder)
+                val st = w.holdingOf(holder, d.key)
                 val detail = when {
                     st == null -> ""
                     st.editing -> " (editing, releases in ≤${minutesCeil(w.releasesIn(st))})"

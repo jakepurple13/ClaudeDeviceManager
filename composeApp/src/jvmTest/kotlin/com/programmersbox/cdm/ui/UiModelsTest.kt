@@ -201,4 +201,59 @@ class UiModelsTest {
         assertEquals("no Android phone/tablet real device connected", r(setOf(Category.PHONE, Category.TABLET), Platform.ANDROID, false))
         assertEquals("no iOS device connected", r(setOf(Category.ANY), Platform.IOS))
     }
+
+    // ---- final whole-branch review: per-hold timers ----
+
+    /** One holder, two holds with different activity: each device shows its own hold's timer. */
+    private fun twoHolds(): Pair<HolderId, AllocatorSnapshot> {
+        val h = HolderId("a41f9c00")
+        val android = HolderStatus.Holding(p, now - 10.minutes, now - 1.minutes, editing = false)
+        val ios = HolderStatus.Holding(iph, now - 20.minutes, now - 7.minutes, editing = false, platform = Platform.IOS)
+        return h to AllocatorSnapshot(
+            devices = listOf(dev(p, "Pixel 8", Category.PHONE), iosDev(iph, "iPhone 16", Category.PHONE)),
+            holds = mapOf(p to h, iph to h),
+            queue = emptyList(),
+            statuses = mapOf(h to android),
+            holdings = mapOf(h to listOf(android, ios)),
+        )
+    }
+
+    @Test
+    fun deviceRowsUseEachHoldsTimer() {
+        val (_, snap) = twoHolds()
+        val rows = deviceRows(world(snap, listOf(tracked(p, Category.PHONE), iosTracked(iph, Category.PHONE))))
+        val pixel = rows.single { it.key == p }
+        val iphone = rows.single { it.key == iph }
+        assertEquals("idle 1m", pixel.timerLabel)
+        assertEquals(10.minutes, pixel.heldFor)
+        assertEquals("idle 7m", iphone.timerLabel)
+        assertEquals(20.minutes, iphone.heldFor)
+    }
+
+    @Test
+    fun holdingOfMatchesDeviceOrPartner() {
+        val (h, snap) = twoHolds()
+        val w = world(snap, emptyList())
+        assertEquals(iph, w.holdingOf(h, iph)?.device)
+        assertEquals(p, w.holdingOf(h, p)?.device)
+        assertEquals(null, w.holdingOf(h, g))
+        val watch = DeviceKey("UDID-WATCH")
+        val pair = HolderStatus.Holding(iph, now, now, editing = false, platform = Platform.IOS, partner = watch)
+        val paired = world(snap.copy(holdings = mapOf(h to listOf(pair))), emptyList())
+        assertEquals(iph, paired.holdingOf(h, watch)?.device)
+    }
+
+    @Test
+    fun waitReasonUsesTheHoldOfThatDevice() {
+        val (_, snap) = twoHolds()
+        val q = HolderId("77c20000")
+        val queued = snap.copy(
+            queue = listOf(q),
+            statuses = snap.statuses + (q to HolderStatus.Queued(1, Wants(setOf(Category.PHONE), Platform.IOS))),
+        )
+        assertEquals(
+            listOf(WaitReason("iPhone 16", "held by session #a41f (idle 7m, releases in ≤8m)")),
+            waitReasons(q, world(queued, emptyList())),
+        )
+    }
 }

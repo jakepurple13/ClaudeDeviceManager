@@ -119,6 +119,43 @@ class SessionsViewModelTest {
 
         val row = withTimeout(5_000) { vm.uiState.mapNotNull { it.groups }.first() }.single().holders.single()
 
-        assertEquals("Pixel 8 + iPhone 16 · iOS 18.2 · idle 0s", row.detail)
+        assertEquals("Pixel 8 · idle 0s + iPhone 16 · iOS 18.2 · idle 0s", row.detail)
+    }
+
+    private fun snapWith(statuses: Map<HolderId, HolderStatus>, holdings: List<HolderStatus.Holding>, queue: List<HolderId> = emptyList()) =
+        AllocatorSnapshot(
+            devices = listOf(
+                AllocDevice(phone, "Pixel 8", Category.PHONE, false, listOf("p-usb")),
+                AllocDevice(DeviceKey("UDID-1"), "iPhone 16", Category.PHONE, false, listOf("UDID-1"), Platform.IOS, virtual = true),
+            ),
+            holds = holdings.associate { it.device to s1Main },
+            queue = queue,
+            statuses = statuses,
+            holdings = mapOf(s1Main to holdings),
+        )
+
+    private fun rowFor(snap: AllocatorSnapshot) = runBlocking {
+        val manager = RecordingManager(MutableStateFlow(snap), MutableStateFlow(mapOf(s1Main to info(s1Main, t))))
+        val vm = SessionsViewModel(testActions(manager), testSources(manager, FixedClock(t + 7.minutes))).also { vms += it }
+        withTimeout(5_000) { vm.uiState.mapNotNull { it.groups }.first() }.single().holders.single()
+    }
+
+    /** Final whole-branch review: each hold shows its own timer. */
+    @Test
+    fun sessionRowShowsEachHoldsTimer() {
+        val android = HolderStatus.Holding(phone, t, t + 6.minutes, editing = false)
+        val ios = HolderStatus.Holding(DeviceKey("UDID-1"), t, t, editing = false, platform = Platform.IOS)
+        val row = rowFor(snapWith(mapOf(s1Main to android), listOf(android, ios)))
+        assertEquals("Pixel 8 · idle 1m + iPhone 16 · idle 7m", row.detail)
+    }
+
+    /** Final whole-branch review: queued for iOS while holding Android still shows the Android hold. */
+    @Test
+    fun queuedForOnePlatformStillShowsHeldDevice() {
+        val android = HolderStatus.Holding(phone, t, t + 6.minutes, editing = false)
+        val queued = HolderStatus.Queued(1, Wants(setOf(Category.PHONE), Platform.IOS))
+        val row = rowFor(snapWith(mapOf(s1Main to queued), listOf(android), queue = listOf(s1Main)))
+        assertEquals(HolderState.WAITING, row.state)
+        assertEquals("#1 in queue · Pixel 8 · idle 1m", row.detail)
     }
 }

@@ -14,6 +14,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -82,5 +83,30 @@ class DeviceDetailViewModelTest {
         assertEquals(listOf("Platform" to "Android", "Kind" to "Real", "Runtime" to "Android 15", "Serial" to "P1"), android.info.take(4))
         iosVm.closeForTest()
         androidVm.closeForTest()
+    }
+
+    /** Final whole-branch review: the holder card times the hold of this device, not the holder's first hold. */
+    @Test
+    fun holderCardUsesThisDevicesHold() = runBlocking {
+        val sim = DeviceKey("UDID-1")
+        val pixel = DeviceKey("P1")
+        val h = HolderId("a41f")
+        val t = Instant.fromEpochMilliseconds(1_700_000_000_000)
+        val android = HolderStatus.Holding(pixel, t - 2.minutes, t - 1.minutes, editing = false)
+        val ios = HolderStatus.Holding(sim, t - 20.minutes, t - 7.minutes, editing = false, platform = Platform.IOS)
+        val snap = AllocatorSnapshot(
+            devices = listOf(
+                AllocDevice(pixel, "Pixel 8", Category.PHONE, false, listOf("s1")),
+                AllocDevice(sim, "iPhone 16", Category.PHONE, false, listOf("UDID-1"), Platform.IOS, virtual = true),
+            ),
+            holds = mapOf(pixel to h, sim to h), queue = emptyList(),
+            statuses = mapOf(h to android), holdings = mapOf(h to listOf(android, ios)),
+        )
+        val manager = RecordingManager(MutableStateFlow(snap))
+        val vm = DeviceDetailViewModel(sim, testActions(manager), testSources(manager))
+        val state = withTimeout(5_000) { vm.uiState.first { it.loaded } }
+        assertEquals("held 20m · last device command 7m ago · releases if idle 8m more", state.holder?.timing)
+        assertEquals("idle 7m", state.row?.timerLabel)
+        vm.closeForTest()
     }
 }
