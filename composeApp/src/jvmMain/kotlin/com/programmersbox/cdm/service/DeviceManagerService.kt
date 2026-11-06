@@ -95,6 +95,11 @@ class DeviceManagerService(
     private val _tracked = MutableStateFlow<List<TrackedDevice>>(emptyList())
     override val tracked: StateFlow<List<TrackedDevice>> = _tracked.asStateFlow()
 
+    private val _scanned = MutableStateFlow(false)
+
+    /** True once the first device scan has finished (or failed), for the start-up checklist. */
+    val scanned: StateFlow<Boolean> = _scanned.asStateFlow()
+
     override val holderInfo: StateFlow<Map<HolderId, HolderInfo>> = book.info
 
     private fun newAllocator(blocked: Set<HolderId>) =
@@ -300,8 +305,13 @@ class DeviceManagerService(
     // ---- internals ----
 
     private suspend fun scanOnce() {
-        val found = safely("scan devices") { tracker.scan() } ?: return
+        val found = safely("scan devices") { tracker.scan() }
+        if (found == null) {
+            _scanned.value = true
+            return
+        }
         _tracked.value = found
+        _scanned.value = true
         val now = clock()
         for (t in found) {
             val last = lastUpserted[t.key]

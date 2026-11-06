@@ -17,14 +17,21 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.programmersbox.cdm.ui.components.AnimatedCount
 import com.programmersbox.cdm.ui.nav.ShellViewModel
+import com.programmersbox.cdm.ui.lifecycle.LifecycleController
+import com.programmersbox.cdm.ui.lifecycle.LifecyclePill
+import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 
 /**
- * Title bar content: the app name and a live "N in use · M waiting". With the system title bar this is a strip
+ * Title bar content: the app name, a live "N in use · M waiting", and the start-up / quit progress pill. With the system title bar this is a strip
  * above the content, without the name (the OS bar already shows it).
  */
 @Composable
-fun AppTitleBarScope.TitleBarStatus(title: String, shell: ShellViewModel = koinViewModel()) {
+fun AppTitleBarScope.TitleBarStatus(
+    title: String,
+    shell: ShellViewModel = koinViewModel(),
+    lifecycle: LifecycleController = koinInject(),
+) {
     val counts by shell.counts.collectAsStateWithLifecycle()
     val custom = chrome == WindowChrome.Custom
     val status = MaterialTheme.typography.labelMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -45,5 +52,7 @@ fun AppTitleBarScope.TitleBarStatus(title: String, shell: ShellViewModel = koinV
         Text(" in use · ", style = status)
         AnimatedCount(counts.waiting, style = status)
         Text(" waiting", style = status)
+        Spacer(Modifier.width(12.dp))
+        LifecyclePill(lifecycle, Modifier.interactive("lifecycle-pill"))
     }
 }
