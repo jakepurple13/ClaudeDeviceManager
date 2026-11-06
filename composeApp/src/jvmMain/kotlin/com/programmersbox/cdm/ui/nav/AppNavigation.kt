@@ -32,6 +32,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDragHandle
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material3.adaptive.layout.PaneExpansionState
+import androidx.compose.material3.adaptive.layout.ThreePaneScaffoldScope
+import androidx.compose.material3.adaptive.layout.rememberPaneExpansionState
 import com.programmersbox.cdm.ui.components.AnimatedCount
 import com.programmersbox.cdm.ui.devices.DeviceDetailScreen
 import com.programmersbox.cdm.ui.devices.DevicesScreen
@@ -55,7 +60,10 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.platform.LocalDensity
+import java.awt.Cursor
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -99,6 +107,8 @@ fun AppNavigation(
     Row(modifier.fillMaxSize()) {
         AppRail(navigator.currentTopLevel, counts.waiting, navigator::selectTopLevel)
         val slidePx = with(LocalDensity.current) { 24.dp.roundToPx() }
+        // One state for every list-detail screen, so a width dragged on Devices carries over to Queue.
+        val paneExpansion = rememberPaneExpansionState()
         val forward: AnimatedContentTransitionScope<Scene<Route>>.() -> ContentTransform =
             remember(slidePx) { { sceneTransition(slidePx, pop = false) } }
         val pop: AnimatedContentTransitionScope<Scene<Route>>.() -> ContentTransform =
@@ -115,7 +125,12 @@ fun AppNavigation(
                         rememberSaveableStateHolderNavEntryDecorator(),
                         rememberViewModelStoreNavEntryDecorator(),
                     ),
-                    sceneStrategies = listOf(rememberListDetailSceneStrategy()),
+                    sceneStrategies = listOf(
+                        rememberListDetailSceneStrategy(
+                            paneExpansionDragHandle = PaneDivider,
+                            paneExpansionState = paneExpansion,
+                        ),
+                    ),
                     transitionSpec = forward,
                     popTransitionSpec = pop,
                     entryProvider = entryProvider {
@@ -254,6 +269,18 @@ private fun DetailPane(navigator: Navigator? = null, route: Route? = null, conte
         enter = fadeIn(tween(DETAIL_MS)) + slideInHorizontally(tween(DETAIL_MS)) { it / 8 },
         exit = fadeOut(tween(DETAIL_MS)) + slideOutHorizontally(tween(DETAIL_MS)) { it / 8 },
     ) { content() }
+}
+
+/** Draggable divider between the list and detail panes; drag it to resize the columns. */
+@OptIn(ExperimentalMaterial3AdaptiveApi::class)
+private val PaneDivider: @Composable ThreePaneScaffoldScope.(PaneExpansionState) -> Unit = { state ->
+    val interaction = remember { MutableInteractionSource() }
+    VerticalDragHandle(
+        modifier = Modifier
+            .paneExpansionDraggable(state, 48.dp, interaction)
+            .pointerHoverIcon(PointerIcon(Cursor(Cursor.E_RESIZE_CURSOR))),
+        interactionSource = interaction,
+    )
 }
 
 /** Stand-in for an empty detail pane. */
