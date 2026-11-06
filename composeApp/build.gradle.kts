@@ -115,11 +115,11 @@ nucleus.application {
         // Each OS builds only its own formats. macOS needs the ZIP next to the DMG: the DMG is the first install,
         // the updater swaps the .app from the ZIP. Windows updates through the NSIS installer, Linux through the
         // DEB (pkexec prompt) or the AppImage (replaced in place).
-        targetFormats(
-            TargetFormat.Dmg, TargetFormat.Zip,
-            TargetFormat.Nsis,
-            TargetFormat.Deb, TargetFormat.AppImage,
-        )
+        // TargetFormat.Zip packages for the host OS, so add it only on macOS: elsewhere it is an unused extra asset.
+        targetFormats = buildSet {
+            addAll(listOf(TargetFormat.Dmg, TargetFormat.Nsis, TargetFormat.Deb, TargetFormat.AppImage))
+            if (System.getProperty("os.name").startsWith("Mac")) add(TargetFormat.Zip)
+        }
         packageName = "Claude Device Manager"
         packageVersion = appVersion
         description = "Shares connected Android devices between Claude Code sessions."
