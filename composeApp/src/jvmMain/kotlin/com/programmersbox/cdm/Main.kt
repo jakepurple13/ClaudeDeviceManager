@@ -1,6 +1,10 @@
 package com.programmersbox.cdm
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.application
@@ -15,6 +19,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import com.programmersbox.cdm.ui.nav.AppNavigation
 import com.programmersbox.cdm.ui.nav.Navigator
+import com.programmersbox.cdm.ui.nav.TopLevel
+import com.programmersbox.cdm.ui.lifecycle.LifecycleController
+import com.programmersbox.cdm.ui.lifecycle.LifecycleOverlay
+import com.programmersbox.cdm.ui.lifecycle.LifecycleProgressLine
 import com.programmersbox.cdm.ui.nav.applyDevStartRoute
 import com.programmersbox.cdm.ui.window.AppIcon
 import com.programmersbox.cdm.ui.window.AppWindow
@@ -51,22 +59,33 @@ fun main() {
     routeQuitThroughWindowClose()
     AppIcon.applyToDock()
     runBlocking { server.start(port) }
-    applyDevStartRoute(koin.get<Navigator>())
+    val navigator = koin.get<Navigator>()
+    applyDevStartRoute(navigator)
+    val lifecycle = koin.get<LifecycleController>()
     val chrome = windowChrome()
     application {
         AppWindow(
+            // The clean-up runs at once; the window stays up for the quit checklist, then closes.
             onCloseRequest = {
-                shutdown()
-                appScope.cancel()
-                exitApplication()
+                lifecycle.shutdown(cleanup = shutdown) {
+                    appScope.cancel()
+                    exitApplication()
+                }
             },
             title = APP_TITLE,
             chrome = chrome,
             state = rememberWindowState(size = DpSize(1100.dp, 720.dp)),
             titleBar = { TitleBarStatus(APP_TITLE) },
         ) {
-            LaunchedEffect(Unit) { window.minimumSize = Dimension(800, 560) }
-            AppNavigation()
+            LaunchedEffect(Unit) {
+                window.minimumSize = Dimension(800, 560)
+                lifecycle.startup(port)
+            }
+            Box(Modifier.fillMaxSize()) {
+                AppNavigation()
+                LifecycleProgressLine(lifecycle, Modifier.align(Alignment.TopCenter))
+                LifecycleOverlay(lifecycle, onOpenSettings = { navigator.selectTopLevel(TopLevel.SETTINGS) })
+            }
         }
     }
 }

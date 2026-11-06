@@ -21,6 +21,7 @@ import com.programmersbox.cdm.service.DeviceManagerService
 import com.programmersbox.cdm.service.PermissionMirror
 import kotlin.io.path.Path
 import com.programmersbox.cdm.ui.nav.Navigator
+import com.programmersbox.cdm.ui.lifecycle.LifecycleController
 import com.programmersbox.cdm.ui.nav.ShellViewModel
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -70,6 +71,18 @@ fun appModules(): List<Module> = listOf(
         single { ServerController(get(), get(), listener = get()) } bind ServerControl::class
         single { DeviceManagerService(get(), get(), get(), get(), get(), get(), get()) } bind DeviceManager::class
         single { Navigator() }
+        single {
+            val service = get<DeviceManagerService>()
+            val integration = get<InstallLifecycle>()
+            LifecycleController(
+                scope = CoroutineScope(SupervisorJob() + Dispatchers.Main),
+                serverError = get<ServerStatus>().serverError,
+                integration = integration.state,
+                scanned = service.scanned,
+                deviceCount = { service.tracked.value.size },
+                repairIntegration = { integration.repair() },
+            )
+        }
         single<CoroutineScope>(named(APP_SCOPE)) {
             CoroutineScope(
                 SupervisorJob() + Dispatchers.Default +
