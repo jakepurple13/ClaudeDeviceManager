@@ -108,6 +108,23 @@ cdm status                               # what this session holds, and its queu
 
 `cdm acquire` waits up to about 110 seconds, which keeps it under Claude Code's default 2-minute Bash timeout. If it's still queued, it says so and Claude runs it again. If the app isn't running, it prints `Device Manager not running; proceeding without a device lock.` and exits 0.
 
+### Integrations (other apps)
+
+Apps and scripts other than Claude Code can share devices through the same server, for example a screen-mirror app that needs a phone. Open **Settings → Integrations → Open integration guide**, or go to `http://127.0.0.1:<port>/`. The guide shows live device status, the full protocol with examples, and a brief to hand to a coding agent. The same brief is plain text at `/llms.txt`.
+
+An integration picks a stable holder ID such as `myapp:main` and uses these endpoints:
+
+| Endpoint | What it does |
+|---|---|
+| `POST /cdm/acquire` | Waits in the queue for a device and streams `QUEUED` lines, then `GRANTED <platform> <serial> <name>` |
+| `POST /cdm/renew` | Resets the idle timer. Call it every 60 seconds while you use the device, because the app can't see an integration's adb commands |
+| `POST /cdm/release` | Gives the device back |
+| `GET /cdm/status` | Shows what the holder has and its place in the queue |
+| `GET /cdm/devices` | Lists every device as JSON, with its holder and the queue |
+| `GET /cdm/events` | Sends the same JSON as server-sent events on every change |
+
+The server listens on `127.0.0.1` only and has no authentication: any local process can use it.
+
 ## iOS (macOS only)
 
 On macOS with Xcode, the app also manages:

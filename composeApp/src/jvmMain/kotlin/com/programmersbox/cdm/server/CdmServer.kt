@@ -86,6 +86,7 @@ private val EMPTY = "{}"
 fun Application.cdmModule(manager: DeviceManager, heartbeat: Duration = 5.seconds) {
     routing {
         get("/cdm/ping") { call.respondText("cdm-ok\n") }
+        integrationRoutes(manager)
         post("/hooks/pre-tool-use") {
             hook {
                 val p = HookJson.parse(call.receiveText()) ?: return@hook EMPTY
@@ -174,14 +175,14 @@ fun Application.cdmModule(manager: DeviceManager, heartbeat: Duration = 5.second
 private val Platform.wire: String get() = name.lowercase()
 
 /** The `platform` query parameter: absent or empty is null; anything but `android` or `ios` fails. */
-private fun ApplicationCall.platform(): Result<Platform?> {
+internal fun ApplicationCall.platform(): Result<Platform?> {
     val raw = request.queryParameters["platform"].orEmpty()
     if (raw.isEmpty()) return Result.success(null)
     return Platform.entries.firstOrNull { it.wire == raw }?.let { Result.success(it) }
         ?: Result.failure(IllegalArgumentException("bad platform $raw"))
 }
 
-private fun ApplicationCall.holder(): HolderId? =
+internal fun ApplicationCall.holder(): HolderId? =
     request.queryParameters["holder"]?.takeIf { it.isNotBlank() }?.let { HolderId.parse(it) }
 
 /** Hook endpoints never fail: any exception is logged and answered with `{}`. */

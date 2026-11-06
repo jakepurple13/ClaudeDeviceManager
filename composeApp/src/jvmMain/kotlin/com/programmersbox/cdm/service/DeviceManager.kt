@@ -73,6 +73,12 @@ interface DeviceManager {
     /** Releases the [platform] hold (and a queue entry that platform could answer), or everything when null. */
     suspend fun release(holder: HolderId, platform: Platform? = null)
 
+    /**
+     * Resets the idle timer of the [platform] hold, or of every hold when null, as a device command would.
+     * For integrations, whose device commands never pass through the hooks. Returns false when nothing was held.
+     */
+    suspend fun renew(holder: HolderId, platform: Platform? = null): Boolean
+
     /** Merged status: Blocked, then Queued, then the first hold, then the last release. */
     suspend fun status(holder: HolderId): HolderStatus
 

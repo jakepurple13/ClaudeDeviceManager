@@ -344,6 +344,34 @@ class DeviceManagerServiceTest {
         assertIs<HolderStatus.Released>(s.status(h1))
     }
 
+    @Test fun renewResetsIdleTimer() = runTest {
+        settings.update { it.copy(idleMinutes = 2) }
+        val s = started()
+        val ext = HolderId("scrcpy-vwr", "main")
+        s.acquire(ext, "", watch, 1.minutes) {}
+        now = t0 + 90.seconds
+        assertTrue(s.renew(ext))
+        val held = s.status(ext) as HolderStatus.Holding
+        assertEquals(now, held.lastActivity)
+        // Without the renew this is 3 minutes idle, past the 2-minute limit.
+        now = t0 + 3.minutes
+        testScheduler.advanceTimeBy(6.seconds)
+        testScheduler.runCurrent()
+        assertIs<HolderStatus.Holding>(s.status(ext))
+        // Two minutes after the renew it does time out.
+        now = t0 + 4.minutes
+        s.snapshot.first { it.holds.isEmpty() }
+        assertIs<HolderStatus.Released>(s.status(ext))
+    }
+
+    @Test fun renewWithoutHoldIsFalse() = runTest {
+        val s = started()
+        assertEquals(false, s.renew(h1))
+        s.acquire(h1, "/w", watch, 1.minutes) {}
+        assertEquals(false, s.renew(h1, Platform.IOS))
+        assertTrue(s.renew(h1, Platform.ANDROID))
+    }
+
     @Test fun userActionsReachAllocatorAndPersist() = runTest {
         val s = started()
         s.setDontUse(DeviceKey("W"), dontUse = true, releaseNow = true)
