@@ -7,6 +7,7 @@ import com.programmersbox.cdm.core.allocator.HolderStatus
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.service.HolderInfo
 import com.programmersbox.cdm.ui.sessions.HolderState
 import com.programmersbox.cdm.ui.sessions.SessionsViewModel
@@ -96,5 +97,29 @@ class SessionsViewModelTest {
         assertEquals(listOf("s1", "s3"), groups.map { it.sessionId })
         assertEquals(HolderState.ENDED, groups.last().holders.single().state)
         assertEquals(HolderState.IDLE, groups.first().holders.single().state)
+    }
+
+    @Test
+    fun sessionRowListsTwoDevices() = runBlocking {
+        val sim = DeviceKey("UDID-1")
+        val android = HolderStatus.Holding(phone, t, t, editing = false)
+        val ios = HolderStatus.Holding(sim, t, t, editing = false, platform = Platform.IOS)
+        val snap = AllocatorSnapshot(
+            devices = listOf(
+                AllocDevice(phone, "Pixel 8", Category.PHONE, false, listOf("p-usb")),
+                AllocDevice(sim, "iPhone 16 · iOS 18.2", Category.PHONE, false, listOf("UDID-1"), Platform.IOS, virtual = true),
+            ),
+            holds = mapOf(phone to s1Main, sim to s1Main),
+            queue = emptyList(),
+            statuses = mapOf(s1Main to android),
+            holdings = mapOf(s1Main to listOf(android, ios)),
+        )
+        val manager = RecordingManager(MutableStateFlow(snap), MutableStateFlow(mapOf(s1Main to info(s1Main, t))))
+        val vm = SessionsViewModel(testActions(manager), testSources(manager)).also { vms += it }
+
+        val row = withTimeout(5_000) { vm.uiState.mapNotNull { it.groups }.first() }.single().holders.single()
+
+        assertEquals(listOf("Pixel 8", "iPhone 16 · iOS 18.2"), row.devices)
+        assertEquals("Pixel 8 + iPhone 16 · iOS 18.2 · idle 0s", row.detail)
     }
 }

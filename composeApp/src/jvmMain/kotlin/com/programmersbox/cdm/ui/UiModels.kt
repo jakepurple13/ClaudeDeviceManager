@@ -8,6 +8,7 @@ import com.programmersbox.cdm.core.allocator.Timers
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.data.ActivityEntry
 import com.programmersbox.cdm.data.DeviceConfig
 import com.programmersbox.cdm.devices.TrackedDevice
@@ -41,9 +42,29 @@ data class DeviceRow(
     val timerLabel: String?,
     /** Marked don't use while held: it stops being handed out once the current holder releases it. */
     val dontUsePending: Boolean = false,
+    val platform: Platform = Platform.ANDROID,
+    /** An emulator (Android) or simulator (iOS). */
+    val virtual: Boolean = false,
+    /** The OS version the device reports; blank while it isn't connected. */
+    val osVersion: String = "",
+    /** The name of the device it is paired with (watch and phone), when it has a partner. */
+    val pairedWith: String? = null,
 )
 
-data class QueueRow(val holder: HolderId, val label: String, val position: Int, val wants: Wants, val waited: Duration)
+data class QueueRow(val holder: HolderId, val label: String, val position: Int, val wants: Wants, val waited: Duration) {
+    /** Category ids, then the limits: `["phone", "iOS", "real only"]`. */
+    val chipLabels: List<String> get() = wants.categories.map { it.id } + wants.limits
+}
+
+/** "Real", "Emulator" (Android) or "Simulator" (iOS). */
+fun kindLabel(platform: Platform, virtual: Boolean): String = when {
+    !virtual -> "Real"
+    platform == Platform.IOS -> "Simulator"
+    else -> "Emulator"
+}
+
+/** What a virtual device is called on [platform]: `emulator`, `simulator`. */
+fun virtualWord(platform: Platform): String = kindLabel(platform, virtual = true).lowercase()
 
 /** One device a queued holder could use, and why it can't have it yet. */
 data class WaitReason(val device: String, val reason: String)
@@ -82,6 +103,7 @@ fun World.timerLabel(st: HolderStatus.Holding): String =
 fun deviceRows(w: World): List<DeviceRow> {
     val trackedKeys = w.tracked.mapTo(HashSet()) { it.key }
     val overrides = w.configs.filter { it.categoryOverride != null }.mapTo(HashSet()) { it.key }
+    val trackedByKey = w.tracked.associateBy { it.key }
     return w.snapshot.devices.map { d ->
         val holder = w.snapshot.holds[d.key]
         val st = holder?.let { w.holding(it) }
@@ -103,8 +125,12 @@ fun deviceRows(w: World): List<DeviceRow> {
             heldFor = st?.let { w.now - it.since },
             timerLabel = st?.let { w.timerLabel(it) },
             dontUsePending = holder != null && d.dontUse,
+            platform = d.platform,
+            virtual = d.virtual,
+            osVersion = trackedByKey[d.key]?.osVersion.orEmpty(),
+            pairedWith = d.partner?.let { w.deviceName(it) },
         )
-    }
+    }.sortedBy { it.platform } // stable: Android first, then iOS, each in device order
 }
 
 fun overviewCounts(rows: List<DeviceRow>, waiting: Int) = OverviewCounts(
@@ -127,7 +153,9 @@ private fun World.wantsOf(h: HolderId): Wants = (snapshot.statuses[h] as? Holder
 /** Every device [h] could use, in device order, with what keeps it from [h]. */
 fun waitReasons(h: HolderId, w: World): List<WaitReason> {
     val wants = w.wantsOf(h)
-    return w.snapshot.devices.filter { wants.fits(it) }.map { d ->
+    val fitting = w.snapshot.devices.filter { wants.fits(it) }
+    if (fitting.isEmpty() && wants.limits.isNotEmpty()) return listOf(WaitReason("", noMatchReason(wants)))
+    return fitting.map { d ->
         val holder = w.snapshot.holds[d.key]
         val reason = when {
             d.dontUse -> "marked don't use"
@@ -145,6 +173,27 @@ fun waitReasons(h: HolderId, w: World): List<WaitReason> {
         }
         WaitReason(d.name, reason)
     }
+}
+
+/** "no Wear OS emulator running", "no iPhone real device connected": nothing known fits the limits [wants] sets. */
+private fun noMatchReason(wants: Wants): String {
+    val cats = wants.categories - Category.ANY
+    val subject = when {
+        cats == setOf(Category.WATCH) -> if (wants.platform == Platform.IOS) "Apple Watch" else if (wants.platform == Platform.ANDROID) "Wear OS" else "watch"
+        wants.platform == Platform.IOS && cats == setOf(Category.PHONE) -> "iPhone"
+        wants.platform == Platform.IOS && cats == setOf(Category.TABLET) -> "iPad"
+        else -> listOfNotNull(
+            wants.platform?.let { if (it == Platform.IOS) "iOS" else "Android" },
+            cats.joinToString("/") { it.id }.ifBlank { null },
+        ).joinToString(" ")
+    }
+    val kind = when (wants.virtual) {
+        true -> wants.platform?.let(::virtualWord) ?: "emulator or simulator"
+        false -> "real device"
+        null -> "device"
+    }
+    val state = if (wants.virtual == true) "running" else "connected"
+    return "no ${listOf(subject, kind).filter { it.isNotBlank() }.joinToString(" ")} $state"
 }
 
 /** Devices "Hand it <device> now" can give [h]: connected, usable, and of a category it wants. */

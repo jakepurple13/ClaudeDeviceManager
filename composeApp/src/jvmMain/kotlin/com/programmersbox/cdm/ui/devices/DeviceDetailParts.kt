@@ -38,7 +38,7 @@ import com.programmersbox.cdm.ui.components.Muted
 import com.programmersbox.cdm.ui.components.SmallButton
 import com.programmersbox.cdm.ui.components.chipStyleFor
 
-/** "Category: [phone ▾] (auto-detected)", with Auto / Phone / Watch in the menu. */
+/** "Category: [phone ▾] (auto-detected)", with Auto / Phone / Tablet / Watch in the menu. */
 @Composable
 internal fun CategoryPicker(state: DeviceDetailState, onSelect: (Category?) -> Unit, modifier: Modifier = Modifier) {
     var open by remember { mutableStateOf(false) }
@@ -49,7 +49,7 @@ internal fun CategoryPicker(state: DeviceDetailState, onSelect: (Category?) -> U
             Chip("${effective.id} ▾", chipStyleFor(effective), Modifier.clip(RoundedCornerShape(9.dp)).clickable { open = true })
             DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
                 val auto = state.detectedCategory?.let { "Auto (${it.id})" } ?: "Auto"
-                listOf<Pair<String, Category?>>(auto to null, "Phone" to Category.PHONE, "Watch" to Category.WATCH).forEach { (label, c) ->
+                listOf<Pair<String, Category?>>(auto to null, "Phone" to Category.PHONE, "Tablet" to Category.TABLET, "Watch" to Category.WATCH).forEach { (label, c) ->
                     DropdownMenuItem(
                         text = { Text(label) },
                         onClick = {

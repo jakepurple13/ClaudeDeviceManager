@@ -6,6 +6,8 @@ import com.programmersbox.cdm.core.allocator.HolderStatus
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
+import com.programmersbox.cdm.devices.TrackedDevice
 import com.programmersbox.cdm.ui.devices.DeviceDetailViewModel
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -52,5 +54,33 @@ class DeviceDetailViewModelTest {
         assertEquals(listOf(Triple(key, true, true)), manager.dontUseCalls)
         withTimeout(5_000) { vm.uiState.first { !it.confirmDontUse } }
         Unit
+    }
+
+    @Test
+    fun detailKindLabel() = runBlocking {
+        val sim = DeviceKey("UDID-1")
+        val pixel = DeviceKey("P1")
+        val snap = AllocatorSnapshot(
+            devices = listOf(
+                AllocDevice(sim, "iPhone 16 · iOS 18.2", Category.PHONE, false, listOf("UDID-1"), Platform.IOS, virtual = true),
+                AllocDevice(pixel, "Pixel 8", Category.PHONE, false, listOf("s1")),
+            ),
+            holds = emptyMap(), queue = emptyList(), statuses = emptyMap(),
+        )
+        val tracked = listOf(
+            TrackedDevice(sim, listOf("UDID-1"), "iPhone 16", "18.2", "simulator", Category.PHONE, Platform.IOS, virtual = true),
+            TrackedDevice(pixel, listOf("s1"), "Pixel 8", "15", "usb", Category.PHONE),
+        )
+        val manager = RecordingManager(MutableStateFlow(snap), tracked = MutableStateFlow(tracked))
+        val iosVm = DeviceDetailViewModel(sim, testActions(manager), testSources(manager))
+        val androidVm = DeviceDetailViewModel(pixel, testActions(manager), testSources(manager))
+
+        val ios = withTimeout(5_000) { iosVm.uiState.first { it.loaded } }
+        val android = withTimeout(5_000) { androidVm.uiState.first { it.loaded } }
+
+        assertEquals(listOf("Platform" to "iOS", "Kind" to "Simulator", "Runtime" to "iOS 18.2", "UDID" to "UDID-1"), ios.info.take(4))
+        assertEquals(listOf("Platform" to "Android", "Kind" to "Real", "Runtime" to "Android 15", "Serial" to "P1"), android.info.take(4))
+        iosVm.closeForTest()
+        androidVm.closeForTest()
     }
 }

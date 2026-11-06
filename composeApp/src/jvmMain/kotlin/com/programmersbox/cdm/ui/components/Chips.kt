@@ -2,8 +2,11 @@ package com.programmersbox.cdm.ui.components
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -12,11 +15,20 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.programmersbox.cdm.core.model.Category
+import com.programmersbox.cdm.core.model.Platform
+import com.programmersbox.cdm.ui.virtualWord
 
 private val ColorAnim = tween<Color>(200)
 
@@ -68,4 +80,60 @@ fun Chip(label: String, style: ChipStyle, modifier: Modifier = Modifier) {
 @Composable
 fun CategoryChip(category: Category, modifier: Modifier = Modifier) {
     Chip(category.id, chipStyleFor(category), modifier)
+}
+
+private val DashColor = Color(0xFF6E7787)
+private val DashedTextColor = Color(0xFFCFD6E4)
+
+/** The mockups' dashed 1dp `#6E7787` outline on a pill. */
+private fun Modifier.dashedPill(): Modifier = drawBehind {
+    val w = 1.dp.toPx()
+    drawRoundRect(
+        DashColor,
+        topLeft = Offset(w / 2, w / 2),
+        size = Size(size.width - w, size.height - w),
+        cornerRadius = CornerRadius(9.dp.toPx()),
+        style = Stroke(w, pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 2.dp.toPx()))),
+    )
+}
+
+/** A small monitor: screen rectangle on a stand, stroked. */
+@Composable
+private fun MonitorIcon(modifier: Modifier = Modifier) {
+    Canvas(modifier.size(10.dp)) {
+        val s = 1.dp.toPx()
+        drawRoundRect(DashedTextColor, Offset(s / 2, s / 2), Size(size.width - s, size.height * 0.66f), CornerRadius(1.5.dp.toPx()), Stroke(s))
+        drawLine(DashedTextColor, Offset(size.width / 2, size.height * 0.66f), Offset(size.width / 2, size.height - s / 2), s)
+        drawLine(DashedTextColor, Offset(size.width * 0.28f, size.height - s / 2), Offset(size.width * 0.72f, size.height - s / 2), s)
+    }
+}
+
+/** A dashed pill with a monitor icon, for virtual devices: `emulator` (Android) or `simulator` (iOS). */
+@Composable
+fun VirtualChip(platform: Platform, modifier: Modifier = Modifier) {
+    Row(
+        modifier.dashedPill().padding(horizontal = 6.dp, vertical = 1.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        MonitorIcon()
+        Text(virtualWord(platform), color = DashedTextColor, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp))
+    }
+}
+
+/** A queue card's `virtual only` limit: the dashed pill, without the icon. */
+@Composable
+fun DashedChip(label: String, modifier: Modifier = Modifier) {
+    Text(
+        label,
+        color = DashedTextColor,
+        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+        modifier = modifier.dashedPill().padding(horizontal = 6.dp, vertical = 1.dp),
+    )
+}
+
+/** `iOS` or `Android`, Neutral style. */
+@Composable
+fun PlatformChip(platform: Platform, modifier: Modifier = Modifier) {
+    Chip(if (platform == Platform.IOS) "iOS" else "Android", ChipStyle.Neutral, modifier)
 }

@@ -8,6 +8,7 @@ import com.programmersbox.cdm.core.allocator.Timers
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.devices.TrackedDevice
 import com.programmersbox.cdm.service.HolderInfo
 import kotlin.test.Test
@@ -122,5 +123,70 @@ class UiModelsTest {
             "gabb-messenger #a41f · general-purpose",
             holderLabel(HolderId("a41f9c…", "agent-1"), "/src/gabb-messenger", "general-purpose"),
         )
+    }
+
+    private val iph = DeviceKey("UDID-IPHONE")
+    private val ipad = DeviceKey("UDID-IPAD")
+
+    private fun iosDev(k: DeviceKey, name: String, c: Category, virtual: Boolean = true, partner: DeviceKey? = null) =
+        AllocDevice(k, name, c, false, listOf(k.hardwareSerial), Platform.IOS, virtual, partner)
+
+    private fun iosTracked(k: DeviceKey, c: Category, virtual: Boolean = true) =
+        TrackedDevice(k, listOf(k.hardwareSerial), "m", "18.2", "simulator", c, Platform.IOS, virtual)
+
+    private fun emptySnap(devices: List<AllocDevice>) = AllocatorSnapshot(devices, emptyMap(), emptyList(), emptyMap())
+
+    @Test
+    fun deviceRowsCarryPlatformAndVirtual() {
+        val snap = emptySnap(listOf(dev(p, "Pixel 8", Category.PHONE), iosDev(iph, "iPhone 16 · iOS 18.2", Category.PHONE)))
+        val rows = deviceRows(world(snap, listOf(tracked(p, Category.PHONE), iosTracked(iph, Category.PHONE))))
+        assertEquals(listOf(Platform.ANDROID, Platform.IOS), rows.map { it.platform })
+        assertEquals(listOf(false, true), rows.map { it.virtual })
+        assertEquals(listOf("15", "18.2"), rows.map { it.osVersion })
+    }
+
+    @Test
+    fun rowsGroupedAndroidThenIos() {
+        val snap = emptySnap(listOf(iosDev(iph, "iPhone", Category.PHONE), dev(p, "Pixel 8", Category.PHONE), iosDev(ipad, "iPad", Category.TABLET), dev(w, "Watch", Category.WATCH)))
+        val rows = deviceRows(world(snap, listOf(tracked(p, Category.PHONE), tracked(w, Category.WATCH), iosTracked(iph, Category.PHONE), iosTracked(ipad, Category.TABLET))))
+        assertEquals(listOf("Pixel 8", "Watch", "iPhone", "iPad"), rows.map { it.name })
+    }
+
+    @Test
+    fun pairedWithNameResolved() {
+        val snap = emptySnap(listOf(iosDev(iph, "iPhone 16", Category.PHONE, partner = w), dev(w, "Pixel Watch", Category.WATCH)))
+        val rows = deviceRows(world(snap, listOf(iosTracked(iph, Category.PHONE), tracked(w, Category.WATCH))))
+        assertEquals("Pixel Watch", rows.single { it.key == iph }.pairedWith)
+        assertEquals(null, rows.single { it.key == w }.pairedWith)
+    }
+
+    @Test
+    fun queueRowShowsLimits() {
+        val h = HolderId("a41f")
+        val snap = AllocatorSnapshot(
+            emptyList(), emptyMap(), listOf(h),
+            mapOf(h to HolderStatus.Queued(1, Wants(setOf(Category.PHONE), Platform.IOS, virtual = false))),
+        )
+        val row = queueRows(world(snap, emptyList())).single()
+        assertEquals(listOf("phone", "iOS", "real only"), row.chipLabels)
+    }
+
+    @Test
+    fun waitReasonNoVirtualWatch() {
+        val h = HolderId("a41f")
+        val snap = AllocatorSnapshot(
+            listOf(dev(w, "Gabb Watch 3", Category.WATCH)), emptyMap(), listOf(h),
+            mapOf(h to HolderStatus.Queued(1, Wants(setOf(Category.WATCH), Platform.ANDROID, virtual = true))),
+        )
+        val reasons = waitReasons(h, world(snap, listOf(tracked(w, Category.WATCH))))
+        assertEquals(listOf("no Wear OS emulator running"), reasons.map { it.reason })
+    }
+
+    @Test
+    fun kindLabels() {
+        assertEquals("Real", kindLabel(Platform.ANDROID, virtual = false))
+        assertEquals("Real", kindLabel(Platform.IOS, virtual = false))
+        assertEquals("Emulator", kindLabel(Platform.ANDROID, virtual = true))
+        assertEquals("Simulator", kindLabel(Platform.IOS, virtual = true))
     }
 }

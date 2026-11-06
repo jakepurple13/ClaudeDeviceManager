@@ -135,6 +135,7 @@ fun DeviceCard(row: DeviceRow, detailed: Boolean, selected: Boolean, onClick: ()
                 DeviceState.OFFLINE -> Chip("offline", ChipStyle.Offline)
                 else -> CategoryChip(row.category)
             }
+            AnimatedVisibility(row.virtual, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { VirtualChip(row.platform) }
             AnimatedVisibility(row.dontUsePending, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) {
                 Chip(DONT_USE_PENDING, ChipStyle.DontUse)
             }
@@ -145,7 +146,8 @@ fun DeviceCard(row: DeviceRow, detailed: Boolean, selected: Boolean, onClick: ()
             detailed -> listOfNotNull(row.holderLabel, row.heldFor?.let(::short), row.timerLabel).joinToString(" · ")
             else -> row.holderLabel
         }
-        if (line != null) Muted(line, Modifier.padding(top = 2.dp))
+        val text = listOfNotNull(line, row.pairedWith?.let { "paired with $it" }).joinToString(" · ").ifEmpty { null }
+        if (text != null) Muted(text, Modifier.padding(top = 2.dp))
     }
 }
 
@@ -176,6 +178,11 @@ fun QueueCard(
             AnimatedCount(row.position, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
             Text(row.label, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
             row.wants.categories.forEach { CategoryChip(it) }
+            AnimatedVisibility(row.wants.platform != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) {
+                row.wants.platform?.let { PlatformChip(it) }
+            }
+            AnimatedVisibility(row.wants.virtual == false, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { Chip("real only", ChipStyle.Neutral) }
+            AnimatedVisibility(row.wants.virtual == true, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { DashedChip("virtual only") }
         }
         Muted("waiting ${short(row.waited)}", Modifier.padding(top = 2.dp))
     }

@@ -30,6 +30,8 @@ data class SessionHolderRow(
     /** "Pixel 8 · idle 1m", "#2 in queue", "ended 12m ago", ... */
     val detail: String,
     val lastCommand: String?,
+    /** Names of the devices it holds, at most two (one per platform). */
+    val devices: List<String> = emptyList(),
 )
 
 data class SessionGroup(
@@ -93,16 +95,19 @@ fun sessionGroups(w: World): List<SessionGroup> {
 private fun holderRow(h: HolderId, w: World): SessionHolderRow {
     val info = w.info[h]
     val st = w.snapshot.statuses[h]
+    val devices = w.snapshot.holdings[h].orEmpty().map { it.device }
+        .ifEmpty { listOfNotNull((st as? HolderStatus.Holding)?.device) }
+        .take(2).map { w.deviceName(it) }
     val (state, detail) = when {
         st is HolderStatus.Blocked -> HolderState.BLOCKED to "blocked · cdm acquire refuses until unblocked"
-        st is HolderStatus.Holding -> HolderState.HOLDING to "${w.deviceName(st.device)} · ${w.timerLabel(st)}"
+        st is HolderStatus.Holding -> HolderState.HOLDING to "${devices.joinToString(" + ")} · ${w.timerLabel(st)}"
         st is HolderStatus.Queued -> HolderState.WAITING to "#${st.position} in queue"
         info?.ended == true -> HolderState.ENDED to "ended ${short(w.now - info.lastSeen)} ago"
         st is HolderStatus.Released -> HolderState.IDLE to "idle · ${released(st.reason)}"
         else -> HolderState.IDLE to (info?.let { "idle · seen ${short(w.now - it.lastSeen)} ago" } ?: "idle")
     }
     val name = if (h.agentId == HolderId.MAIN) "main" else info?.agentType ?: h.agentId
-    return SessionHolderRow(h, name, state, detail, info?.lastDeviceCommand)
+    return SessionHolderRow(h, name, state, detail, info?.lastDeviceCommand, if (state == HolderState.HOLDING) devices else emptyList())
 }
 
 private fun released(r: ReleaseReason) = when (r) {

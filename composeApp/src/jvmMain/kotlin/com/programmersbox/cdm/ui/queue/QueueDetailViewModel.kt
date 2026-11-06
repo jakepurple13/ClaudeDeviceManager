@@ -28,6 +28,8 @@ data class QueueDetailState(
     val cwd: String = "",
     val position: Int = 0,
     val wants: Set<Category> = emptySet(),
+    /** Platform / real-or-virtual limits: `["iOS", "real only"]`. */
+    val limits: List<String> = emptyList(),
     val queuedAt: Instant? = null,
     val reasons: List<WaitReason> = emptyList(),
     val handOff: List<DeviceRef> = emptyList(),
@@ -49,6 +51,7 @@ class QueueDetailViewModel(
                 cwd = w.info[holder]?.cwd.orEmpty(),
                 position = row?.position ?: 0,
                 wants = row?.wants?.categories.orEmpty(),
+                limits = row?.wants?.limits.orEmpty(),
                 queuedAt = w.queuedAt(holder),
                 reasons = if (row != null) waitReasons(holder, w) else emptyList(),
                 handOff = if (row != null) handOffTargets(holder, w) else emptyList(),
