@@ -129,7 +129,8 @@ class Notifier(
         val what = if (cats.isEmpty() || Category.ANY in cats) "a device" else "a " + cats.joinToString(" or ") { it.id }
         val position = manager.snapshot.value.queue.indexOf(h) + 1
         val body = if (position > 0) "${holder(h)} is #$position in line." else "${holder(h)} is in line."
-        return SystemNotice("Waiting for $what", body, open = NoticeTarget.Queue(h))
+        val limits = wants.limits.takeIf { it.isNotEmpty() }?.joinToString(prefix = " (", postfix = ")").orEmpty()
+        return SystemNotice("Waiting for $what$limits", body, open = NoticeTarget.Queue(h))
     }
 
     private fun queueStarted(h: HolderId, d: DeviceKey, waited: Duration) =

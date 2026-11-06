@@ -24,6 +24,13 @@ data class Wants(val categories: Set<Category>, val platform: Platform? = null, 
             (platform == null || d.platform == platform) &&
             (virtual == null || d.virtual == virtual)
 
+    /** Human-readable limits beyond the categories, e.g. `["iOS", "real only"]`; empty when unlimited. */
+    val limits: List<String>
+        get() = listOfNotNull(
+            platform?.let { if (it == Platform.IOS) "iOS" else "Android" },
+            virtual?.let { if (it) "virtual only" else "real only" },
+        )
+
     companion object {
         val ANY = Wants(setOf(Category.ANY))
     }

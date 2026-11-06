@@ -9,19 +9,28 @@ ACQUIRE_TIMEOUT="${CDM_ACQUIRE_TIMEOUT:-110}"
 
 cmd="${1:-}"
 [ $# -gt 0 ] && shift
-holder="" cwd="" category=""
+holder="" cwd="" category="" platform="" virtual=""
+usage="Usage: cdm acquire [--category phone|watch|tablet|phone,watch|any] [--ios|--android] [--real|--virtual] | cdm release [--ios|--android] | cdm status"
 while [ $# -gt 0 ]; do
   case "$1" in
     --holder) holder="${2:-}"; shift 2 || shift ;;
     --cwd) cwd="${2:-}"; shift 2 || shift ;;
     --category) category="${2:-}"; shift 2 || shift ;;
+    --ios|--android)
+      p="${1#--}"
+      if [ -n "$platform" ] && [ "$platform" != "$p" ]; then echo "Pass only one of --ios and --android."; exit 2; fi
+      platform="$p"; shift ;;
+    --real|--virtual)
+      v="false"; [ "$1" = "--virtual" ] && v="true"
+      if [ -n "$virtual" ] && [ "$virtual" != "$v" ]; then echo "Pass only one of --real and --virtual."; exit 2; fi
+      virtual="$v"; shift ;;
     *) shift ;;
   esac
 done
 
 case "$cmd" in
   acquire|release|status) ;;
-  *) echo "Usage: cdm acquire [--category phone|watch|phone,watch|any] | cdm release | cdm status"; exit 2 ;;
+  *) echo "$usage"; exit 2 ;;
 esac
 if [ -z "$holder" ]; then
   echo "cdm must be run through Claude Code's Bash tool (it injects the holder identity)."
@@ -53,9 +62,16 @@ connect || not_running
 q=(-G --data-urlencode "holder=$holder" --data-urlencode "cwd=$cwd")
 wanted="${category:-}"
 
+platform_label() { if [ "$1" = "ios" ]; then echo "iOS"; else echo "Android"; fi; }
+
+# $1 is the platform (android|ios), $2 the serial or UDID, $3 the device name.
 say_grant() {
-  local serial="$1" name="$2"
-  echo "Got $name ($serial). Your adb and Gradle commands are now pinned to it."
+  local plat="$1" serial="$2" name="$3"
+  if [ "$plat" = "ios" ]; then
+    echo "Got $name ($serial). Your iOS commands get CDM_IOS_UDID=$serial; pass it as -destination id=\$CDM_IOS_UDID, simctl … \$CDM_IOS_UDID or maestro --device \$CDM_IOS_UDID."
+  else
+    echo "Got $name ($serial). Your adb and Gradle commands are now pinned to it."
+  fi
 }
 
 case "$cmd" in
@@ -63,6 +79,11 @@ case "$cmd" in
     label="${wanted:-device}"
     label="${label//,/ or }"
     [ "$label" = "any" ] && label="device"
+    limits=""
+    [ -n "$platform" ] && limits="$(platform_label "$platform")"
+    [ "$virtual" = "false" ] && limits="${limits:+$limits, }real only"
+    [ "$virtual" = "true" ] && limits="${limits:+$limits, }virtual only"
+    [ -n "$limits" ] && limits=" ($limits)"
     acquire_end=$((SECONDS + ACQUIRE_TIMEOUT))
     last_pos=""
     while :; do
@@ -73,34 +94,45 @@ case "$cmd" in
           .) ;; # heartbeat
           QUEUED\ *)
             pos="${line#QUEUED }"
-            [ "$pos" != "$last_pos" ] && echo "Waiting for a $label device… position $pos"
+            [ "$pos" != "$last_pos" ] && echo "Waiting for a $label device${limits}… position $pos"
             last_pos="$pos"
             ;;
-          GRANTED\ *) rest="${line#GRANTED }"; say_grant "${rest%% *}" "${rest#* }"; exit 0 ;;
+          GRANTED\ *)
+            # GRANTED <platform> <serial> <name, may contain spaces>
+            rest="${line#GRANTED }"; plat="${rest%% *}"; rest="${rest#* }"
+            say_grant "$plat" "${rest%% *}" "${rest#* }"; exit 0 ;;
           TIMEOUT\ *) echo "Still queued at position ${line#TIMEOUT }. Run \`cdm acquire\` again to keep waiting."; exit 0 ;;
           BLOCKED) echo "You're blocked in Claude Device Manager. Ask the user to unblock you."; exit 1 ;;
           REMOVED) echo "The user removed you from the device queue. Ask them before trying again."; exit 1 ;;
         esac
-      done < <(curl -sN --no-buffer -X POST "${q[@]}" --data-urlencode "category=$wanted" --data-urlencode "timeoutSec=$left" "$base/acquire")
+      done < <(curl -sN --no-buffer -X POST "${q[@]}" --data-urlencode "category=$wanted" --data-urlencode "platform=$platform" \
+        --data-urlencode "virtual=$virtual" --data-urlencode "timeoutSec=$left" "$base/acquire")
       # Stream ended without a verdict: the app went away mid-wait. Its queue grace keeps our spot, so
       # reconnect (retrying for RETRY_SECONDS) and wait again; give up only if it never comes back.
       connect || not_running
     done
     ;;
   release)
-    out="$(curl -s -X POST "${q[@]}" "$base/release")" || not_running
+    out="$(curl -s -X POST "${q[@]}" --data-urlencode "platform=$platform" "$base/release")" || not_running
+    if [ -n "$platform" ]; then which="$(platform_label "$platform") device"; none="an $which"; else which="device"; none="a device"; fi
     case "$out" in
-      RELEASED*) echo "Released your device." ;;
-      *) echo "You weren't holding a device." ;;
+      RELEASED*) echo "Released your $which." ;;
+      *) echo "You weren't holding $none." ;;
     esac
     ;;
   status)
     out="$(curl -s "${q[@]}" "$base/status")" || not_running
-    case "$out" in
-      HOLDING\ *) rest="${out#HOLDING }"; echo "Holding ${rest#* } (${rest%% *})." ;;
-      QUEUED\ *) echo "Queued at position ${out#QUEUED }." ;;
-      BLOCKED*) echo "You're blocked in Claude Device Manager. Ask the user to unblock you." ;;
-      *) echo "No device held and not queued." ;;
-    esac
+    # One line per hold (HOLDING <platform> <serial> <name>), then QUEUED; or a single BLOCKED or NONE.
+    while IFS= read -r line; do
+      case "$line" in
+        HOLDING\ *)
+          rest="${line#HOLDING }"; plat="${rest%% *}"; rest="${rest#* }"
+          if [ "$plat" = "ios" ]; then echo "Holding ${rest#* } (${rest%% *}, iOS)."; else echo "Holding ${rest#* } (${rest%% *})."; fi
+          ;;
+        QUEUED\ *) echo "Queued at position ${line#QUEUED }." ;;
+        BLOCKED*) echo "You're blocked in Claude Device Manager. Ask the user to unblock you." ;;
+        *) echo "No device held and not queued." ;;
+      esac
+    done <<< "$out"
     ;;
 esac

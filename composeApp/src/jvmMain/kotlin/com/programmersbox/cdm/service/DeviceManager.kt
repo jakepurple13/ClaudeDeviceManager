@@ -2,9 +2,11 @@ package com.programmersbox.cdm.service
 
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
 import com.programmersbox.cdm.core.allocator.HolderStatus
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.devices.TrackedDevice
 import kotlin.time.Duration
 import kotlin.time.Instant
@@ -36,7 +38,11 @@ data class HolderInfo(
 )
 
 sealed interface AcquireResult {
-    data class Granted(val serial: String, val name: String) : AcquireResult
+    /**
+     * [serial] is the granted device's ADB serial (Android) or UDID (iOS). For a paired hold (a real Apple Watch and
+     * its iPhone) it is the requested device; [pairSerial] is the partner's.
+     */
+    data class Granted(val serial: String, val name: String, val platform: Platform, val pairSerial: String? = null) : AcquireResult
 
     /** [position] is the 1-based queue position when waiting stopped. */
     data class TimedOut(val position: Int) : AcquireResult
@@ -58,12 +64,20 @@ interface DeviceManager {
     suspend fun acquire(
         holder: HolderId,
         cwd: String,
-        wants: Set<Category>,
+        /** Empty [Wants.categories] means the project's default category. */
+        wants: Wants,
         timeout: Duration,
         onPosition: suspend (Int) -> Unit,
     ): AcquireResult
-    suspend fun release(holder: HolderId)
+
+    /** Releases the [platform] hold (and a queue entry that platform could answer), or everything when null. */
+    suspend fun release(holder: HolderId, platform: Platform? = null)
+
+    /** Merged status: Blocked, then Queued, then the first hold, then the last release. */
     suspend fun status(holder: HolderId): HolderStatus
+
+    /** Every live hold, at most one per platform. */
+    suspend fun holdings(holder: HolderId): List<HolderStatus.Holding>
 
     // UI actions
     suspend fun releaseDevice(key: DeviceKey, block: Boolean)

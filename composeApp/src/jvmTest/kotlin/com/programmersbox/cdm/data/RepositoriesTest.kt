@@ -63,6 +63,20 @@ class RepositoriesTest {
     }
 
     @Test
+    fun queuedActivityNamesPlatformAndRealOrVirtual() = runTest {
+        val db = inMemoryDatabase()
+        val a = ActivityRepository(db.activityDao())
+        val wants = com.programmersbox.cdm.core.allocator.Wants(setOf(Category.PHONE), com.programmersbox.cdm.core.model.Platform.IOS, virtual = false)
+        a.record(AllocatorEvent.Queued(now, HolderId("s1"), wants))
+        a.record(AllocatorEvent.Queued(now, HolderId("s2"), com.programmersbox.cdm.core.allocator.Wants(setOf(Category.WATCH))))
+        assertEquals(
+            setOf("queued s1:main wants phone (iOS, real only)", "queued s2:main wants watch"),
+            a.recent().first().map { it.text }.toSet(),
+        )
+        db.close()
+    }
+
+    @Test
     fun activityAndBlocked() = runTest {
         val db = inMemoryDatabase()
         val a = ActivityRepository(db.activityDao())

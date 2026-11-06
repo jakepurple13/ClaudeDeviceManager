@@ -92,6 +92,16 @@ class InstallerTest {
     }
 
     @Test
+    fun claudeMdMentionsCdmIosUdid() {
+        val text = Installer(tmpHome()).claudeMdSnippet
+        for (needle in listOf(
+            "xcodebuild", "simctl", "devicectl", "maestro", "KMP iOS",
+            "-destination id=\$CDM_IOS_UDID", "\$CDM_IOS_UDID", "maestro --device \$CDM_IOS_UDID",
+            "--ios", "--android", "--real", "--virtual", "tablet", "cdm release",
+        )) assertTrue(needle in text, "missing \"$needle\" in:\n$text")
+    }
+
+    @Test
     fun appendSnippetIdempotent() {
         val home = tmpHome()
         home.resolve(".claude").createDirectories()

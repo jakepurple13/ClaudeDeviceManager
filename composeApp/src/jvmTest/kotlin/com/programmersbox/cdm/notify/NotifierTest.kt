@@ -130,6 +130,13 @@ class NotifierTest {
     }
 
     @Test
+    fun queuedNamesPlatformAndRealOrVirtual() {
+        emit(AllocatorEvent.Queued(t0, app, Wants(setOf(Category.PHONE), com.programmersbox.cdm.core.model.Platform.IOS, virtual = false)))
+        emit(AllocatorEvent.Queued(t0, app, Wants(setOf(Category.ANY), com.programmersbox.cdm.core.model.Platform.ANDROID, virtual = true)))
+        assertEquals(listOf("Waiting for a phone (iOS, real only)", "Waiting for a device (Android, virtual only)"), sent.map { it.title })
+    }
+
+    @Test
     fun waitText() {
         assertEquals("35 s", Notifier.waitText(35.seconds))
         assertEquals("2 min", Notifier.waitText(120.seconds))

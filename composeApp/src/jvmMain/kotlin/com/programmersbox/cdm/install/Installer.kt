@@ -253,8 +253,11 @@ class Installer(private val home: Path) {
     }
 
     val claudeMdSnippet: String = """
-        ## Android devices (Claude Device Manager)
-        Before ANY work that touches an Android device or emulator (adb, Gradle install/connected tasks, test scripts, scrcpy), run `cdm acquire --category <phone|watch|phone,watch>` and wait for it to finish. It may pause for several minutes while another session uses the device — that is expected; do not work around it. If it says "Still queued", run it again. When you are done testing, run `cdm release`. Subagents must acquire their own device. Never pass a different `-s <serial>` than the one you were given.
+        ## Android and iOS devices (Claude Device Manager)
+        Before ANY work that touches an Android or iOS device, emulator or simulator (adb, Gradle install/connected tasks, KMP iOS tests, xcodebuild test/run, simctl, devicectl, Maestro, test scripts, scrcpy), run `cdm acquire --category <phone|watch|tablet|phone,watch>` and wait for it to finish. Add `--ios` or `--android` to choose the platform, and `--real` or `--virtual` for a real device or an emulator/simulator. To hold one device of each platform, acquire each with its flag. It may pause for several minutes while another session uses the device — that is expected; do not work around it. If it says "Still queued", run it again.
+        Android: your adb and Gradle commands are pinned for you. Never pass a different `-s <serial>` than the one you were given.
+        iOS: your commands get `CDM_IOS_UDID`; pass it explicitly: `xcodebuild -destination id=${'$'}CDM_IOS_UDID`, `xcrun simctl <command> ${'$'}CDM_IOS_UDID`, `xcrun devicectl … --device ${'$'}CDM_IOS_UDID`, `maestro --device ${'$'}CDM_IOS_UDID`. Gradle KMP iOS simulator tests are pinned automatically. Never target a different simulator or device.
+        When you are done testing, run `cdm release` (or `cdm release --ios` / `cdm release --android` for one platform). Subagents must acquire their own device.
     """.trimIndent()
 
     fun appendSnippet(): Result<Unit> = runCatching {

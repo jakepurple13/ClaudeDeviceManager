@@ -226,23 +226,20 @@ class DeviceManagerService(
     override suspend fun acquire(
         holder: HolderId,
         cwd: String,
-        wants: Set<Category>,
+        wants: Wants,
         timeout: Duration,
         onPosition: suspend (Int) -> Unit,
     ): AcquireResult {
         book.touch(holder, cwd, null)
-        val w = wants.ifEmpty { prefetchDefaultCategory(cwd).members() }
+        val w = if (wants.categories.isEmpty()) wants.copy(categories = prefetchDefaultCategory(cwd).members()) else wants
         val first = locked {
-            // Ruling W: asking for a category the current device doesn't fit gives that device back first.
-            (allocator.statusOf(holder) as? HolderStatus.Holding)?.let { st ->
-                val cat = allocator.snapshot().devices.firstOrNull { it.key == st.device }?.category
-                if (Category.ANY !in w && cat !in w) allocator.release(holder, ReleaseReason.SELF_RELEASE)
-            }
-            when (val g = allocator.tryGrab(holder, Wants(w))) {
-                is GrabResult.Granted -> AcquireResult.Granted(g.serial, g.device.name)
+            releaseUnfitting(holder, w)
+            when (val g = allocator.tryGrab(holder, w)) {
+                is GrabResult.Granted -> allocator.holdingsOf(holder).firstOrNull { it.platform == g.device.platform }
+                    ?.let { grantedFor(holder, it) } ?: AcquireResult.Granted(g.serial, g.device.name, g.device.platform)
                 GrabResult.Blocked -> AcquireResult.Blocked
                 else -> {
-                    allocator.enqueue(holder, Wants(w))
+                    allocator.enqueue(holder, w)
                     allocator.attachWaiter(holder)
                     null
                 }
@@ -263,31 +260,69 @@ class DeviceManagerService(
                     } else true
                 }
             }
-            return locked { resultFor(holder) }
+            return locked { resultFor(holder, w) }
         } finally {
             withContext(NonCancellable) { locked { allocator.detachWaiter(holder) } }
         }
     }
 
-    private fun resultFor(holder: HolderId): AcquireResult = when (val st = allocator.statusOf(holder)) {
-        is HolderStatus.Holding -> {
-            val d = allocator.snapshot().devices.firstOrNull { it.key == st.device }
-            AcquireResult.Granted(allocator.serialFor(holder, st.platform) ?: st.device.hardwareSerial, d?.name ?: st.device.hardwareSerial)
+    /**
+     * Ruling W, per platform: asking for something a current hold doesn't fit gives that hold back first. A flagged
+     * request looks only at its platform's hold. An unflagged one gives back every hold when none fits, so the request
+     * can be served on the same platform (an unflagged grab never adds a second platform).
+     */
+    private fun releaseUnfitting(holder: HolderId, w: Wants) {
+        val holds = allocator.holdingsOf(holder)
+        if (w.platform != null) {
+            val h = holds.firstOrNull { it.platform == w.platform } ?: return
+            if (!fits(h, w)) allocator.release(holder, ReleaseReason.SELF_RELEASE, h.platform)
+        } else if (holds.isNotEmpty() && holds.none { fits(it, w) }) {
+            allocator.release(holder, ReleaseReason.SELF_RELEASE)
         }
-        HolderStatus.Blocked -> AcquireResult.Blocked
-        is HolderStatus.Queued -> AcquireResult.TimedOut(st.position)
-        else -> AcquireResult.Removed
     }
 
-    override suspend fun release(holder: HolderId) {
+    /** A pair hold fits when either side does, as in [com.programmersbox.cdm.core.allocator.Allocator.tryGrab]. */
+    private fun fits(h: HolderStatus.Holding, w: Wants): Boolean {
+        val devices = allocator.snapshot().devices
+        return listOfNotNull(h.device, h.partner).any { k -> devices.firstOrNull { it.key == k }?.let(w::fits) == true }
+    }
+
+    /** The answer once waiting stops: the hold that fits [w] (not just the holder's first hold), or why there is none. */
+    private fun resultFor(holder: HolderId, w: Wants): AcquireResult = when (val st = allocator.statusOf(holder)) {
+        HolderStatus.Blocked -> AcquireResult.Blocked
+        is HolderStatus.Queued -> AcquireResult.TimedOut(st.position)
+        else -> {
+            val holds = allocator.holdingsOf(holder)
+            val h = holds.firstOrNull { fits(it, w) } ?: holds.firstOrNull { w.platform == null || it.platform == w.platform }
+            h?.let { grantedFor(holder, it) } ?: AcquireResult.Removed
+        }
+    }
+
+    private fun grantedFor(holder: HolderId, h: HolderStatus.Holding): AcquireResult.Granted {
+        val devices = allocator.snapshot().devices
+        val d = devices.firstOrNull { it.key == h.device }
+        val pair = h.partner?.let { p -> devices.firstOrNull { it.key == p }?.connectedSerials?.firstOrNull() ?: p.hardwareSerial }
+        return AcquireResult.Granted(
+            allocator.serialFor(holder, h.platform) ?: h.device.hardwareSerial,
+            d?.name ?: h.device.hardwareSerial,
+            h.platform,
+            pair,
+        )
+    }
+
+    override suspend fun release(holder: HolderId, platform: Platform?) {
         locked {
-            allocator.removeFromQueue(holder)
-            allocator.release(holder, ReleaseReason.SELF_RELEASE)
+            // A queue entry goes too unless it is pinned to the platform that stays held.
+            val queuedFor = (allocator.statusOf(holder) as? HolderStatus.Queued)?.wants?.platform
+            if (platform == null || queuedFor == null || queuedFor == platform) allocator.removeFromQueue(holder)
+            allocator.release(holder, ReleaseReason.SELF_RELEASE, platform)
         }
         book.touch(holder, null, null)
     }
 
     override suspend fun status(holder: HolderId): HolderStatus = locked { allocator.statusOf(holder) }
+
+    override suspend fun holdings(holder: HolderId): List<HolderStatus.Holding> = locked { allocator.holdingsOf(holder) }
 
     // ---- UI actions ----
 

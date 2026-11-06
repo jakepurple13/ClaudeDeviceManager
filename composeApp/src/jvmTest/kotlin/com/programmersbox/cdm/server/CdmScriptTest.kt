@@ -3,6 +3,7 @@ package com.programmersbox.cdm.server
 import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.HolderStatus
 import com.programmersbox.cdm.core.model.Category
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.service.AcquireResult
 import java.nio.file.Files
 import java.nio.file.Path
@@ -75,7 +76,7 @@ class CdmScriptTest {
         val m = FakeManager().apply {
             acquireImpl = { _, _, _, _, onPos ->
                 onPos(2)
-                AcquireResult.Granted("SER1", "Pixel Watch")
+                AcquireResult.Granted("SER1", "Pixel Watch", Platform.ANDROID)
             }
         }
         withServer(m) { pf ->
@@ -85,7 +86,7 @@ class CdmScriptTest {
                 "Waiting for a watch device… position 2\nGot Pixel Watch (SER1). Your adb and Gradle commands are now pinned to it.\n",
                 r.out,
             )
-            assertEquals(setOf(Category.WATCH), m.lastWants)
+            assertEquals(Wants(setOf(Category.WATCH)), m.lastWants)
         }
     }
 
@@ -139,6 +140,55 @@ class CdmScriptTest {
         }
     }
 
+    @Test
+    fun cdmScriptParsesNewFlags() {
+        val m = FakeManager().apply { acquireImpl = { _, _, _, _, _ -> AcquireResult.TimedOut(1) } }
+        withServer(m) { pf ->
+            val base = arrayOf("--holder", "s:main", "--cwd", "/x")
+            run(pf, "acquire", *base, "--category", "tablet", "--ios", "--real")
+            assertEquals(Wants(setOf(Category.TABLET), Platform.IOS, virtual = false), m.lastWants)
+            run(pf, "acquire", *base, "--android", "--virtual")
+            assertEquals(Wants(emptySet(), Platform.ANDROID, virtual = true), m.lastWants)
+            run(pf, "acquire", *base, "--category", "phone")
+            assertEquals(Wants(setOf(Category.PHONE)), m.lastWants)
+            val both = run(pf, "acquire", *base, "--ios", "--android")
+            assertEquals(2, both.code, both.out)
+            assertEquals(2, run(pf, "acquire", *base, "--real", "--virtual").code)
+
+            m.statusImpl = { HolderStatus.Queued(1, Wants.ANY) }
+            assertEquals("Released your iOS device.\n", run(pf, "release", *base, "--ios").out)
+            assertEquals("Released your Android device.\n", run(pf, "release", *base, "--android").out)
+            assertEquals("Released your device.\n", run(pf, "release", *base).out)
+            val h = com.programmersbox.cdm.core.model.HolderId("s", "main")
+            assertEquals(listOf(h to Platform.IOS, h to Platform.ANDROID, h to null), m.released)
+        }
+    }
+
+    @Test
+    fun cdmScriptIosGrantMessage() {
+        val m = FakeManager().apply {
+            acquireImpl = { _, _, _, _, onPos ->
+                onPos(1)
+                AcquireResult.Granted("UDID-1", "iPhone 16 Pro", Platform.IOS)
+            }
+        }
+        withServer(m) { pf ->
+            val r = run(pf, "acquire", "--holder", "s:main", "--cwd", "/x", "--category", "phone", "--ios", "--real")
+            assertEquals(0, r.code, r.out)
+            assertEquals(
+                "Waiting for a phone device (iOS, real only)… position 1\n" +
+                    "Got iPhone 16 Pro (UDID-1). Your iOS commands get CDM_IOS_UDID=UDID-1; pass it as " +
+                    "-destination id=\$CDM_IOS_UDID, simctl … \$CDM_IOS_UDID or maestro --device \$CDM_IOS_UDID.\n",
+                r.out,
+            )
+            m.statusImpl = { HolderStatus.Queued(2, Wants.ANY) }
+            m.holdingsImpl = {
+                listOf(HolderStatus.Holding(com.programmersbox.cdm.core.model.DeviceKey("UDID-1"), kotlin.time.Instant.fromEpochMilliseconds(0), kotlin.time.Instant.fromEpochMilliseconds(0), false, Platform.IOS))
+            }
+            assertEquals("Holding UDID-1 (UDID-1, iOS).\nQueued at position 2.\n", run(pf, "status", "--holder", "s:main", "--cwd", "/x").out)
+        }
+    }
+
     /** Ruling Y: the default wait stays under Claude Code's 2-minute Bash timeout. */
     @Test
     fun defaultAcquireTimeoutIs110Seconds() {
@@ -172,7 +222,7 @@ class CdmScriptTest {
                 kotlinx.coroutines.awaitCancellation()
             }
         }
-        val second = FakeManager().apply { acquireImpl = { _, _, _, _, _ -> AcquireResult.Granted("SER1", "Pixel Watch") } }
+        val second = FakeManager().apply { acquireImpl = { _, _, _, _, _ -> AcquireResult.Granted("SER1", "Pixel Watch", Platform.ANDROID) } }
         val pf = dir.resolve("restart-port")
         val s1 = CdmServer(first, port = 0, portFile = pf)
         val port = runBlocking { s1.start() }
@@ -187,7 +237,7 @@ class CdmScriptTest {
             assertTrue(proc.waitFor(60, TimeUnit.SECONDS))
             assertEquals(0, proc.exitValue(), out)
             assertTrue(out.endsWith("Got Pixel Watch (SER1). Your adb and Gradle commands are now pinned to it.\n"), out)
-            assertEquals(setOf(Category.WATCH), second.lastWants)
+            assertEquals(Wants(setOf(Category.WATCH)), second.lastWants)
         } finally {
             proc.destroyForcibly()
             s1.stop()
