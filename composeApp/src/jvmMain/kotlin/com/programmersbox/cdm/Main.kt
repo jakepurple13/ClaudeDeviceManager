@@ -1,5 +1,7 @@
 package com.programmersbox.cdm
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.TrayState
@@ -7,6 +9,8 @@ import com.programmersbox.cdm.notify.Notifier
 import com.programmersbox.cdm.notify.NucleusNotificationSender
 import com.programmersbox.cdm.ui.window.MainWindowHolder
 import kotlinx.coroutines.launch
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.application
@@ -16,11 +20,16 @@ import com.programmersbox.cdm.di.appModules
 import com.programmersbox.cdm.install.InstallLifecycle
 import com.programmersbox.cdm.server.ServerController
 import com.programmersbox.cdm.service.DeviceManagerService
+import com.programmersbox.cdm.update.UpdateController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import com.programmersbox.cdm.ui.nav.AppNavigation
 import com.programmersbox.cdm.ui.nav.Navigator
+import com.programmersbox.cdm.ui.nav.TopLevel
+import com.programmersbox.cdm.ui.lifecycle.LifecycleController
+import com.programmersbox.cdm.ui.lifecycle.LifecycleOverlay
+import com.programmersbox.cdm.ui.lifecycle.LifecycleProgressLine
 import com.programmersbox.cdm.ui.nav.applyDevStartRoute
 import com.programmersbox.cdm.ui.window.AppIcon
 import com.programmersbox.cdm.ui.window.AppWindow
@@ -58,17 +67,24 @@ fun main() {
     routeQuitThroughWindowClose()
     AppIcon.applyToDock()
     runBlocking { server.start(port) }
-    applyDevStartRoute(koin.get<Navigator>())
+    // Checks GitHub releases now and every 6 h; a no-op when run from Gradle. Installing exits through the
+    // shutdown hook above, so the integration is removed before the new version starts.
+    koin.get<UpdateController>().start()
+    val navigator = koin.get<Navigator>()
+    applyDevStartRoute(navigator)
+    val lifecycle = koin.get<LifecycleController>()
     val chrome = windowChrome()
     val trayState = koin.get<TrayState>()
     val mainWindow = koin.get<MainWindowHolder>()
     // Register notification buttons and ask for permission at launch, not on the first event, which would be lost.
     appScope.launch { koin.get<NucleusNotificationSender>().requestPermission() }
     application {
+        // The clean-up runs at once; the window stays up for the quit checklist, then closes.
         val quit = {
-            shutdown()
-            appScope.cancel()
-            exitApplication()
+            lifecycle.shutdown(cleanup = shutdown) {
+                appScope.cancel()
+                exitApplication()
+            }
         }
         // Always shown: a quick way back to the window, and the Compose tray is the notification fallback.
         AppIcon.painter?.let { trayIcon ->
@@ -80,7 +96,11 @@ fun main() {
             ) {
                 Item("Show $APP_TITLE", onClick = mainWindow::bringToFront)
                 Separator()
-                Item("Quit", onClick = quit)
+                // Raise the window so the quit checklist is visible.
+                Item("Quit", onClick = {
+                    mainWindow.bringToFront()
+                    quit()
+                })
             }
         }
         AppWindow(
@@ -93,8 +113,13 @@ fun main() {
             LaunchedEffect(Unit) {
                 window.minimumSize = Dimension(800, 560)
                 mainWindow.window = window
+                lifecycle.startup(port)
             }
-            AppNavigation()
+            Box(Modifier.fillMaxSize()) {
+                AppNavigation()
+                LifecycleProgressLine(lifecycle, Modifier.align(Alignment.TopCenter))
+                LifecycleOverlay(lifecycle, onOpenSettings = { navigator.selectTopLevel(TopLevel.SETTINGS) })
+            }
         }
     }
 }

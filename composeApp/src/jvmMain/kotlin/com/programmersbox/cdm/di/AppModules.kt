@@ -32,6 +32,7 @@ import com.programmersbox.cdm.ui.window.MainWindowHolder
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import com.programmersbox.cdm.ui.nav.Navigator
+import com.programmersbox.cdm.ui.lifecycle.LifecycleController
 import com.programmersbox.cdm.ui.nav.ShellViewModel
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -52,6 +53,10 @@ import com.programmersbox.cdm.ui.queue.QueueViewModel
 import com.programmersbox.cdm.ui.projects.ProjectsViewModel
 import com.programmersbox.cdm.ui.sessions.SessionsViewModel
 import com.programmersbox.cdm.ui.settings.SettingsViewModel
+import com.programmersbox.cdm.ui.update.UpdateViewModel
+import com.programmersbox.cdm.update.AppUpdater
+import com.programmersbox.cdm.update.NucleusAppUpdater
+import com.programmersbox.cdm.update.UpdateController
 import org.koin.dsl.bind
 import org.koin.dsl.module
 
@@ -95,6 +100,20 @@ fun appModules(): List<Module> = listOf(
                 sender = get<NucleusNotificationSender>(),
             )
         } bind NotificationTester::class
+        single {
+            val service = get<DeviceManagerService>()
+            val integration = get<InstallLifecycle>()
+            LifecycleController(
+                scope = CoroutineScope(SupervisorJob() + Dispatchers.Main),
+                serverError = get<ServerStatus>().serverError,
+                integration = integration.state,
+                scanned = service.scanned,
+                deviceCount = { service.tracked.value.size },
+                repairIntegration = { integration.repair() },
+            )
+        }
+        single<AppUpdater> { NucleusAppUpdater() }
+        single { UpdateController(get(), get(named(APP_SCOPE))) }
         single<CoroutineScope>(named(APP_SCOPE)) {
             CoroutineScope(
                 SupervisorJob() + Dispatchers.Default +
@@ -119,4 +138,5 @@ val uiModule: Module = module {
     viewModelOf(::SessionsViewModel)
     viewModelOf(::ProjectsViewModel)
     viewModelOf(::SettingsViewModel)
+    viewModelOf(::UpdateViewModel)
 }

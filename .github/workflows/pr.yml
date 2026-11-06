@@ -1,0 +1,52 @@
+# Checks every pull request: runs the unit tests, then packages the app on each OS to catch platform build breaks.
+# Never publishes anything. Release builds stay in release.yml, which only runs on pushed v* tags, so the two
+# workflows never fire for the same event.
+name: Pull Request
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new push to the PR cancels the run still going for the previous commit.
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: NucleusFramework/Nucleus/.github/actions/setup-nucleus@v2.5.18
+        with:
+          java-version: '25'
+          packaging-tools: 'true'
+      - run: ./gradlew :composeApp:jvmTest --stacktrace --no-daemon
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: composeApp/build/reports/tests/
+          if-no-files-found: ignore
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: NucleusFramework/Nucleus/.github/actions/setup-nucleus@v2.5.18
+        with:
+          java-version: '25'
+          packaging-tools: 'true'
+      - name: Package
+        run: ./gradlew :composeApp:packageDistributionForCurrentOS --stacktrace --no-daemon

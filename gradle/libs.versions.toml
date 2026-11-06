@@ -38,7 +38,8 @@ coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", ve
 serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 reorderable = { module = "sh.calvin.reorderable:reorderable", version.ref = "reorderable" }
 nucleus-notification = { module = "dev.nucleusframework:nucleus.notification-common", version.ref = "nucleus" }
-jewel-decorated-window ={ module = "org.jetbrains.jewel:jewel-int-ui-decorated-window", version.ref = "jewel" }
+jewel-decorated-window = { module = "org.jetbrains.jewel:jewel-int-ui-decorated-window", version.ref = "jewel" }
+nucleus-updater = { module = "dev.nucleusframework:nucleus.updater-runtime", version.ref = "nucleus" }
 
 [plugins]
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
@@ -47,3 +48,4 @@ composeCompiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "k
 kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 room3 = { id = "androidx.room3", version.ref = "room3" }
+nucleus = { id = "dev.nucleusframework", version.ref = "nucleus" }
