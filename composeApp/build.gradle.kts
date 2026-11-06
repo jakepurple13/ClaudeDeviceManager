@@ -80,9 +80,9 @@ val needsAppRuntime: Boolean = gradle.startParameter.taskNames.any { requested -
         .any { name.contains(it, ignoreCase = true) }
 }
 
-// Release CI passes -PappVersion=<tag without the leading v>; local builds stay 1.0.0. The updater compares this
+// Release CI passes -PappVersion=<tag without the leading v>; local builds default to 1.0.2. The updater compares this
 // version with the one in the release's latest-*.yml, so every tag must be a higher semver than the last.
-val appVersion: String = providers.gradleProperty("appVersion").getOrElse("1.0.0")
+val appVersion: String = providers.gradleProperty("appVersion").getOrElse("1.0.2")
 
 // Nucleus 2.5.18 writes package.json beside each format's output only when it is missing, and electron-builder takes
 // the artifact and latest-*.yml version from it. A leftover file from an earlier build would label a new build with
