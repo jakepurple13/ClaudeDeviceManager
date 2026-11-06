@@ -344,6 +344,7 @@ class DeviceManagerServiceTest {
             }
             override suspend fun getAll() = emptyList<SettingEntity>()
             override suspend fun put(entity: SettingEntity) {}
+            override suspend fun putAll(entities: List<SettingEntity>) {}
         }
         val s = started(settings = SettingsRepository(dao))
         s.acquire(h1, "/w", watch, 1.minutes) {}

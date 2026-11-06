@@ -59,6 +59,10 @@ class RepositoriesTest {
         repo.update { it.copy(notifications = NotificationSettings(grab = false, release = true, queued = false, queueStart = true)) }
         assertEquals(NotificationSettings(false, true, false, true), repo.current().notifications)
         assertEquals(PinnedPermission.ALWAYS_ASK, repo.current().pinnedPermission)
+        repo.update { it.copy(adbMode = AdbMode.CUSTOM, adbPath = "/opt/adb") }
+        val s = repo.current()
+        assertEquals(AdbMode.CUSTOM to "/opt/adb", s.adbMode to s.adbPath)
+        assertEquals(NotificationSettings(false, true, false, true), s.notifications)
         db.close()
     }
 
