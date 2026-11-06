@@ -27,9 +27,8 @@ data class QueueDetailState(
     val label: String = holder.key,
     val cwd: String = "",
     val position: Int = 0,
-    val wants: Set<Category> = emptySet(),
-    /** Platform / real-or-virtual limits: `["iOS", "real only"]`. */
-    val limits: List<String> = emptyList(),
+    /** What it wants, as the queue card's chips read: "phone, iOS, real only"; "any" when nothing is set. */
+    val wantsText: String = "any",
     val queuedAt: Instant? = null,
     val reasons: List<WaitReason> = emptyList(),
     val handOff: List<DeviceRef> = emptyList(),
@@ -50,8 +49,7 @@ class QueueDetailViewModel(
                 label = w.labelOf(holder),
                 cwd = w.info[holder]?.cwd.orEmpty(),
                 position = row?.position ?: 0,
-                wants = row?.wants?.categories.orEmpty(),
-                limits = row?.wants?.limits.orEmpty(),
+                wantsText = row?.chipLabels?.joinToString(", ")?.ifBlank { null } ?: "any",
                 queuedAt = w.queuedAt(holder),
                 reasons = if (row != null) waitReasons(holder, w) else emptyList(),
                 handOff = if (row != null) handOffTargets(holder, w) else emptyList(),

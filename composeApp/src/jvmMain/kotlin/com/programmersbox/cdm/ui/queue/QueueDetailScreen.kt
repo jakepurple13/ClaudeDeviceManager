@@ -71,7 +71,7 @@ private fun Waiting(state: QueueDetailState, vm: QueueDetailViewModel, onClose: 
         Muted(
             listOfNotNull(
                 state.cwd.ifBlank { null },
-                "wants: " + (state.wants.map { it.id } + state.limits).joinToString(", ").ifBlank { "any" },
+                "wants: ${state.wantsText}",
                 state.queuedAt?.let { "queued ${clockTime(it)}" },
             ).joinToString(" · "),
         )

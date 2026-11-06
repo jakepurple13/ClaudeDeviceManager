@@ -30,8 +30,6 @@ data class SessionHolderRow(
     /** "Pixel 8 · idle 1m", "#2 in queue", "ended 12m ago", ... */
     val detail: String,
     val lastCommand: String?,
-    /** Names of the devices it holds, at most two (one per platform). */
-    val devices: List<String> = emptyList(),
 )
 
 data class SessionGroup(
@@ -95,6 +93,7 @@ fun sessionGroups(w: World): List<SessionGroup> {
 private fun holderRow(h: HolderId, w: World): SessionHolderRow {
     val info = w.info[h]
     val st = w.snapshot.statuses[h]
+    // Up to two devices (one per platform) from the holdings; the row's detail line lists them joined by " + ".
     val devices = w.snapshot.holdings[h].orEmpty().map { it.device }
         .ifEmpty { listOfNotNull((st as? HolderStatus.Holding)?.device) }
         .take(2).map { w.deviceName(it) }
@@ -107,7 +106,7 @@ private fun holderRow(h: HolderId, w: World): SessionHolderRow {
         else -> HolderState.IDLE to (info?.let { "idle · seen ${short(w.now - it.lastSeen)} ago" } ?: "idle")
     }
     val name = if (h.agentId == HolderId.MAIN) "main" else info?.agentType ?: h.agentId
-    return SessionHolderRow(h, name, state, detail, info?.lastDeviceCommand, if (state == HolderState.HOLDING) devices else emptyList())
+    return SessionHolderRow(h, name, state, detail, info?.lastDeviceCommand)
 }
 
 private fun released(r: ReleaseReason) = when (r) {

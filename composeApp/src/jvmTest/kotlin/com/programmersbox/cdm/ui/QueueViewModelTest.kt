@@ -2,7 +2,11 @@ package com.programmersbox.cdm.ui
 
 import androidx.lifecycle.viewModelScope
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
+import com.programmersbox.cdm.core.allocator.HolderStatus
+import com.programmersbox.cdm.core.allocator.Wants
+import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.ui.queue.QueueDetailViewModel
 import com.programmersbox.cdm.ui.queue.QueueViewModel
 import kotlin.test.AfterTest
@@ -14,6 +18,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -74,5 +81,34 @@ class QueueViewModelTest {
         dispatcher.scheduler.advanceUntilIdle()
 
         assertEquals(listOf(b), manager.removed)
+    }
+
+    @Test
+    fun queueAndDetailShowLimits() = runBlocking {
+        val snap = AllocatorSnapshot(
+            emptyList(), emptyMap(), listOf(a, b),
+            mapOf(
+                a to HolderStatus.Queued(1, Wants(setOf(Category.PHONE), Platform.IOS, virtual = false)),
+                b to HolderStatus.Queued(2, Wants(setOf(Category.WATCH), Platform.ANDROID, virtual = true)),
+            ),
+        )
+        val m = RecordingManager(MutableStateFlow(snap))
+        val queue = QueueViewModel(testActions(m), testSources(m))
+        val detail = QueueDetailViewModel(a, testActions(m), testSources(m))
+        val detailB = QueueDetailViewModel(b, testActions(m), testSources(m))
+
+        val rows = withTimeout(5_000) { queue.rows.first { it != null } }!!
+        assertEquals(listOf("phone", "iOS", "real only"), rows[0].chipLabels)
+        assertEquals(listOf("watch", "Android", "virtual only"), rows[1].chipLabels)
+        assertEquals(
+            listOf(WantChipKind.CATEGORY, WantChipKind.PLATFORM, WantChipKind.REAL_ONLY),
+            rows[0].chips.map { it.kind },
+        )
+        assertEquals(WantChipKind.VIRTUAL_ONLY, rows[1].chips.last().kind)
+        assertEquals("phone, iOS, real only", withTimeout(5_000) { detail.uiState.first { it.loaded } }.wantsText)
+        assertEquals("watch, Android, virtual only", withTimeout(5_000) { detailB.uiState.first { it.loaded } }.wantsText)
+        queue.closeForTest()
+        detail.closeForTest()
+        detailB.closeForTest()
     }
 }

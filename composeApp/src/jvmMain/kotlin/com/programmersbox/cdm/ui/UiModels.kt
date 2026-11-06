@@ -52,9 +52,22 @@ data class DeviceRow(
 )
 
 data class QueueRow(val holder: HolderId, val label: String, val position: Int, val wants: Wants, val waited: Duration) {
-    /** Category ids, then the limits: `["phone", "iOS", "real only"]`. */
-    val chipLabels: List<String> get() = wants.categories.map { it.id } + wants.limits
+    /** The chips the queue card shows, in order: categories, then platform, then real/virtual only. */
+    val chips: List<WantChip> get() = wants.chips()
+
+    /** Chip labels: `["phone", "iOS", "real only"]`. */
+    val chipLabels: List<String> get() = chips.map { it.label }
 }
+
+enum class WantChipKind { CATEGORY, PLATFORM, REAL_ONLY, VIRTUAL_ONLY }
+
+data class WantChip(val label: String, val kind: WantChipKind, val category: Category? = null, val platform: Platform? = null)
+
+fun Wants.chips(): List<WantChip> = categories.map { WantChip(it.id, WantChipKind.CATEGORY, category = it) } +
+    listOfNotNull(
+        platform?.let { WantChip(if (it == Platform.IOS) "iOS" else "Android", WantChipKind.PLATFORM, platform = it) },
+        virtual?.let { WantChip(if (it) "virtual only" else "real only", if (it) WantChipKind.VIRTUAL_ONLY else WantChipKind.REAL_ONLY) },
+    )
 
 /** "Real", "Emulator" (Android) or "Simulator" (iOS). */
 fun kindLabel(platform: Platform, virtual: Boolean): String = when {
@@ -176,7 +189,7 @@ fun waitReasons(h: HolderId, w: World): List<WaitReason> {
 }
 
 /** "no Wear OS emulator running", "no iPhone real device connected": nothing known fits the limits [wants] sets. */
-private fun noMatchReason(wants: Wants): String {
+internal fun noMatchReason(wants: Wants): String {
     val cats = wants.categories - Category.ANY
     val subject = when {
         cats == setOf(Category.WATCH) -> if (wants.platform == Platform.IOS) "Apple Watch" else if (wants.platform == Platform.ANDROID) "Wear OS" else "watch"

@@ -119,7 +119,6 @@ class SessionsViewModelTest {
 
         val row = withTimeout(5_000) { vm.uiState.mapNotNull { it.groups }.first() }.single().holders.single()
 
-        assertEquals(listOf("Pixel 8", "iPhone 16 · iOS 18.2"), row.devices)
         assertEquals("Pixel 8 + iPhone 16 · iOS 18.2 · idle 0s", row.detail)
     }
 }

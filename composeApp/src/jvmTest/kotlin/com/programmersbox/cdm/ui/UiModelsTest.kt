@@ -189,4 +189,16 @@ class UiModelsTest {
         assertEquals("Emulator", kindLabel(Platform.ANDROID, virtual = true))
         assertEquals("Simulator", kindLabel(Platform.IOS, virtual = true))
     }
+
+    @Test
+    fun noMatchReasonWording() {
+        fun r(c: Set<Category>, platform: Platform? = null, virtual: Boolean? = null) = noMatchReason(Wants(c, platform, virtual))
+        assertEquals("no iPhone real device connected", r(setOf(Category.PHONE), Platform.IOS, false))
+        assertEquals("no iPad simulator running", r(setOf(Category.TABLET), Platform.IOS, true))
+        assertEquals("no Apple Watch simulator running", r(setOf(Category.WATCH), Platform.IOS, true))
+        assertEquals("no Wear OS emulator running", r(setOf(Category.WATCH), Platform.ANDROID, true))
+        assertEquals("no watch emulator or simulator running", r(setOf(Category.WATCH), virtual = true))
+        assertEquals("no Android phone/tablet real device connected", r(setOf(Category.PHONE, Category.TABLET), Platform.ANDROID, false))
+        assertEquals("no iOS device connected", r(setOf(Category.ANY), Platform.IOS))
+    }
 }

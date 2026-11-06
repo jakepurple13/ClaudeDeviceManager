@@ -37,6 +37,7 @@ import com.programmersbox.cdm.ui.ActivityRow
 import com.programmersbox.cdm.ui.DeviceRow
 import com.programmersbox.cdm.ui.DeviceState
 import com.programmersbox.cdm.ui.QueueRow
+import com.programmersbox.cdm.ui.WantChipKind
 import com.programmersbox.cdm.ui.short
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -177,12 +178,12 @@ fun QueueCard(
             leading()
             AnimatedCount(row.position, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
             Text(row.label, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-            row.wants.categories.forEach { CategoryChip(it) }
-            AnimatedVisibility(row.wants.platform != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) {
-                row.wants.platform?.let { PlatformChip(it) }
-            }
-            AnimatedVisibility(row.wants.virtual == false, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { Chip("real only", ChipStyle.Neutral) }
-            AnimatedVisibility(row.wants.virtual == true, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { DashedChip("virtual only") }
+            val chips = row.chips
+            chips.filter { it.kind == WantChipKind.CATEGORY }.forEach { c -> c.category?.let { CategoryChip(it) } }
+            val platform = chips.firstOrNull { it.kind == WantChipKind.PLATFORM }?.platform
+            AnimatedVisibility(platform != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { platform?.let { PlatformChip(it) } }
+            AnimatedVisibility(chips.any { it.kind == WantChipKind.REAL_ONLY }, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { Chip("real only", ChipStyle.Neutral) }
+            AnimatedVisibility(chips.any { it.kind == WantChipKind.VIRTUAL_ONLY }, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { DashedChip("virtual only") }
         }
         Muted("waiting ${short(row.waited)}", Modifier.padding(top = 2.dp))
     }
