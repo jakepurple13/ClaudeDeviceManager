@@ -69,5 +69,8 @@ data class AllocatorSnapshot(
     val devices: List<AllocDevice>,
     val holds: Map<DeviceKey, HolderId>,
     val queue: List<HolderId>,
+    /** One status per holder: Blocked, then Queued, then the first Holding, then Released. */
     val statuses: Map<HolderId, HolderStatus>,
+    /** Every hold, at most one per platform per holder. Holders with no hold are absent. */
+    val holdings: Map<HolderId, List<HolderStatus.Holding>> = emptyMap(),
 )

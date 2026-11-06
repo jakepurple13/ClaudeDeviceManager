@@ -263,7 +263,7 @@ class DeviceManagerService(
     private fun resultFor(holder: HolderId): AcquireResult = when (val st = allocator.statusOf(holder)) {
         is HolderStatus.Holding -> {
             val d = allocator.snapshot().devices.firstOrNull { it.key == st.device }
-            AcquireResult.Granted(allocator.serialFor(holder) ?: st.device.hardwareSerial, d?.name ?: st.device.hardwareSerial)
+            AcquireResult.Granted(allocator.serialFor(holder, st.platform) ?: st.device.hardwareSerial, d?.name ?: st.device.hardwareSerial)
         }
         HolderStatus.Blocked -> AcquireResult.Blocked
         is HolderStatus.Queued -> AcquireResult.TimedOut(st.position)

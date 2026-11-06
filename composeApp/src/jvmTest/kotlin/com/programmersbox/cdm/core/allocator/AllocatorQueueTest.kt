@@ -3,6 +3,7 @@ package com.programmersbox.cdm.core.allocator
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -116,9 +117,9 @@ class AllocatorQueueTest {
     @Test fun serialForNullWhenOffline() {
         val a = alloc()
         a.tryGrab(h1, watch)
-        assertEquals("w-usb", a.serialFor(h1))
+        assertEquals("w-usb", a.serialFor(h1, Platform.ANDROID))
         a.setDevices(listOf(p))
-        assertEquals(null, a.serialFor(h1))
+        assertEquals(null, a.serialFor(h1, Platform.ANDROID))
         assertEquals(h1, a.snapshot().holds[w.key])
     }
 

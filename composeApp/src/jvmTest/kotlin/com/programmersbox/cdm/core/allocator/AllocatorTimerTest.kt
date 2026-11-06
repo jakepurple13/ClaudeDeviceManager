@@ -3,6 +3,7 @@ package com.programmersbox.cdm.core.allocator
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -46,7 +47,7 @@ class AllocatorTimerTest {
         val a = alloc()
         a.tryGrab(h1, watch)
         now = t0 + 1.minutes; a.recordEdit(h1)
-        now = t0 + 4.minutes; a.recordDeviceActivity(h1)
+        now = t0 + 4.minutes; a.recordDeviceActivity(h1, Platform.ANDROID)
         now = t0 + 8.minutes; a.tick()
         assertIs<HolderStatus.Holding>(a.statusOf(h1))
     }
@@ -56,14 +57,14 @@ class AllocatorTimerTest {
         a.tryGrab(h1, watch)
         a.setDevices(listOf(p))
         assertIs<HolderStatus.Holding>(a.statusOf(h1))
-        assertEquals(null, a.serialFor(h1))
+        assertEquals(null, a.serialFor(h1, Platform.ANDROID))
     }
 
     @Test fun regrabWhenFree() {
         val a = alloc()
         a.tryGrab(h1, watch)
         now = t0 + 15.minutes + 1.seconds; a.tick()
-        assertEquals(GrabResult.Granted(w, "w-usb"), a.tryRegrab(h1))
+        assertEquals(GrabResult.Granted(w, "w-usb"), a.tryRegrab(h1, Platform.ANDROID))
         assertIs<HolderStatus.Holding>(a.statusOf(h1))
     }
 
@@ -72,7 +73,7 @@ class AllocatorTimerTest {
         val h2 = h2
         a.tryGrab(h1, watch); a.enqueue(h2, watch)
         now = t0 + 15.minutes + 1.seconds; a.tick()
-        assertEquals(GrabResult.HeldByOther(w, h2), a.tryRegrab(h1))
+        assertEquals(GrabResult.HeldByOther(w, h2), a.tryRegrab(h1, Platform.ANDROID))
     }
 
     @Test fun regrabRespectsDontUseAndOffline() {
@@ -80,16 +81,16 @@ class AllocatorTimerTest {
         a.tryGrab(h1, watch)
         now = t0 + 16.minutes; a.tick()
         a.setDontUse(w.key, true, releaseNow = false)
-        assertEquals(GrabResult.DontUse, a.tryRegrab(h1))
+        assertEquals(GrabResult.DontUse, a.tryRegrab(h1, Platform.ANDROID))
         a.setDontUse(w.key, false, releaseNow = false)
         a.setDevices(listOf(p, w.copy(connectedSerials = emptyList())))
-        assertEquals(GrabResult.NoneFree, a.tryRegrab(h1))
+        assertEquals(GrabResult.NoneFree, a.tryRegrab(h1, Platform.ANDROID))
     }
 
     @Test fun regrabOnlyAfterTimeout() {
         val a = alloc()
         a.tryGrab(h1, watch)
-        assertEquals(GrabResult.NoneFree, a.tryRegrab(h1))
+        assertEquals(GrabResult.NoneFree, a.tryRegrab(h1, Platform.ANDROID))
     }
 
     @Test fun queueGraceExpires() {
@@ -100,7 +101,7 @@ class AllocatorTimerTest {
         now = t0 + 1.minutes + 59.seconds; a.tick()
         assertEquals(HolderStatus.Queued(1, watch), a.statusOf(h2))
         now = t0 + 2.minutes + 1.seconds
-        a.recordDeviceActivity(h1); a.tick()
+        a.recordDeviceActivity(h1, Platform.ANDROID); a.tick()
         assertEquals(HolderStatus.None, a.statusOf(h2))
         assertTrue(events.contains(AllocatorEvent.LeftQueue(now, h2)))
     }
@@ -111,7 +112,7 @@ class AllocatorTimerTest {
         a.enqueue(h2, watch)
         a.detachWaiter(h2)
         now = t0 + 1.minutes; a.attachWaiter(h2)
-        now = t0 + 10.minutes; a.recordDeviceActivity(h1); a.tick()
+        now = t0 + 10.minutes; a.recordDeviceActivity(h1, Platform.ANDROID); a.tick()
         assertEquals(HolderStatus.Queued(1, watch), a.statusOf(h2))
     }
 
@@ -119,7 +120,7 @@ class AllocatorTimerTest {
         val a = alloc()
         a.tryGrab(h1, watch)
         a.enqueue(h2, watch)
-        now = t0 + 10.minutes; a.recordDeviceActivity(h1); a.tick()
+        now = t0 + 10.minutes; a.recordDeviceActivity(h1, Platform.ANDROID); a.tick()
         assertEquals(HolderStatus.Queued(1, watch), a.statusOf(h2))
     }
 

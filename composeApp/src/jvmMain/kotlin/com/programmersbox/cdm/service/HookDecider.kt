@@ -12,6 +12,7 @@ import com.programmersbox.cdm.core.classify.CommandClassifier
 import com.programmersbox.cdm.core.classify.CommandKind
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.devices.isWifiSerial
 
 /**
@@ -53,12 +54,12 @@ class HookDecider(
         return when (CommandClassifier.classify(command)) {
             is CommandKind.Device -> onDevice(req)
             CommandKind.GradleNonDevice -> {
-                allocator.recordDeviceActivity(holder)
-                req.finish(allocator.serialFor(holder))
+                allocator.recordDeviceActivity(holder, Platform.ANDROID)
+                req.finish(allocator.serialFor(holder, Platform.ANDROID))
             }
             else -> {
-                if (kinds.any { it is CommandKind.AdbGlobalSafe && it.resetsTimer }) allocator.recordDeviceActivity(holder)
-                req.finish(allocator.serialFor(holder))
+                if (kinds.any { it is CommandKind.AdbGlobalSafe && it.resetsTimer }) allocator.recordDeviceActivity(holder, Platform.ANDROID)
+                req.finish(allocator.serialFor(holder, Platform.ANDROID))
             }
         }
     }
@@ -126,12 +127,12 @@ class HookDecider(
             )
         }
         if (req.conflictsWith(held, snap)) return HookReply.Deny(differentDevice(held))
-        allocator.recordDeviceActivity(req.holder)
+        allocator.recordDeviceActivity(req.holder, Platform.ANDROID)
         return req.finish(serials.first())
     }
 
     private suspend fun regrab(req: Request, st: HolderStatus.Released): HookReply {
-        return when (val g = allocator.tryRegrab(req.holder)) {
+        return when (val g = allocator.tryRegrab(req.holder, Platform.ANDROID)) {
             is GrabResult.Granted -> whileHolding(req)
             GrabResult.Blocked -> HookReply.Deny(releasedByUser(blocked = true))
             else -> {
