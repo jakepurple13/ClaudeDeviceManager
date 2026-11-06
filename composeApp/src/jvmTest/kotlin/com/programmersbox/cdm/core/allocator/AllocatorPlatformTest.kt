@@ -35,12 +35,20 @@ class AllocatorPlatformTest {
     @Test fun holdsOneAndroidAndOneIosAtOnce() {
         val a = alloc()
         val first = assertIs<GrabResult.Granted>(a.tryGrab(h1, Wants.ANY))
-        val second = assertIs<GrabResult.Granted>(a.tryGrab(h1, Wants.ANY))
+        val second = assertIs<GrabResult.Granted>(a.tryGrab(h1, Wants.ANY.copy(platform = Platform.IOS)))
         assertEquals(setOf(Platform.ANDROID, Platform.IOS), setOf(first.device.platform, second.device.platform))
         assertEquals(2, a.holdingsOf(h1).size)
         assertEquals(mapOf(p.key to h1, i.key to h1), a.snapshot().holds)
         assertEquals("p-usb", a.serialFor(h1, Platform.ANDROID))
         assertEquals("I-UDID", a.serialFor(h1, Platform.IOS))
+    }
+
+    @Test fun unflaggedGrabReturnsExistingHold() {
+        val a = alloc()
+        a.tryGrab(h1, androidPhone)
+        assertEquals(GrabResult.Granted(p, "p-usb"), a.tryGrab(h1, Wants.ANY))
+        assertEquals(1, a.holdingsOf(h1).size)
+        assertEquals(null, a.snapshot().holds[i.key])
     }
 
     @Test fun secondGrabSamePlatformReturnsExistingHold() {
@@ -125,27 +133,47 @@ class AllocatorPlatformTest {
     }
 
     @Test fun passToQueueSkipsHolderAlreadyHoldingPlatform() {
-        val a = alloc(p, p2, i)
-        a.tryGrab(h1, androidPhone) // P
-        a.tryGrab(h2, androidPhone) // P2
-        a.tryGrab(h3, iosPhone)     // I
-        assertEquals(1, a.enqueue(h1, Wants.ANY))
-        assertEquals(2, a.enqueue(h4, androidPhone))
-        a.release(h2, ReleaseReason.SELF_RELEASE)
-        assertEquals(h4, a.snapshot().holds[p2.key])
-        assertEquals(HolderStatus.Queued(1, Wants.ANY), a.statusOf(h1))
-        assertEquals(listOf(h1), a.snapshot().queue)
-        assertEquals(1, a.holdingsOf(h1).size)
+        val a = alloc(p, p2, w, i)
+        a.tryGrab(h1, watch)        // W (Android)
+        a.tryGrab(h2, androidPhone) // P
+        a.tryGrab(h3, androidPhone) // P2
+        a.tryGrab(h4, iosPhone)     // I
+        val phone = Wants(setOf(Category.PHONE))
+        assertEquals(1, a.enqueue(h1, phone)) // holds no phone, so it may queue
+        val h5 = HolderId("s5")
+        assertEquals(2, a.enqueue(h5, androidPhone))
+        a.release(h3, ReleaseReason.SELF_RELEASE)
+        assertEquals(h5, a.snapshot().holds[p2.key])
+        assertEquals(HolderStatus.Queued(1, phone), a.statusOf(h1))
+        assertEquals(listOf(w.key), a.holdingsOf(h1).map { it.device })
     }
 
-    @Test fun releasedDeviceNotHandedBackToItsQueuedHolder() {
+    @Test fun grantOnOtherPlatformKeepsQueueSpot() {
+        val a = alloc(p, p2, i)
+        a.tryGrab(h2, androidPhone) // P
+        a.tryGrab(h3, iosPhone)     // I
+        assertEquals(1, a.enqueue(h1, iosPhone))
+        a.handOff(p.key, h1)
+        assertEquals(h1, a.snapshot().holds[p.key])
+        assertEquals(HolderStatus.Queued(1, iosPhone), a.statusOf(h1))
+        a.release(h3, ReleaseReason.SELF_RELEASE)
+        assertEquals(setOf(p.key, i.key), a.holdingsOf(h1).map { it.device }.toSet())
+        assertTrue(a.snapshot().queue.isEmpty())
+    }
+
+    @Test fun unflaggedEnqueueRefusedWhenHoldingFittingDevice() {
         val a = alloc()
-        a.tryGrab(h2, androidPhone)
-        a.tryGrab(h1, iosPhone)
-        assertEquals(1, a.enqueue(h1, Wants.ANY)) // waiting for an Android device
-        a.release(h1, ReleaseReason.SELF_RELEASE, Platform.IOS)
-        assertEquals(null, a.snapshot().holds[i.key])
-        assertEquals(HolderStatus.Queued(1, Wants.ANY), a.statusOf(h1))
+        a.tryGrab(h1, androidPhone)
+        assertEquals(0, a.enqueue(h1, Wants.ANY))
+        assertEquals(p.key, assertIs<HolderStatus.Holding>(a.statusOf(h1)).device)
+        assertTrue(a.snapshot().queue.isEmpty())
+    }
+
+    @Test fun flaggedEnqueueRefusedForHeldPlatform() {
+        val a = alloc(p, p2, i)
+        a.tryGrab(h1, androidPhone)
+        assertEquals(0, a.enqueue(h1, Wants(setOf(Category.WATCH), platform = Platform.ANDROID)))
+        assertEquals(1, a.enqueue(h1, iosPhone))
     }
 
     @Test fun handOffRefusedOnlyForSamePlatform() {

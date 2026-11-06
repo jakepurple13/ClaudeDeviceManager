@@ -67,8 +67,9 @@ class Allocator(
     /**
      * With [specific], grabs that device unless the holder already holds one of its platform ([GrabResult.NoneFree]).
      *
-     * Otherwise grants a free device that fits [wants] on a platform the holder doesn't hold yet. If [wants] names
-     * a platform the holder already holds (or no new platform is free), returns the existing hold that fits [wants].
+     * Otherwise, if the holder already holds a device that fits [wants], returns that hold. This is true even when
+     * [Wants.platform] is null: an unflagged grab never adds a second platform. Failing that, grants a free device
+     * that fits [wants] on a platform the holder doesn't hold yet. A second platform needs [Wants.platform] set to it.
      */
     fun tryGrab(holder: HolderId, wants: Wants, specific: DeviceKey? = null): GrabResult {
         if (holder in blockedHolders) return GrabResult.Blocked
@@ -82,24 +83,27 @@ class Allocator(
             return grant(holder, d)
         }
         val existing = holdingsOf(holder).map { known.getValue(it.device) }.firstOrNull { wants.fits(it) }
-        if (existing != null && wants.platform != null) return granted(existing, holder)
+        if (existing != null) return granted(existing, holder)
         val free = devices.firstOrNull {
             !it.dontUse && it.connectedSerials.isNotEmpty() && it.key !in holds && wants.fits(it) && !holds(holder, it.platform)
         }
-        return when {
-            free != null -> grant(holder, free)
-            existing != null -> granted(existing, holder)
-            else -> GrabResult.NoneFree
-        }
+        return if (free != null) grant(holder, free) else GrabResult.NoneFree
     }
 
     /**
-     * Returns the 1-based queue position, or 0 if the holder is blocked or already holds every platform [wants]
-     * allows. A queued holder is only ever granted a device of a platform it doesn't hold yet.
+     * Returns the 1-based queue position, or 0 if the holder is blocked, or already has what [wants] asks for: with
+     * [Wants.platform] set, a hold on that platform; without it, a hold that fits [wants] (or a hold on every platform).
+     * A queued holder is only ever granted a device of a platform it doesn't hold yet.
      * An already-queued holder keeps its place; its wanted categories are replaced with [wants].
      */
     fun enqueue(holder: HolderId, wants: Wants): Int {
-        if (holder in blockedHolders || platformsOf(wants).all { holds(holder, it) }) return 0
+        if (holder in blockedHolders) return 0
+        val satisfied = if (wants.platform != null) {
+            holds(holder, wants.platform)
+        } else {
+            holdingsOf(holder).any { h -> known[h.device]?.let(wants::fits) == true } || Platform.entries.all { holds(holder, it) }
+        }
+        if (satisfied) return 0
         val existing = queue.indexOf(holder)
         if (existing >= 0) {
             queueWants[holder] = wants
@@ -245,8 +249,13 @@ class Allocator(
         return GrabResult.Granted(d, serial).also { check(holds[d.key] == holder) }
     }
 
+    /**
+     * A queue entry pinned to another platform survives the grant (the holder may queue for one platform while
+     * holding the other). Any other entry is answered by the grant and removed, as before.
+     */
     private fun grant(holder: HolderId, d: AllocDevice): GrabResult.Granted {
-        removeFromQueueInternal(holder, emitEvent = false)
+        val queuedFor = queueWants[holder]?.platform
+        if (queuedFor == null || queuedFor == d.platform) removeFromQueueInternal(holder, emitEvent = false)
         val now = clock()
         holds[d.key] = holder
         holdings.getOrPut(holder) { LinkedHashMap() }[d.platform] =
