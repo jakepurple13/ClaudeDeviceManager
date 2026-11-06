@@ -135,7 +135,7 @@ fun SettingsScreen(vm: SettingsViewModel = koinViewModel()) {
             NotificationRow("Queue started", "A waiting session gets its device. Shown instead of Device grabbed.", DotStatus.InUse, n.queueStart) { vm.onNotificationsChanged(n.copy(queueStart = it)) }
             Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 SmallButton("Send test notification", onClick = vm::onSendTestNotification, enabled = n.any)
-                Muted(if (n.any) "The app shows a menu-bar icon while any notification is on." else "All notifications are off.")
+                Muted(if (n.any) "Clicking a notification opens the app." else "All notifications are off.")
             }
             ResultLine(s.notificationResult)
         }

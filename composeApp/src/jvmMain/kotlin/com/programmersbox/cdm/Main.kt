@@ -1,17 +1,12 @@
 package com.programmersbox.cdm
 
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.awt.ComposeWindow
 import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.TrayState
 import com.programmersbox.cdm.notify.Notifier
-import java.awt.Frame
-import kotlinx.coroutines.flow.map
+import com.programmersbox.cdm.notify.NucleusNotificationSender
+import com.programmersbox.cdm.ui.window.MainWindowHolder
+import kotlinx.coroutines.launch
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.application
@@ -66,25 +61,26 @@ fun main() {
     applyDevStartRoute(koin.get<Navigator>())
     val chrome = windowChrome()
     val trayState = koin.get<TrayState>()
-    val notificationsOn = koin.get<SettingsRepository>().settings.map { it.notifications.any }
+    val mainWindow = koin.get<MainWindowHolder>()
+    // Ask for notification permission at launch (when any switch is on), not on the first event, which would be lost.
+    appScope.launch {
+        if (koin.get<SettingsRepository>().current().notifications.any) koin.get<NucleusNotificationSender>().requestPermission()
+    }
     application {
-        var mainWindow by remember { mutableStateOf<ComposeWindow?>(null) }
         val quit = {
             shutdown()
             appScope.cancel()
             exitApplication()
         }
-        // Compose only shows notifications while a Tray exists, so the menu-bar icon is there only while one is on.
-        val showTray by notificationsOn.collectAsState(initial = false)
-        val trayIcon = AppIcon.painter
-        if (showTray && trayIcon != null) {
+        // Always shown: a quick way back to the window, and the Compose tray is the notification fallback.
+        AppIcon.painter?.let { trayIcon ->
             Tray(
                 icon = trayIcon,
                 state = trayState,
                 tooltip = APP_TITLE,
-                onAction = { mainWindow?.bringToFront() },
+                onAction = mainWindow::bringToFront,
             ) {
-                Item("Show $APP_TITLE", onClick = { mainWindow?.bringToFront() })
+                Item("Show $APP_TITLE", onClick = mainWindow::bringToFront)
                 Separator()
                 Item("Quit", onClick = quit)
             }
@@ -98,19 +94,11 @@ fun main() {
         ) {
             LaunchedEffect(Unit) {
                 window.minimumSize = Dimension(800, 560)
-                mainWindow = window
+                mainWindow.window = window
             }
             AppNavigation()
         }
     }
-}
-
-/** The tray's "Show" action: un-minimizes the window and raises it. */
-private fun ComposeWindow.bringToFront() {
-    if (extendedState and Frame.ICONIFIED != 0) extendedState = extendedState and Frame.ICONIFIED.inv()
-    isVisible = true
-    toFront()
-    requestFocus()
 }
 
 /**

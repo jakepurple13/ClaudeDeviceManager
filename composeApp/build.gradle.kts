@@ -33,6 +33,7 @@ kotlin {
             implementation(libs.serialization.json)
             implementation(libs.reorderable)
             implementation(libs.jewel.decorated.window)
+            implementation(libs.nucleus.notification)
         }
         jvmTest.dependencies {
             implementation(libs.kotlin.test)
