@@ -82,26 +82,35 @@ object CommandClassifier {
     /** `${CDM_IOS_UDID=…}` / `${CDM_IOS_UDID:=…}` (and PAIR): these expansions assign wherever they appear. */
     private val iosUdidExpansion = Regex("""\$\{CDM_IOS_(PAIR_)?UDID:?=([^}]*)}""")
 
-    /** Builtins whose arguments are assignments (`export X=1`, `declare -x X=1`, …). */
-    private val declarationBuiltins = setOf("export", "declare", "typeset", "local", "readonly", "env")
+    /**
+     * Commands that only print or search their arguments and can't assign. A match in one of their arguments is
+     * exempt, unless it sits inside `$(…)` or backticks (that runs as its own command).
+     */
+    private val printOrSearch = setOf(
+        "echo", "printf", "grep", "egrep", "fgrep", "rg", "cat", "printenv", "test", "[", "git",
+    )
 
     /**
-     * Every real `CDM_IOS_UDID=<value>` and `CDM_IOS_PAIR_UDID=<value>` assignment: a word in a segment's
-     * assignment-prefix position (before the command word, after `(`/`{` and wrappers like env/sudo/timeout), an
-     * argument of export/declare/typeset/local/readonly/env, or a `${CDM_IOS_UDID=…}` / `${CDM_IOS_UDID:=…}`
-     * expansion anywhere. The same text inside another command's argument (`echo "CDM_IOS_UDID=$x"`) doesn't count.
+     * Every `CDM_IOS_UDID=<value>` and `CDM_IOS_PAIR_UDID=<value>` in the raw text, plus every `${CDM_IOS_UDID=…}` /
+     * `${CDM_IOS_UDID:=…}` expansion. Fails closed: like [serialAssignments] it over-matches (a later assignment
+     * would override the hook's exported UDID; `bash -c '…'`, `eval`, `$(…)` and heredocs fed to a shell all count).
+     * The one exemption is text in an argument of a print/search command ([printOrSearch]: `echo "CDM_IOS_UDID=$x"`,
+     * `grep CDM_IOS_UDID= f`) that isn't nested in `$(…)` or backticks.
      */
     fun iosUdidAssignments(command: String): List<IosAssignment> {
-        val starts = assignmentWordStarts(command)
+        val exempt = exemptRanges(command)
         val words = iosUdidAssignment.findAll(command).filter { m ->
             val at = m.range.first
-            at in starts || (at - 1 in starts && (command[at - 1] == '"' || command[at - 1] == '\''))
+            // `${CDM_IOS_UDID=…}` is counted once, as an expansion below.
+            val inExpansion = at >= 2 && command[at - 1] == '{' && command[at - 2] == '$'
+            !inExpansion && exempt.none { at in it }
         }.map { m ->
             val raw = m.groupValues[3]
             // `+=` appends to the current value; an unquoted or double-quoted `$` / backtick expands at run time.
             val dynamic = m.groupValues[2].isNotEmpty() || (!raw.startsWith("'") && ('$' in raw || '`' in raw))
             m.range.first to IosAssignment(m.groupValues[1].isNotEmpty(), if (dynamic) null else unquote(raw))
         }
+        // These assign even inside an argument (`echo ${CDM_IOS_UDID:=x}`), so they are never exempt.
         val expansions = iosUdidExpansion.findAll(command).map { m ->
             val raw = m.groupValues[2]
             val dynamic = '$' in raw || '`' in raw
@@ -110,31 +119,80 @@ object CommandClassifier {
         return (words + expansions).sortedBy { it.first }.map { it.second }.toList()
     }
 
-    /** Start offsets (in [command]) of every word that assigns: prefix assignments and declaration-builtin arguments. */
-    private fun assignmentWordStarts(command: String): Set<Int> {
-        val out = HashSet<Int>()
+    /**
+     * The argument spans (offsets in [command]) of top-level segments whose command word is in [printOrSearch],
+     * minus anything nested in `$(…)` / backticks. The assignment prefix and the command word are never exempt.
+     */
+    private fun exemptRanges(command: String): List<IntRange> {
+        val nested = nestedPositions(command)
+        val out = mutableListOf<IntRange>()
         for ((s, e) in ranges(command)) {
             val seg = command.substring(s, e)
             val p = prefixLength(seg)
-            // Assignment words in the prefix (the wrappers themselves and their options never match the regex).
-            var i = skipWs(seg, 0)
-            while (i < p) {
-                val te = tokenEnd(seg, i)
-                // A leading `(` / `{` is glued to the first word only when written without a space, e.g. `(X=1 cmd)`.
-                var w = i
-                while (w < te && (seg[w] == '(' || seg[w] == '{')) w++
-                if (assignment.matches(seg.substring(w, te))) out += s + w
-                i = skipWs(seg, te)
-            }
-            // Arguments of a declaration builtin.
-            if (p < seg.length && words(seg.substring(p, tokenEnd(seg, p))).firstOrNull() in declarationBuiltins) {
-                var j = skipWs(seg, tokenEnd(seg, p))
-                while (j < seg.length) {
-                    val te = tokenEnd(seg, j)
-                    out += s + j
-                    j = skipWs(seg, te)
+            if (p >= seg.length) continue
+            val wordEnd = tokenEnd(seg, p)
+            val word = words(seg.substring(p, wordEnd)).firstOrNull()?.substringAfterLast('/') ?: continue
+            if (word !in printOrSearch) continue
+            var start = -1
+            for (i in s + wordEnd until e) {
+                if (nested[i]) {
+                    if (start >= 0) out += start until i
+                    start = -1
+                } else if (start < 0) {
+                    start = i
                 }
             }
+            if (start >= 0) out += start until e
+        }
+        return out
+    }
+
+    /**
+     * True for every position inside `$(…)` (or `$((…))`) or backticks, outside single quotes. Approximate on
+     * purpose: quotes inside a substitution aren't tracked, so it errs towards "nested" (which is never exempt).
+     */
+    private fun nestedPositions(c: String): BooleanArray {
+        val out = BooleanArray(c.length)
+        var single = false
+        var double = false
+        var depth = 0
+        var tick = false
+        var i = 0
+        while (i < c.length) {
+            val ch = c[i]
+            val inside = depth > 0 || tick
+            if (inside) out[i] = true
+            when {
+                inside -> when {
+                    ch == '\\' -> {
+                        if (i + 1 < c.length) out[i + 1] = true
+                        i++
+                    }
+                    ch == '`' && depth == 0 -> tick = false
+                    ch == '$' && c.getOrNull(i + 1) == '(' -> {
+                        depth++
+                        out[i + 1] = true
+                        i++
+                    }
+                    ch == '(' -> if (depth > 0) depth++
+                    ch == ')' -> if (depth > 0) depth--
+                }
+                single -> if (ch == '\'') single = false
+                ch == '\\' -> i++
+                ch == '\'' && !double -> single = true
+                ch == '"' -> double = !double
+                ch == '`' -> {
+                    tick = true
+                    out[i] = true
+                }
+                ch == '$' && c.getOrNull(i + 1) == '(' -> {
+                    depth = 1
+                    out[i] = true
+                    out[i + 1] = true
+                    i++
+                }
+            }
+            i++
         }
         return out
     }

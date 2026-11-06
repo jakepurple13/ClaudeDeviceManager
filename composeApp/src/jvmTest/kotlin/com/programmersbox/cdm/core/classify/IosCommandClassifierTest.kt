@@ -173,7 +173,16 @@ class IosCommandClassifierTest {
         assertEquals(emptyList(), a("grep CDM_IOS_UDID= file"))
         assertEquals(emptyList(), a("printf 'CDM_IOS_UDID=%s' x"))
         assertEquals(emptyList(), a("echo CDM_IOS_PAIR_UDID=$u"))
-        assertEquals(emptyList(), a("./t.sh CDM_IOS_UDID=$u"))
+        assertEquals(emptyList(), a("git commit -m 'set CDM_IOS_UDID=$u'"))
+        assertEquals(emptyList(), a("test \"\$X\" = CDM_IOS_UDID=$u && rg -n CDM_IOS_UDID= src | cat"))
+        assertEquals(emptyList(), a("/bin/echo CDM_IOS_UDID=$u"))
+        // Fails closed: any other command's argument, nested shells and substitutions still count.
+        assertEquals(lit, a("./t.sh CDM_IOS_UDID=$u"))
+        assertEquals(lit, a("bash -c 'echo CDM_IOS_UDID=$u'"))
+        assertEquals(lit, a("eval \"CDM_IOS_UDID=$u\""))
+        assertEquals(lit, a("echo \$(CDM_IOS_UDID=$u ./t.sh)"))
+        assertEquals(lit, a("echo `CDM_IOS_UDID=$u ./t.sh`"))
+        assertEquals(lit, a("CDM_IOS_UDID=$u echo hi"))
         // Assignment-prefix position, through wrappers and grouping.
         assertEquals(lit, a("(CDM_IOS_UDID=$u xcrun simctl install \$CDM_IOS_UDID a.app)"))
         assertEquals(lit, a("{ CDM_IOS_UDID=$u ./t.sh; }"))

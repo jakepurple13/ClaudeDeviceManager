@@ -273,6 +273,25 @@ class HookDeciderIosTest {
         }
     }
 
+    @Test fun nestedShellUdidAssignmentsDenied() = runTest {
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS)) // holds u1
+        for (c in listOf(
+            "bash -c 'CDM_IOS_UDID=$u2 xcrun simctl install \$CDM_IOS_UDID a.app'",
+            "sh -c \"CDM_IOS_UDID=$u2 ./t.sh\"",
+            "zsh -c 'echo hi; CDM_IOS_UDID=$u2 ./t.sh'",
+            "bash -c 'echo CDM_IOS_UDID=$u2'",
+            "eval \"CDM_IOS_UDID=$u2\"; ./t.sh",
+            "x=\$(CDM_IOS_UDID=$u2 ./t.sh)",
+            "echo \$(CDM_IOS_UDID=$u2 xcrun simctl install \$CDM_IOS_UDID a.app)",
+            "echo \"\$(CDM_IOS_UDID=$u2 ./t.sh)\"",
+            "echo `CDM_IOS_UDID=$u2 ./t.sh`",
+            "bash <<EOF\nCDM_IOS_UDID=$u2 ./t.sh\nEOF",
+            "./t.sh CDM_IOS_UDID=$u2",
+        )) {
+            assertIs<HookReply.Deny>(bash(c), c)
+        }
+    }
+
     @Test fun queuedForRealIosOnlySimulatorFreeDenied() = runTest {
         allocator.enqueue(h, Wants(setOf(Category.ANY), Platform.IOS, virtual = false))
         val r = bash("xcrun simctl install booted a.app").reason()
