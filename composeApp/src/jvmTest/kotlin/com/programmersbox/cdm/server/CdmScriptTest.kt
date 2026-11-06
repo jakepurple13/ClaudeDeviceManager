@@ -1,5 +1,6 @@
 package com.programmersbox.cdm.server
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.HolderStatus
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.service.AcquireResult
@@ -99,7 +100,7 @@ class CdmScriptTest {
             val b = run(pf, "acquire", *base)
             assertEquals(1, b.code)
             assertEquals("You're blocked in Claude Device Manager. Ask the user to unblock you.\n", b.out)
-            m.statusImpl = { HolderStatus.Queued(1, setOf(Category.ANY)) }
+            m.statusImpl = { HolderStatus.Queued(1, Wants.ANY) }
             assertEquals("Queued at position 1.\n", run(pf, "status", *base).out)
             assertTrue(run(pf, "release", *base).out.startsWith("Released"))
             assertEquals(1, m.released.size)

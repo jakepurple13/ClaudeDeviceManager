@@ -1,5 +1,6 @@
 package com.programmersbox.cdm.ui
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
 import com.programmersbox.cdm.core.allocator.HolderStatus
@@ -42,7 +43,7 @@ data class DeviceRow(
     val dontUsePending: Boolean = false,
 )
 
-data class QueueRow(val holder: HolderId, val label: String, val position: Int, val wants: Set<Category>, val waited: Duration)
+data class QueueRow(val holder: HolderId, val label: String, val position: Int, val wants: Wants, val waited: Duration)
 
 /** One device a queued holder could use, and why it can't have it yet. */
 data class WaitReason(val device: String, val reason: String)
@@ -117,18 +118,16 @@ fun overviewCounts(rows: List<DeviceRow>, waiting: Int) = OverviewCounts(
 fun World.queuedAt(h: HolderId): Instant? = activity.firstOrNull { it.kind == "queued" && it.holderKey == h.key }?.at
 
 fun queueRows(w: World): List<QueueRow> = w.snapshot.queue.mapIndexed { i, h ->
-    val wants = (w.snapshot.statuses[h] as? HolderStatus.Queued)?.wants.orEmpty()
+    val wants = (w.snapshot.statuses[h] as? HolderStatus.Queued)?.wants ?: Wants(emptySet())
     QueueRow(h, w.labelOf(h), i + 1, wants, w.queuedAt(h)?.let { w.now - it }?.coerceAtLeast(Duration.ZERO) ?: Duration.ZERO)
 }
 
-private fun fits(wants: Set<Category>, d: AllocDevice) = Category.ANY in wants || d.category in wants
-
-private fun World.wantsOf(h: HolderId): Set<Category> = (snapshot.statuses[h] as? HolderStatus.Queued)?.wants.orEmpty()
+private fun World.wantsOf(h: HolderId): Wants = (snapshot.statuses[h] as? HolderStatus.Queued)?.wants ?: Wants(emptySet())
 
 /** Every device [h] could use, in device order, with what keeps it from [h]. */
 fun waitReasons(h: HolderId, w: World): List<WaitReason> {
     val wants = w.wantsOf(h)
-    return w.snapshot.devices.filter { fits(wants, it) }.map { d ->
+    return w.snapshot.devices.filter { wants.fits(it) }.map { d ->
         val holder = w.snapshot.holds[d.key]
         val reason = when {
             d.dontUse -> "marked don't use"
@@ -152,7 +151,7 @@ fun waitReasons(h: HolderId, w: World): List<WaitReason> {
 fun handOffTargets(h: HolderId, w: World): List<DeviceRef> {
     val wants = w.wantsOf(h)
     return w.snapshot.devices
-        .filter { fits(wants, it) && !it.dontUse && it.connectedSerials.isNotEmpty() && w.snapshot.holds[it.key] != h }
+        .filter { wants.fits(it) && !it.dontUse && it.connectedSerials.isNotEmpty() && w.snapshot.holds[it.key] != h }
         .map { DeviceRef(it.key, it.name) }
 }
 

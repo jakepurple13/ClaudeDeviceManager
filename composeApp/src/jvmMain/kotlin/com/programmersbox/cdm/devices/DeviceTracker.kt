@@ -2,15 +2,19 @@ package com.programmersbox.cdm.devices
 
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
+import com.programmersbox.cdm.core.model.Platform
 import kotlinx.coroutines.CancellationException
 
 data class TrackedDevice(
     val key: DeviceKey,
     val serials: List<String>,
     val model: String,
-    val androidVersion: String,
+    val osVersion: String,
     val transport: String,
     val detectedCategory: Category,
+    val platform: Platform = Platform.ANDROID,
+    val virtual: Boolean = false,
+    val partner: DeviceKey? = null,
 )
 
 internal fun isEmulatorSerial(serial: String) = serial.startsWith("emulator-")
@@ -57,6 +61,7 @@ class DeviceTracker(
             TrackedDevice(
                 key, ordered, p.model, p.version,
                 if (ordered.any { !isWifiSerial(it) }) "usb" else "wifi", p.category,
+                virtual = ordered.any { isEmulatorSerial(it) },
             )
         }
     }

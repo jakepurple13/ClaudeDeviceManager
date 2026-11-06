@@ -1,5 +1,6 @@
 package com.programmersbox.cdm.notify
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocatorEvent
 import com.programmersbox.cdm.core.allocator.ReleaseReason
 import com.programmersbox.cdm.core.model.Category
@@ -123,8 +124,9 @@ class Notifier(
         }
     }
 
-    private fun queued(h: HolderId, wants: Set<Category>): SystemNotice {
-        val what = if (wants.isEmpty() || Category.ANY in wants) "a device" else "a " + wants.joinToString(" or ") { it.id }
+    private fun queued(h: HolderId, wants: Wants): SystemNotice {
+        val cats = wants.categories
+        val what = if (cats.isEmpty() || Category.ANY in cats) "a device" else "a " + cats.joinToString(" or ") { it.id }
         val position = manager.snapshot.value.queue.indexOf(h) + 1
         val body = if (position > 0) "${holder(h)} is #$position in line." else "${holder(h)} is in line."
         return SystemNotice("Waiting for $what", body, open = NoticeTarget.Queue(h))

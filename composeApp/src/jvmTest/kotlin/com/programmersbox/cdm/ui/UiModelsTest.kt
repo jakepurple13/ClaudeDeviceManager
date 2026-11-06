@@ -1,5 +1,6 @@
 package com.programmersbox.cdm.ui
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
 import com.programmersbox.cdm.core.allocator.HolderStatus
@@ -101,7 +102,7 @@ class UiModelsTest {
             queue = listOf(h1),
             statuses = mapOf(
                 h2 to HolderStatus.Holding(w, now - 4.minutes, now, editing = true),
-                h1 to HolderStatus.Queued(1, setOf(Category.WATCH)),
+                h1 to HolderStatus.Queued(1, Wants(setOf(Category.WATCH))),
             ),
         )
         val info = mapOf(h2 to HolderInfo(h2, "/src/watch-launcher", null, null, now, ended = false))

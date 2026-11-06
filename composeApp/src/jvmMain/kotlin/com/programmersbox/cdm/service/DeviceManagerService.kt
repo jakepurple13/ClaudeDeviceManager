@@ -1,5 +1,6 @@
 package com.programmersbox.cdm.service
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.Allocator
 import com.programmersbox.cdm.core.allocator.AllocatorEvent
@@ -228,11 +229,11 @@ class DeviceManagerService(
                 val cat = allocator.snapshot().devices.firstOrNull { it.key == st.device }?.category
                 if (Category.ANY !in w && cat !in w) allocator.release(holder, ReleaseReason.SELF_RELEASE)
             }
-            when (val g = allocator.tryGrab(holder, w)) {
+            when (val g = allocator.tryGrab(holder, Wants(w))) {
                 is GrabResult.Granted -> AcquireResult.Granted(g.serial, g.device.name)
                 GrabResult.Blocked -> AcquireResult.Blocked
                 else -> {
-                    allocator.enqueue(holder, w)
+                    allocator.enqueue(holder, Wants(w))
                     allocator.attachWaiter(holder)
                     null
                 }
@@ -345,6 +346,9 @@ class DeviceManagerService(
                     category = c?.categoryOverride ?: t.detectedCategory,
                     dontUse = c?.dontUse ?: false,
                     connectedSerials = t.serials,
+                    platform = t.platform,
+                    virtual = t.virtual,
+                    partner = t.partner,
                 )
             }
             // Held devices that went away stay listed (offline · held) so the UI and deny messages can name them.

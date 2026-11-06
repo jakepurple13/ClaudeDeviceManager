@@ -22,8 +22,8 @@ class AllocatorQueueTest {
     private fun alloc(blocked: Set<HolderId> = emptySet()) =
         Allocator(clock = { now }, blocked = blocked, onEvent = { events += it }).also { it.setDevices(listOf(p, w)) }
 
-    private val watch = setOf(Category.WATCH)
-    private val phone = setOf(Category.PHONE)
+    private val watch = Wants(setOf(Category.WATCH))
+    private val phone = Wants(setOf(Category.PHONE))
 
     @Test fun grantsFreeDeviceOfWantedCategory() {
         val a = alloc()
@@ -33,7 +33,7 @@ class AllocatorQueueTest {
     }
 
     @Test fun anyMatchesAllCategories() {
-        assertIs<GrabResult.Granted>(alloc().tryGrab(h1, setOf(Category.ANY)))
+        assertIs<GrabResult.Granted>(alloc().tryGrab(h1, Wants.ANY))
     }
 
     @Test fun grabIsIdempotentForHolder() {

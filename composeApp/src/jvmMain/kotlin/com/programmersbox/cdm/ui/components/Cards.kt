@@ -175,7 +175,7 @@ fun QueueCard(
             leading()
             AnimatedCount(row.position, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
             Text(row.label, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-            row.wants.forEach { CategoryChip(it) }
+            row.wants.categories.forEach { CategoryChip(it) }
         }
         Muted("waiting ${short(row.waited)}", Modifier.padding(top = 2.dp))
     }

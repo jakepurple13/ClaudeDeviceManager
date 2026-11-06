@@ -1,5 +1,6 @@
 package com.programmersbox.cdm.service
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.Allocator
 import com.programmersbox.cdm.core.allocator.HolderStatus
@@ -60,12 +61,12 @@ class HookDeciderTest {
     }
 
     @Test fun noneFreeDenies() = runTest {
-        allocator.tryGrab(h2, setOf(Category.WATCH))
+        allocator.tryGrab(h2, Wants(setOf(Category.WATCH)))
         assertTrue("`cdm acquire --category watch`" in bash("adb shell ls").reason())
     }
 
     @Test fun explicitSerialHeldByOtherDenies() = runTest {
-        allocator.tryGrab(h2, setOf(Category.WATCH))
+        allocator.tryGrab(h2, Wants(setOf(Category.WATCH)))
         assertTrue("Watch" in bash("adb -s w-usb shell ls").reason())
     }
 
@@ -129,7 +130,7 @@ class HookDeciderTest {
 
     @Test fun usbFlagSoleDeviceHeldByOtherNamesHolder() = runTest {
         allocator.setDevices(listOf(p, wWifiOnly))
-        allocator.tryGrab(h2, setOf(Category.PHONE))
+        allocator.tryGrab(h2, Wants(setOf(Category.PHONE)))
         assertTrue("s2:main" in bash("adb -d shell ls").reason())
     }
 
@@ -154,7 +155,7 @@ class HookDeciderTest {
     @Test fun noRegrabWhenTaken() = runTest {
         bash("adb shell ls")
         now = t0 + 16.minutes; allocator.tick()
-        allocator.tryGrab(h2, setOf(Category.WATCH))
+        allocator.tryGrab(h2, Wants(setOf(Category.WATCH)))
         val r = bash("adb shell ls").reason()
         assertTrue("released after 15 min idle" in r, r)
         assertTrue("cdm acquire" in r, r)
@@ -216,7 +217,7 @@ class HookDeciderTest {
     }
 
     @Test fun freshAssignmentToHeldDeviceNamesHolder() = runTest {
-        allocator.tryGrab(h2, setOf(Category.PHONE))
+        allocator.tryGrab(h2, Wants(setOf(Category.PHONE)))
         assertTrue("s2:main" in bash("export ANDROID_SERIAL=p-usb; scrcpy").reason())
     }
 

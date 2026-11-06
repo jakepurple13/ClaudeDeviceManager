@@ -20,7 +20,7 @@ class Allocator(
     private val known = LinkedHashMap<DeviceKey, AllocDevice>()
     private val holds = LinkedHashMap<DeviceKey, HolderId>()
     private val queue = ArrayList<HolderId>()
-    private val queueWants = HashMap<HolderId, Set<Category>>()
+    private val queueWants = HashMap<HolderId, Wants>()
     private val blockedHolders = LinkedHashSet(blocked)
 
     /** When a queued holder's waiter detached. Absent means attached (or never detached). */
@@ -40,7 +40,7 @@ class Allocator(
     fun statusOf(holder: HolderId): HolderStatus {
         if (holder in blockedHolders) return HolderStatus.Blocked
         val i = queue.indexOf(holder)
-        if (i >= 0) return HolderStatus.Queued(i + 1, queueWants[holder].orEmpty())
+        if (i >= 0) return HolderStatus.Queued(i + 1, queueWants[holder] ?: Wants(emptySet()))
         return statuses[holder] ?: HolderStatus.None
     }
 
@@ -50,7 +50,7 @@ class Allocator(
         devices.forEach { passToQueue(it.key) }
     }
 
-    fun tryGrab(holder: HolderId, wants: Set<Category>, specific: DeviceKey? = null): GrabResult {
+    fun tryGrab(holder: HolderId, wants: Wants, specific: DeviceKey? = null): GrabResult {
         if (holder in blockedHolders) return GrabResult.Blocked
         holds.entries.firstOrNull { it.value == holder }?.let { return granted(known.getValue(it.key), holder) }
         if (specific != null) {
@@ -60,7 +60,7 @@ class Allocator(
             if (d.connectedSerials.isEmpty()) return GrabResult.NoneFree
             return grant(holder, d)
         }
-        val free = devices.firstOrNull { !it.dontUse && it.connectedSerials.isNotEmpty() && it.key !in holds && fits(wants, it) }
+        val free = devices.firstOrNull { !it.dontUse && it.connectedSerials.isNotEmpty() && it.key !in holds && wants.fits(it) }
         return if (free != null) grant(holder, free) else GrabResult.NoneFree
     }
 
@@ -68,7 +68,7 @@ class Allocator(
      * Returns the 1-based queue position, or 0 if the holder is blocked or already holds a device.
      * An already-queued holder keeps its place; its wanted categories are replaced with [wants].
      */
-    fun enqueue(holder: HolderId, wants: Set<Category>): Int {
+    fun enqueue(holder: HolderId, wants: Wants): Int {
         if (holder in blockedHolders || holds.containsValue(holder)) return 0
         val existing = queue.indexOf(holder)
         if (existing >= 0) {
@@ -191,8 +191,6 @@ class Allocator(
         return devices.firstOrNull { it.key == key }?.connectedSerials?.firstOrNull()
     }
 
-    private fun fits(wants: Set<Category>, d: AllocDevice) = Category.ANY in wants || d.category in wants
-
     private fun granted(d: AllocDevice, holder: HolderId): GrabResult.Granted {
         val serial = devices.firstOrNull { it.key == d.key }?.connectedSerials?.firstOrNull() ?: ""
         return GrabResult.Granted(d, serial).also { check(holds[d.key] == holder) }
@@ -202,7 +200,7 @@ class Allocator(
         removeFromQueueInternal(holder, emitEvent = false)
         val now = clock()
         holds[d.key] = holder
-        statuses[holder] = HolderStatus.Holding(d.key, now, now, editing = false)
+        statuses[holder] = HolderStatus.Holding(d.key, now, now, editing = false, platform = d.platform)
         emit(AllocatorEvent.Granted(now, holder, d.key))
         return granted(d, holder)
     }
@@ -226,7 +224,7 @@ class Allocator(
         if (device in holds) return
         val d = devices.firstOrNull { it.key == device } ?: return
         if (d.dontUse || d.connectedSerials.isEmpty()) return
-        val next = queue.firstOrNull { it !in blockedHolders && fits(queueWants[it].orEmpty(), d) } ?: return
+        val next = queue.firstOrNull { it !in blockedHolders && queueWants[it]?.fits(d) == true } ?: return
         grant(next, d)
     }
 

@@ -1,5 +1,6 @@
 package com.programmersbox.cdm.ui
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
 import com.programmersbox.cdm.core.allocator.HolderStatus
@@ -55,7 +56,7 @@ class SessionsViewModelTest {
             queue = listOf(s1Main),
             statuses = mapOf(
                 s1Agent to HolderStatus.Holding(phone, t, t, editing = false),
-                s1Main to HolderStatus.Queued(1, setOf(Category.PHONE)),
+                s1Main to HolderStatus.Queued(1, Wants(setOf(Category.PHONE))),
                 s2Main to HolderStatus.Blocked,
             ),
         )

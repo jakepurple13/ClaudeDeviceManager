@@ -1,5 +1,6 @@
 package com.programmersbox.cdm.service
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.Allocator
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
@@ -194,7 +195,7 @@ class HookDecider(
             }
             else -> {
                 val category = defaultCategory(req.cwd)
-                return when (val g = allocator.tryGrab(req.holder, category.members())) {
+                return when (val g = allocator.tryGrab(req.holder, Wants(category.members()))) {
                     is GrabResult.Granted -> req.finish(g.serial)
                     GrabResult.Blocked -> HookReply.Deny(releasedByUser(blocked = true))
                     else -> HookReply.Deny(noneFree(category))
@@ -205,7 +206,7 @@ class HookDecider(
         // Every segment must land on the chosen device, not only the one that picked it.
         if (req.conflictsWith(target, snap)) return HookReply.Deny(MORE_THAN_ONE)
 
-        return when (val g = allocator.tryGrab(req.holder, emptySet(), target.key)) {
+        return when (val g = allocator.tryGrab(req.holder, Wants(emptySet()), target.key)) {
             is GrabResult.Granted -> req.finish(pin)
             is GrabResult.HeldByOther -> HookReply.Deny(
                 "${label(g.device)} is in use by ${g.holder.key}. " +

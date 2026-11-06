@@ -46,8 +46,19 @@ class DeviceTrackerTest {
         assertEquals(DeviceKey(usb), d.key)
         assertEquals(listOf(usb, wifi), d.serials)
         assertEquals("Pixel 8", d.model)
-        assertEquals("15", d.androidVersion)
+        assertEquals("15", d.osVersion)
         assertEquals(Category.PHONE, d.detectedCategory)
+    }
+
+    @Test
+    fun emulatorIsVirtualAndUsbDeviceIsNot() = runTest {
+        val adb = FakeAdb(
+            "List of devices attached\nemulator-5554 device\nU1 device usb:1\n",
+            mapOf("emulator-5554" to "EMU", "U1" to "U1"),
+        )
+        val byKey = DeviceTracker(adb).scan().associateBy { it.serials.first() }
+        assertEquals(true, byKey.getValue("emulator-5554").virtual)
+        assertEquals(false, byKey.getValue("U1").virtual)
     }
 
     @Test

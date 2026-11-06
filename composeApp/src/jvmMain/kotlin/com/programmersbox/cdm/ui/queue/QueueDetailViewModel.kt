@@ -48,7 +48,7 @@ class QueueDetailViewModel(
                 label = w.labelOf(holder),
                 cwd = w.info[holder]?.cwd.orEmpty(),
                 position = row?.position ?: 0,
-                wants = row?.wants.orEmpty(),
+                wants = row?.wants?.categories.orEmpty(),
                 queuedAt = w.queuedAt(holder),
                 reasons = if (row != null) waitReasons(holder, w) else emptyList(),
                 handOff = if (row != null) handOffTargets(holder, w) else emptyList(),

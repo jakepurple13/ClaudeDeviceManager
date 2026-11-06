@@ -39,6 +39,7 @@ enum class ChipStyle(val container: Color, val content: Color) {
     Neutral(Color(0xFF333A46), Color(0xFFCFD6E4)),
     Phone(Color(0xFF23403A), Color(0xFFB6F0DC)),
     Watch(Color(0xFF3B2F52), Color(0xFFD7C4FF)),
+    Tablet(Color(0xFF23364A), Color(0xFFB8D8FF)),
     DontUse(Color(0xFF4A2A2A), Color(0xFFFFB4B4)),
     Offline(Color(0xFF4A4224), Color(0xFFFFE39A)),
 }
@@ -46,6 +47,7 @@ enum class ChipStyle(val container: Color, val content: Color) {
 fun chipStyleFor(category: Category): ChipStyle = when (category) {
     Category.PHONE -> ChipStyle.Phone
     Category.WATCH -> ChipStyle.Watch
+    Category.TABLET -> ChipStyle.Tablet
     else -> ChipStyle.Neutral
 }
 

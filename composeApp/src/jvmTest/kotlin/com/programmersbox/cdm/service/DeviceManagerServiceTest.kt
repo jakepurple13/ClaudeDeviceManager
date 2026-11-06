@@ -1,5 +1,6 @@
 package com.programmersbox.cdm.service
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.HolderStatus
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
@@ -121,7 +122,7 @@ class DeviceManagerServiceTest {
         s.acquire(h2, "/other", setOf(Category.ANY), 1.minutes) {}
         s.acquire(HolderId("s3"), "/other", setOf(Category.ANY), 1.minutes) {}
         assertEquals(AcquireResult.TimedOut(1), s.acquire(h1, "/w", emptySet(), 1.seconds) {})
-        assertEquals(setOf(Category.PHONE, Category.WATCH), (s.status(h1) as HolderStatus.Queued).wants)
+        assertEquals(Wants(setOf(Category.PHONE, Category.WATCH)), (s.status(h1) as HolderStatus.Queued).wants)
     }
 
     @Test fun acquireWaitsReportsPositionThenGrants() = runTest {

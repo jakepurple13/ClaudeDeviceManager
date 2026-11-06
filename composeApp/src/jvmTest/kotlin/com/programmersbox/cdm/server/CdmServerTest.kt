@@ -168,7 +168,7 @@ class CdmServerTest {
         val m = FakeManager()
         app(m) {
             assertEquals("NONE", client.post("/cdm/release?holder=s:main").bodyAsText().trim())
-            m.statusImpl = { com.programmersbox.cdm.core.allocator.HolderStatus.Queued(2, setOf(Category.ANY)) }
+            m.statusImpl = { com.programmersbox.cdm.core.allocator.HolderStatus.Queued(2, com.programmersbox.cdm.core.allocator.Wants.ANY) }
             assertEquals("RELEASED", client.post("/cdm/release?holder=s:main").bodyAsText().trim())
             assertEquals("QUEUED 2", client.get("/cdm/status?holder=s:main").bodyAsText().trim())
             m.statusImpl = { com.programmersbox.cdm.core.allocator.HolderStatus.Blocked }

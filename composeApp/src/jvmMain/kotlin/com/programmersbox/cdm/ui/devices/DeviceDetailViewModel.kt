@@ -69,7 +69,7 @@ class DeviceDetailViewModel(
             device != null -> "offline · held"
             else -> "offline"
         }
-        val facts = listOfNotNull(key.hardwareSerial, tracked?.let { "Android ${it.androidVersion}" }, connection).joinToString(" · ")
+        val facts = listOfNotNull(key.hardwareSerial, tracked?.let { "Android ${it.osVersion}" }, connection).joinToString(" · ")
         val holder = w.snapshot.holds[key]
         val card = holder?.let { h ->
             val info = w.info[h]

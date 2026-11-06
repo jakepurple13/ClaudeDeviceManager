@@ -20,7 +20,7 @@ class AllocatorTimerTest {
     private val t0 = Instant.fromEpochMilliseconds(1_000_000)
     private var now = t0
     private val events = mutableListOf<AllocatorEvent>()
-    private val watch = setOf(Category.WATCH)
+    private val watch = Wants(setOf(Category.WATCH))
 
     private fun alloc() = Allocator(clock = { now }, onEvent = { events += it }).also { it.setDevices(listOf(p, w)) }
 

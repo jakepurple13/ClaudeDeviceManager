@@ -13,12 +13,15 @@ value class Category(val id: String) {
     companion object {
         val PHONE = Category("phone")
         val WATCH = Category("watch")
+        val TABLET = Category("tablet")
         val ANY = Category("any")
 
         /** Project default for apps that run on either kind of device. */
         val PHONE_WATCH = Category("phone,watch")
     }
 }
+
+enum class Platform { ANDROID, IOS }
 
 data class HolderId(val sessionId: String, val agentId: String = MAIN) {
     val key get() = "$sessionId:$agentId"
