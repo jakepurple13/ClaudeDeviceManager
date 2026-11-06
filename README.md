@@ -28,16 +28,24 @@ When several Claude sessions test on the same phone at once, they fight over the
 
 JetBrains Runtime 25 is downloaded automatically the first time you run or package the app. The custom title bar needs it.
 
+## Install
+
+Download the installer for your OS from the [latest release](https://github.com/jakepurple13/ClaudeDeviceManager/releases/latest): `.dmg` (macOS), `-nsis.exe` (Windows), `.deb` or `.AppImage` (Linux).
+
+The builds are unsigned. On macOS the first launch is blocked: open System Settings → Privacy & Security and click **Open Anyway**. On Windows, SmartScreen asks once.
+
+After that the app updates itself. It checks GitHub releases at launch and every 6 hours, and Settings → Updates has **Check now**. When an update is found, a banner offers **Download**, then **Restart to update**. Nothing restarts on its own, because a restart releases every held device.
+
 ## Run it
 
 ```bash
 ./gradlew :composeApp:run
 ```
 
-Build a `.dmg`:
+Build the installers for the current OS:
 
 ```bash
-./gradlew :composeApp:packageDmg
+./gradlew :composeApp:packageDistributionForCurrentOS -PappVersion=1.2.0
 ```
 
 Run the tests:
@@ -133,3 +141,8 @@ docs/superpowers/                       design spec, implementation plan, hook f
 - `CDM_START_ROUTE=devices:<serial>` (or `queue:<holder>`, or a bare section name) opens the app on that screen. It's useful for screenshots.
 - `spikes/hook-echo.py` is a tiny hook echo server for inspecting real Claude Code hook payloads.
 - Tests never touch your real `~/.claude`. Running the app does: it installs and uninstalls as described above.
+- `CDM_UPDATE_URL=http://127.0.0.1:8770` makes a packaged build read updates from a local folder (served with `python3 -m http.server 8770 --bind 127.0.0.1`) holding `latest-mac.yml` and the ZIP and blockmap from `composeApp/build/compose/binaries/main/zip`, instead of GitHub.
+
+## Releasing
+
+Push a tag: `git tag -a v1.2.0 -m v1.2.0 && git push origin v1.2.0`. `.github/workflows/release.yml` runs the tests, builds the installers on macOS, Windows and Linux, writes the `latest-*.yml` update files, and publishes the GitHub release. Each tag must be a higher version than the last, or installed apps won't offer it. A `-beta.N` or `-alpha.N` tag is published as a pre-release on that channel.

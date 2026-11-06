@@ -31,10 +31,14 @@ import com.programmersbox.cdm.ui.components.CardBox
 import com.programmersbox.cdm.ui.components.Muted
 import com.programmersbox.cdm.ui.components.SectionLabel
 import com.programmersbox.cdm.ui.components.SmallButton
+import com.programmersbox.cdm.update.GITHUB_OWNER
+import com.programmersbox.cdm.update.GITHUB_REPO
 import com.programmersbox.cdm.update.UpdateState
+import androidx.compose.ui.platform.LocalUriHandler
 import org.koin.compose.viewmodel.koinViewModel
 
 private const val ANIM_MS = 220
+private const val RELEASES_URL = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/latest"
 
 /**
  * The strip above every screen: an update is available, downloading or ready, or this launch was just updated.
@@ -84,10 +88,15 @@ private fun BannerRow(content: @Composable androidx.compose.foundation.layout.Ro
 @Composable
 fun UpdatesSection(vm: UpdateViewModel = koinViewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val uriHandler = LocalUriHandler.current
     SectionLabel("Updates")
     CardBox {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Version ${vm.currentVersion}", style = MaterialTheme.typography.bodyMedium)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Version ${vm.currentVersion}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                // Manual fallback (and the only route from a Gradle run): the latest release's installers in the browser.
+                SmallButton("Download from GitHub", onClick = { runCatching { uriHandler.openUri(RELEASES_URL) } })
+            }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 UpdateActions(state, vm, Modifier.weight(1f), showLater = false)
             }
