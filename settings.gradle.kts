@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "claude_device_manager"
 include(":composeApp")
+include(":sample")
