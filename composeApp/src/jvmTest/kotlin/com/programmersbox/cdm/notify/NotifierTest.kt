@@ -1,5 +1,6 @@
 package com.programmersbox.cdm.notify
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.AllocatorEvent
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
@@ -76,7 +77,7 @@ class NotifierTest {
 
     @Test
     fun queuedShowsPositionAndQueueStartReplacesGrab() {
-        emit(AllocatorEvent.Queued(t0, sub, setOf(Category.PHONE)))
+        emit(AllocatorEvent.Queued(t0, sub, Wants(setOf(Category.PHONE))))
         emit(AllocatorEvent.Granted(t0 + 252.seconds, sub, pixel))
         assertEquals(
             listOf(
@@ -94,7 +95,7 @@ class NotifierTest {
 
     @Test
     fun leavingTheQueueMeansALaterGrabIsAPlainGrab() {
-        emit(AllocatorEvent.Queued(t0, app, setOf(Category.ANY)))
+        emit(AllocatorEvent.Queued(t0, app, Wants(setOf(Category.ANY))))
         emit(AllocatorEvent.LeftQueue(t0, app))
         emit(AllocatorEvent.Granted(t0, app, pixel))
         assertEquals(listOf("Waiting for a device", "Pixel 8 grabbed"), sent.map { it.title })
@@ -103,7 +104,7 @@ class NotifierTest {
     @Test
     fun switchesFilterAndQueueStartOffFallsBackToGrab() {
         settings.value = NotificationSettings(grab = true, release = false, queued = false, queueStart = false)
-        emit(AllocatorEvent.Queued(t0, app, setOf(Category.PHONE)))
+        emit(AllocatorEvent.Queued(t0, app, Wants(setOf(Category.PHONE))))
         emit(AllocatorEvent.Granted(t0, app, pixel))
         emit(AllocatorEvent.Released(t0, app, pixel, ReleaseReason.SELF_RELEASE))
         assertEquals(listOf("Pixel 8 grabbed"), sent.map { it.title })
@@ -126,6 +127,13 @@ class NotifierTest {
         settings.value = NotificationSettings(grab = true, release = false, queued = true, queueStart = false)
         notifier.sendTest()
         assertEquals(listOf("Pixel 8 grabbed", "Waiting for a phone"), sent.map { it.title })
+    }
+
+    @Test
+    fun queuedNamesPlatformAndRealOrVirtual() {
+        emit(AllocatorEvent.Queued(t0, app, Wants(setOf(Category.PHONE), com.programmersbox.cdm.core.model.Platform.IOS, virtual = false)))
+        emit(AllocatorEvent.Queued(t0, app, Wants(setOf(Category.ANY), com.programmersbox.cdm.core.model.Platform.ANDROID, virtual = true)))
+        assertEquals(listOf("Waiting for a phone (iOS, real only)", "Waiting for a device (Android, virtual only)"), sent.map { it.title })
     }
 
     @Test

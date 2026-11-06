@@ -1,5 +1,6 @@
 package com.programmersbox.cdm.service
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.Allocator
 import com.programmersbox.cdm.core.allocator.HolderStatus
@@ -60,12 +61,12 @@ class HookDeciderTest {
     }
 
     @Test fun noneFreeDenies() = runTest {
-        allocator.tryGrab(h2, setOf(Category.WATCH))
-        assertTrue("`cdm acquire --category watch`" in bash("adb shell ls").reason())
+        allocator.tryGrab(h2, Wants(setOf(Category.WATCH)))
+        assertTrue("`cdm acquire --category watch --android`" in bash("adb shell ls").reason())
     }
 
     @Test fun explicitSerialHeldByOtherDenies() = runTest {
-        allocator.tryGrab(h2, setOf(Category.WATCH))
+        allocator.tryGrab(h2, Wants(setOf(Category.WATCH)))
         assertTrue("Watch" in bash("adb -s w-usb shell ls").reason())
     }
 
@@ -129,7 +130,7 @@ class HookDeciderTest {
 
     @Test fun usbFlagSoleDeviceHeldByOtherNamesHolder() = runTest {
         allocator.setDevices(listOf(p, wWifiOnly))
-        allocator.tryGrab(h2, setOf(Category.PHONE))
+        allocator.tryGrab(h2, Wants(setOf(Category.PHONE)))
         assertTrue("s2:main" in bash("adb -d shell ls").reason())
     }
 
@@ -154,7 +155,7 @@ class HookDeciderTest {
     @Test fun noRegrabWhenTaken() = runTest {
         bash("adb shell ls")
         now = t0 + 16.minutes; allocator.tick()
-        allocator.tryGrab(h2, setOf(Category.WATCH))
+        allocator.tryGrab(h2, Wants(setOf(Category.WATCH)))
         val r = bash("adb shell ls").reason()
         assertTrue("released after 15 min idle" in r, r)
         assertTrue("cdm acquire" in r, r)
@@ -216,7 +217,7 @@ class HookDeciderTest {
     }
 
     @Test fun freshAssignmentToHeldDeviceNamesHolder() = runTest {
-        allocator.tryGrab(h2, setOf(Category.PHONE))
+        allocator.tryGrab(h2, Wants(setOf(Category.PHONE)))
         assertTrue("s2:main" in bash("export ANDROID_SERIAL=p-usb; scrcpy").reason())
     }
 
@@ -264,5 +265,108 @@ class HookDeciderTest {
     @Test fun acquireChainedWhileHoldingIsPinned() = runTest {
         bash("adb shell ls")
         assertIs<HookReply.Rewrite>(bash("cdm acquire && adb shell ls"))
+    }
+
+    // ---- final whole-branch review: Android Maestro and platform hints ----
+
+    @Test fun maestroWithoutFlagGrabsAndPinsAndroidSerial() = runTest {
+        assertEquals(pinPrefix("w-usb") + "maestro test flow.yaml", bash("maestro test flow.yaml").cmd())
+        assertEquals(w.key, assertIs<HolderStatus.Holding>(allocator.statusOf(h)).device)
+        assertEquals(pinPrefix("w-usb") + "maestro test flow.yaml", bash("maestro test flow.yaml").cmd())
+    }
+
+    @Test fun maestroDeviceOwnSerialAllowed() = runTest {
+        bash("adb shell ls") // holds W
+        assertEquals(pinPrefix("w-usb") + "maestro --device w-usb test f.yaml", bash("maestro --device w-usb test f.yaml").cmd())
+        assertIs<HookReply.Rewrite>(bash("maestro --device=$wWifi test f.yaml"))
+    }
+
+    @Test fun maestroDeviceFreeSerialGrabsThatDevice() = runTest {
+        assertEquals(pinPrefix("p-usb") + "maestro --device p-usb test f.yaml", bash("maestro --device p-usb test f.yaml").cmd())
+        assertEquals(p.key, assertIs<HolderStatus.Holding>(allocator.statusOf(h)).device)
+    }
+
+    @Test fun maestroDeviceOthersSerialDenied() = runTest {
+        allocator.tryGrab(h2, Wants(setOf(Category.PHONE))) // s2 holds P
+        assertTrue("s2:main" in bash("maestro --device p-usb test f.yaml").reason())
+        bash("adb shell ls") // s1 holds W
+        assertTrue("you hold" in bash("maestro --device p-usb test f.yaml").reason())
+    }
+
+    @Test fun androidHintsSayAndroid() = runTest {
+        allocator.tryGrab(h2, Wants(setOf(Category.WATCH)))
+        assertTrue("`cdm acquire --category watch --android`" in bash("adb shell ls").reason())
+        assertTrue("`cdm acquire --category watch --android`" in bash("adb -s w-usb shell ls").reason())
+        assertTrue("--android" in bash("adb -s nope shell ls").reason())
+        assertTrue("--android" in bash("adb -e shell ls").reason())
+        allocator.release(h2, com.programmersbox.cdm.core.allocator.ReleaseReason.SELF_RELEASE)
+        bash("adb shell ls")
+        assertTrue("`cdm release --android`" in bash("adb -s p-usb shell ls").reason())
+        allocator.releaseDevice(w.key, block = false)
+        assertTrue("`cdm acquire --android`" in bash("adb shell ls").reason())
+    }
+
+    @Test fun timeoutHintSaysAndroid() = runTest {
+        bash("adb shell ls")
+        now = t0 + 16.minutes; allocator.tick()
+        allocator.tryGrab(h2, Wants(setOf(Category.WATCH)))
+        assertTrue("`cdm acquire --category watch --android`" in bash("adb shell ls").reason())
+    }
+
+    // ---- first-use grab honours the queued request ----
+
+    private val emu = AllocDevice(
+        DeviceKey("E"), "Emu", Category.PHONE, false, listOf("emulator-5554"),
+        com.programmersbox.cdm.core.model.Platform.ANDROID, virtual = true,
+    )
+    private val android = com.programmersbox.cdm.core.model.Platform.ANDROID
+
+    @Test fun queuedForVirtualOnlyRealFreeDenied() = runTest {
+        allocator.enqueue(h, Wants(setOf(Category.PHONE), android, virtual = true))
+        val r = bash("adb shell am start -n a/.Main").reason()
+        assertEquals(
+            "You're waiting for a phone device (Android, virtual only), #1 in line. " +
+                "Run `cdm acquire --category phone --android --virtual` to keep waiting, " +
+                "`cdm acquire --category <other>` to wait for something else, or `cdm release` to leave the queue.",
+            r,
+        )
+        assertTrue(allocator.holdingsOf(h).isEmpty())
+        assertIs<HolderStatus.Queued>(allocator.statusOf(h))
+    }
+
+    @Test fun queuedWithoutPlatformDenyHasNoPlatformFlag() = runTest {
+        allocator.enqueue(h, Wants(setOf(Category.TABLET)))
+        val r = bash("adb shell ls").reason()
+        assertTrue("You're waiting for a tablet device, #1 in line." in r, r)
+        assertTrue("Run `cdm acquire --category tablet` to keep waiting" in r, r)
+        assertTrue(allocator.holdingsOf(h).isEmpty())
+    }
+
+    @Test fun queuedExplicitSerialNotFittingIsGranted() = runTest {
+        // Accepted ruling: an explicit -s is the session's own choice, even if it doesn't fit the queued request.
+        allocator.enqueue(h, Wants(setOf(Category.PHONE), android, virtual = true))
+        assertEquals(pinPrefix("p-usb") + "adb -s p-usb shell ls", bash("adb -s p-usb shell ls").cmd())
+        assertEquals(p.key, allocator.holdingsOf(h).single().device)
+    }
+
+    @Test fun queuedExplicitSerialHeldByOtherDenied() = runTest {
+        allocator.tryGrab(h2, Wants(setOf(Category.PHONE)))
+        allocator.enqueue(h, Wants(setOf(Category.PHONE), android, virtual = true))
+        val r = bash("adb -s p-usb shell ls").reason()
+        assertTrue("in use by s2:main" in r, r)
+        assertTrue(allocator.holdingsOf(h).isEmpty())
+    }
+
+    @Test fun queuedForVirtualGrabsEmulator() = runTest {
+        allocator.setDevices(listOf(p, w, emu))
+        allocator.enqueue(h, Wants(setOf(Category.PHONE), android, virtual = true))
+        assertEquals(pinPrefix("emulator-5554") + "adb shell ls", bash("adb shell ls").cmd())
+        assertEquals(emu.key, allocator.holdingsOf(h).single().device)
+    }
+
+    @Test fun queuedForAnyPlatformUsesQueuedCategories() = runTest {
+        // Project default is watch; queued for phone with no platform limit, the grab takes the phone.
+        allocator.enqueue(h, Wants(setOf(Category.PHONE)))
+        assertEquals(pinPrefix("p-usb") + "adb shell ls", bash("adb shell ls").cmd())
     }
 }

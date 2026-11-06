@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
@@ -54,7 +56,12 @@ fun DeviceDetailScreen(
                 Text(state.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 AnimatedLine(state.row?.dontUsePending == true) { Chip(DONT_USE_PENDING, ChipStyle.DontUse) }
             }
-            Muted(state.facts)
+            AnimatedRows(state.info, key = { it.first }) { (label, value) ->
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Muted("$label:", Modifier.width(72.dp), maxLines = 1)
+                    Text(value, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp), maxLines = 1)
+                }
+            }
             CategoryPicker(state, vm::onCategorySelected, Modifier.padding(vertical = 8.dp))
             HolderSection(state.holder, vm::onRelease)
             SectionLabel("Recent commands", Modifier.padding(top = 6.dp))

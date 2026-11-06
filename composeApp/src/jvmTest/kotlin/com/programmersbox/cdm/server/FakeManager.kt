@@ -2,9 +2,11 @@ package com.programmersbox.cdm.server
 
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
 import com.programmersbox.cdm.core.allocator.HolderStatus
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.devices.TrackedDevice
 import com.programmersbox.cdm.service.AcquireResult
 import com.programmersbox.cdm.service.DeviceManager
@@ -22,12 +24,13 @@ open class FakeManager : DeviceManager {
     val inputs = mutableListOf<HookInput>()
     val stops = mutableListOf<Pair<String, String>>()
     val ended = mutableListOf<String>()
-    var acquireImpl: suspend (HolderId, String, Set<Category>, Duration, suspend (Int) -> Unit) -> AcquireResult =
+    var acquireImpl: suspend (HolderId, String, Wants, Duration, suspend (Int) -> Unit) -> AcquireResult =
         { _, _, _, _, _ -> AcquireResult.Blocked }
     var statusImpl: (HolderId) -> HolderStatus = { HolderStatus.None }
-    var lastWants: Set<Category>? = null
+    var holdingsImpl: (HolderId) -> List<HolderStatus.Holding> = { emptyList() }
+    var lastWants: Wants? = null
     var lastTimeout: Duration? = null
-    val released = mutableListOf<HolderId>()
+    val released = mutableListOf<Pair<HolderId, Platform?>>()
 
     override val snapshot: StateFlow<AllocatorSnapshot> = MutableStateFlow(AllocatorSnapshot(emptyList(), emptyMap(), emptyList(), emptyMap()))
     override val tracked: StateFlow<List<TrackedDevice>> = MutableStateFlow(emptyList())
@@ -36,13 +39,14 @@ open class FakeManager : DeviceManager {
     override suspend fun preToolUse(input: HookInput): HookDecision { inputs += input; return decision }
     override suspend fun subagentStop(sessionId: String, agentId: String) { stops += sessionId to agentId }
     override suspend fun sessionEnd(sessionId: String) { ended += sessionId }
-    override suspend fun acquire(holder: HolderId, cwd: String, wants: Set<Category>, timeout: Duration, onPosition: suspend (Int) -> Unit): AcquireResult {
+    override suspend fun acquire(holder: HolderId, cwd: String, wants: Wants, timeout: Duration, onPosition: suspend (Int) -> Unit): AcquireResult {
         lastWants = wants
         lastTimeout = timeout
         return acquireImpl(holder, cwd, wants, timeout, onPosition)
     }
-    override suspend fun release(holder: HolderId) { released += holder }
+    override suspend fun release(holder: HolderId, platform: Platform?) { released += holder to platform }
     override suspend fun status(holder: HolderId): HolderStatus = statusImpl(holder)
+    override suspend fun holdings(holder: HolderId): List<HolderStatus.Holding> = holdingsImpl(holder)
     override suspend fun releaseDevice(key: DeviceKey, block: Boolean): Unit = error("unused")
     override suspend fun handOff(key: DeviceKey, to: HolderId): Unit = error("unused")
     override suspend fun setDontUse(key: DeviceKey, dontUse: Boolean, releaseNow: Boolean): Unit = error("unused")

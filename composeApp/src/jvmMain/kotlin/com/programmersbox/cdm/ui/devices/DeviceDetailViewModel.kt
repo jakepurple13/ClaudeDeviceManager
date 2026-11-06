@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.ui.ActivityRow
 import com.programmersbox.cdm.ui.DeviceRow
 import com.programmersbox.cdm.ui.UiActions
@@ -13,7 +14,8 @@ import com.programmersbox.cdm.ui.World
 import com.programmersbox.cdm.ui.activityRows
 import com.programmersbox.cdm.ui.deviceName
 import com.programmersbox.cdm.ui.deviceRows
-import com.programmersbox.cdm.ui.holding
+import com.programmersbox.cdm.ui.holdingOf
+import com.programmersbox.cdm.ui.kindLabel
 import com.programmersbox.cdm.ui.labelOf
 import com.programmersbox.cdm.ui.minutesCeil
 import com.programmersbox.cdm.ui.releasesIn
@@ -40,8 +42,8 @@ data class DeviceDetailState(
     val loaded: Boolean = false,
     val name: String = key.hardwareSerial,
     val row: DeviceRow? = null,
-    /** "38261FDJH00A1Z · Android 15 · USB · connected". */
-    val facts: String = key.hardwareSerial,
+    /** Label to value, in the order the detail pane shows them: Platform, Kind, Runtime, UDID or Serial, Connection. */
+    val info: List<Pair<String, String>> = emptyList(),
     val detectedCategory: Category? = null,
     val categoryOverride: Category? = null,
     val holder: HolderCard? = null,
@@ -69,11 +71,20 @@ class DeviceDetailViewModel(
             device != null -> "offline · held"
             else -> "offline"
         }
-        val facts = listOfNotNull(key.hardwareSerial, tracked?.let { "Android ${it.androidVersion}" }, connection).joinToString(" · ")
+        val platform = tracked?.platform ?: device?.platform ?: Platform.ANDROID
+        val virtual = tracked?.virtual ?: device?.virtual ?: false
+        val platformName = if (platform == Platform.IOS) "iOS" else "Android"
+        val info = listOfNotNull(
+            "Platform" to platformName,
+            "Kind" to kindLabel(platform, virtual),
+            tracked?.osVersion?.ifBlank { null }?.let { "Runtime" to "$platformName $it" },
+            (if (platform == Platform.IOS) "UDID" else "Serial") to key.hardwareSerial,
+            "Connection" to connection,
+        )
         val holder = w.snapshot.holds[key]
         val card = holder?.let { h ->
             val info = w.info[h]
-            val st = w.holding(h)
+            val st = w.holdingOf(h, key)
             val timing = if (st == null) "" else listOf(
                 "held ${short(w.now - st.since)}",
                 "last device command ${short(w.now - st.lastActivity)} ago",
@@ -87,7 +98,7 @@ class DeviceDetailViewModel(
             loaded = true,
             name = w.deviceName(key),
             row = deviceRows(w).firstOrNull { it.key == key },
-            facts = facts,
+            info = info,
             detectedCategory = tracked?.detectedCategory,
             categoryOverride = config?.categoryOverride,
             holder = card,

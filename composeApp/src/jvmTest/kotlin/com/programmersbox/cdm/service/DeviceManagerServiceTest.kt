@@ -1,9 +1,11 @@
 package com.programmersbox.cdm.service
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.HolderStatus
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.data.ActivityRepository
 import com.programmersbox.cdm.data.AppDatabase
 import com.programmersbox.cdm.data.BlockedRepository
@@ -16,6 +18,7 @@ import com.programmersbox.cdm.data.PinnedPermission
 import com.programmersbox.cdm.data.ProjectRepository
 import com.programmersbox.cdm.data.SettingsRepository
 import com.programmersbox.cdm.data.inMemoryDatabase
+import com.programmersbox.cdm.devices.DeviceSource
 import com.programmersbox.cdm.devices.DeviceTracker
 import com.programmersbox.cdm.devices.FakeAdb
 import kotlin.test.AfterTest
@@ -63,12 +66,34 @@ class DeviceManagerServiceTest {
 
     @AfterTest fun close() = db.close()
 
+    /** The pre-iOS call shape: categories only, no platform or real/virtual limit. */
+    private suspend fun DeviceManagerService.acquire(
+        holder: HolderId,
+        cwd: String,
+        categories: Set<Category>,
+        timeout: kotlin.time.Duration,
+        onPosition: suspend (Int) -> Unit,
+    ): AcquireResult = acquire(holder, cwd, Wants(categories), timeout, onPosition)
+
+    private val iosSims = com.programmersbox.cdm.devices.IosTrackerTest::class.java.getResource("/ios/simctl-booted.json")!!.readText()
+    private val iphone = DeviceKey("11111111-1111-1111-1111-111111111111")
+    private val watchSim = DeviceKey("44444444-4444-4444-4444-444444444444")
+
+    /** Two Android devices (P phone, W watch) plus the booted simulators from the fixture. */
+    private suspend fun TestScope.startedWithIos(): DeviceManagerService {
+        val ios = com.programmersbox.cdm.devices.IosTracker(com.programmersbox.cdm.devices.FakeIos(sims = iosSims))
+        val s = DeviceManagerService(DeviceSource(DeviceTracker(adb), ios, backgroundScope), configs, projects, settings, activity, blocked, mirror, clock = { now })
+        s.start(backgroundScope)
+        s.snapshot.first { snap -> snap.devices.any { it.key == iphone } && snap.devices.any { it.key == DeviceKey("P") } }
+        return s
+    }
+
     private suspend fun TestScope.started(
         scope: CoroutineScope = backgroundScope,
         configs: DeviceConfigRepository = this@DeviceManagerServiceTest.configs,
         settings: SettingsRepository = this@DeviceManagerServiceTest.settings,
     ): DeviceManagerService {
-        val s = DeviceManagerService(DeviceTracker(adb), configs, projects, settings, activity, blocked, mirror, clock = { now })
+        val s = DeviceManagerService(DeviceSource(DeviceTracker(adb), null, backgroundScope), configs, projects, settings, activity, blocked, mirror, clock = { now })
         s.start(scope)
         s.snapshot.first { it.devices.size == 2 }
         return s
@@ -90,13 +115,13 @@ class DeviceManagerServiceTest {
 
     @Test fun acquireGrantsAtOnce() = runTest {
         val s = started()
-        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch"), s.acquire(h1, "/w", watch, 1.minutes) {})
+        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch", Platform.ANDROID), s.acquire(h1, "/w", watch, 1.minutes) {})
     }
 
     @Test fun acquireWithNoWantsUsesProjectDefault() = runTest {
         projects.setDefault("/w", Category.WATCH)
         val s = started()
-        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch"), s.acquire(h1, "/w", emptySet(), 1.minutes) {})
+        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch", Platform.ANDROID), s.acquire(h1, "/w", emptySet(), 1.minutes) {})
     }
 
     @Test fun phoneAndWatchProjectDefaultWantsBoth() = runTest {
@@ -104,7 +129,7 @@ class DeviceManagerServiceTest {
         val s = started()
         // The phone is taken, so a project that takes either kind gets the watch.
         s.acquire(h2, "/other", setOf(Category.PHONE), 1.minutes) {}
-        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch"), s.acquire(h1, "/w", emptySet(), 1.minutes) {})
+        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch", Platform.ANDROID), s.acquire(h1, "/w", emptySet(), 1.minutes) {})
     }
 
     @Test fun phoneAndWatchProjectDefaultGrabsOnHook() = runTest {
@@ -121,7 +146,7 @@ class DeviceManagerServiceTest {
         s.acquire(h2, "/other", setOf(Category.ANY), 1.minutes) {}
         s.acquire(HolderId("s3"), "/other", setOf(Category.ANY), 1.minutes) {}
         assertEquals(AcquireResult.TimedOut(1), s.acquire(h1, "/w", emptySet(), 1.seconds) {})
-        assertEquals(setOf(Category.PHONE, Category.WATCH), (s.status(h1) as HolderStatus.Queued).wants)
+        assertEquals(Wants(setOf(Category.PHONE, Category.WATCH)), (s.status(h1) as HolderStatus.Queued).wants)
     }
 
     @Test fun acquireWaitsReportsPositionThenGrants() = runTest {
@@ -131,7 +156,7 @@ class DeviceManagerServiceTest {
         val r = async { s.acquire(h1, "/w", watch, 5.minutes) { positions += it } }
         s.snapshot.first { h1 in it.queue }
         s.release(h2)
-        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch"), r.await())
+        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch", Platform.ANDROID), r.await())
         assertEquals(listOf(1), positions)
     }
 
@@ -145,11 +170,11 @@ class DeviceManagerServiceTest {
     /** Ruling W: acquiring a category the current hold doesn't fit gives the hold back and grabs/queues for the new one. */
     @Test fun acquireOtherCategoryReleasesCurrentHold() = runTest {
         val s = started()
-        assertEquals(AcquireResult.Granted("p-usb", "Pixel 8"), s.acquire(h1, "/w", setOf(Category.PHONE), 1.minutes) {})
-        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch"), s.acquire(h1, "/w", watch, 1.minutes) {})
+        assertEquals(AcquireResult.Granted("p-usb", "Pixel 8", Platform.ANDROID), s.acquire(h1, "/w", setOf(Category.PHONE), 1.minutes) {})
+        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch", Platform.ANDROID), s.acquire(h1, "/w", watch, 1.minutes) {})
         assertEquals(null, s.snapshot.value.holds[DeviceKey("P")])
         // Same category again: keeps the hold.
-        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch"), s.acquire(h1, "/w", watch, 1.minutes) {})
+        assertEquals(AcquireResult.Granted("w-usb", "Pixel Watch", Platform.ANDROID), s.acquire(h1, "/w", watch, 1.minutes) {})
         // Wanted category taken: releases and queues.
         s.acquire(h2, "/w", setOf(Category.PHONE), 1.minutes) {}
         assertEquals(AcquireResult.TimedOut(1), s.acquire(h1, "/w", setOf(Category.PHONE), 1.seconds) {})
@@ -228,7 +253,7 @@ class DeviceManagerServiceTest {
         val home = java.nio.file.Files.createTempDirectory("cdm-h")
         java.nio.file.Files.createDirectories(home.resolve(".claude"))
         home.resolve(".claude/settings.json").toFile().writeText("{\"permissions\":{\"allow\":[\"Bash\"]}}")
-        val s2 = DeviceManagerService(DeviceTracker(adb), configs, projects, settings, activity, blocked, PermissionMirror(home), clock = { now })
+        val s2 = DeviceManagerService(DeviceSource(DeviceTracker(adb), null, backgroundScope), configs, projects, settings, activity, blocked, PermissionMirror(home), clock = { now })
         s2.start(backgroundScope)
         val plain = s2.preToolUse(HookInput("PreToolUse", "s9", null, null, "/w", "Bash", "echo hi"))
         assertEquals(HookDecision(HookReply.NoOpinion, null), plain)
@@ -287,7 +312,7 @@ class DeviceManagerServiceTest {
 
     @Test fun subagentStopReleasesAndEndedHoldersDropAfterAnHour() = runTest {
         val s = DeviceManagerService(
-            DeviceTracker(adb), configs, projects, settings, activity, blocked, mirror, clock = { now },
+            DeviceSource(DeviceTracker(adb), null, backgroundScope), configs, projects, settings, activity, blocked, mirror, clock = { now },
             scanInterval = 2.seconds, tickInterval = 5.seconds,
         )
         s.start(backgroundScope)
@@ -326,7 +351,7 @@ class DeviceManagerServiceTest {
         assertTrue(configs.all.first().single { it.key == DeviceKey("W") }.dontUse)
         s.setCategory(DeviceKey("P"), Category.WATCH)
         assertEquals(Category.WATCH, s.snapshot.value.devices.single { it.key == DeviceKey("P") }.category)
-        assertEquals(AcquireResult.Granted("p-usb", "Pixel 8"), s.acquire(h1, "/w", watch, 1.minutes) {})
+        assertEquals(AcquireResult.Granted("p-usb", "Pixel 8", Platform.ANDROID), s.acquire(h1, "/w", watch, 1.minutes) {})
         s.handOff(DeviceKey("P"), h2)
         assertEquals(DeviceKey("P"), assertIs<HolderStatus.Holding>(s.status(h2)).device)
     }
@@ -378,6 +403,68 @@ class DeviceManagerServiceTest {
         now = t0 + 3.minutes
         s.snapshot.first { h1 !in it.queue }
         assertEquals(HolderStatus.None, s.status(h1))
+    }
+
+    /** Ruling W per platform: a flagged acquire gives back only that platform's hold when it doesn't fit. */
+    @Test fun rulingWPerPlatform() = runTest {
+        val s = startedWithIos()
+        val phone = Wants(setOf(Category.PHONE), Platform.IOS)
+        assertEquals(AcquireResult.Granted(iphone.hardwareSerial, "iPhone 16 Pro · iOS 18.2", Platform.IOS), s.acquire(h1, "/w", phone, 1.minutes) {})
+        // --ios --category watch: the iPhone doesn't fit, so it goes back and the watch simulator is granted.
+        val w = s.acquire(h1, "/w", Wants(watch, Platform.IOS), 1.minutes) {}
+        assertEquals(AcquireResult.Granted(watchSim.hardwareSerial, "Apple Watch Series 10 (46mm) · watchOS 11.2", Platform.IOS), w)
+        assertEquals(null, s.snapshot.value.holds[iphone])
+        // --android: adds an Android hold; the iOS watch stays.
+        val a = s.acquire(h1, "/w", Wants(setOf(Category.ANY), Platform.ANDROID), 1.minutes) {}
+        assertEquals(Platform.ANDROID, assertIs<AcquireResult.Granted>(a).platform)
+        assertEquals(h1, s.snapshot.value.holds[watchSim])
+        assertEquals(setOf(Platform.ANDROID, Platform.IOS), s.holdings(h1).map { it.platform }.toSet())
+    }
+
+    /** A holder with an Android hold that queued for iOS gets the iOS UDID back, not its Android serial. */
+    @Test fun queuedIosGrantReturnsIosUdid() = runTest {
+        val s = startedWithIos()
+        val phone = Wants(setOf(Category.PHONE), Platform.IOS)
+        s.acquire(h2, "/w", phone, 1.minutes) {}
+        assertEquals(AcquireResult.Granted("p-usb", "Pixel 8", Platform.ANDROID), s.acquire(h1, "/w", setOf(Category.PHONE), 1.minutes) {})
+        val r = async { s.acquire(h1, "/w", phone, 5.minutes) {} }
+        s.snapshot.first { h1 in it.queue }
+        s.release(h2)
+        assertEquals(AcquireResult.Granted(iphone.hardwareSerial, "iPhone 16 Pro · iOS 18.2", Platform.IOS), r.await())
+        assertEquals(h1, s.snapshot.value.holds[DeviceKey("P")])
+    }
+
+    @Test fun releaseIosKeepsAndroid() = runTest {
+        val s = startedWithIos()
+        s.acquire(h1, "/w", Wants(setOf(Category.PHONE), Platform.ANDROID), 1.minutes) {}
+        s.acquire(h1, "/w", Wants(setOf(Category.PHONE), Platform.IOS), 1.minutes) {}
+        assertEquals(2, s.holdings(h1).size)
+        s.release(h1, Platform.IOS)
+        assertEquals(listOf(Platform.ANDROID), s.holdings(h1).map { it.platform })
+        s.release(h1)
+        assertTrue(s.holdings(h1).isEmpty())
+    }
+
+    /** --android releases only a queue entry that could be answered on Android; an iOS-pinned one stays. */
+    @Test fun releaseAndroidKeepsIosQueueEntry() = runTest {
+        val s = startedWithIos()
+        val phone = Wants(setOf(Category.PHONE), Platform.IOS)
+        s.acquire(h2, "/w", phone, 1.minutes) {}
+        s.acquire(h1, "/w", setOf(Category.PHONE), 1.minutes) {}
+        assertEquals(AcquireResult.TimedOut(1), s.acquire(h1, "/w", phone, 1.seconds) {})
+        s.release(h1, Platform.ANDROID)
+        assertTrue(h1 in s.snapshot.value.queue)
+        assertTrue(s.holdings(h1).isEmpty())
+        s.release(h1, Platform.IOS)
+        assertTrue(h1 !in s.snapshot.value.queue)
+    }
+
+    @Test fun acquireRealFlagSetsVirtualFalse() = runTest {
+        val s = startedWithIos()
+        // Only simulators on iOS: --real waits instead of taking one.
+        assertEquals(AcquireResult.TimedOut(1), s.acquire(h1, "/w", Wants(setOf(Category.PHONE), Platform.IOS, virtual = false), 1.seconds) {})
+        assertTrue(s.holdings(h1).isEmpty())
+        assertEquals(Wants(setOf(Category.PHONE), Platform.IOS, false), assertIs<HolderStatus.Queued>(s.status(h1)).wants)
     }
 
     /** Polls a Room-backed condition; Room answers on real threads. */

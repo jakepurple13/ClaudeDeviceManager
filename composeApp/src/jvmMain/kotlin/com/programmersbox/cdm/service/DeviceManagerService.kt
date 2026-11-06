@@ -1,5 +1,6 @@
 package com.programmersbox.cdm.service
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.Allocator
 import com.programmersbox.cdm.core.allocator.AllocatorEvent
@@ -13,6 +14,7 @@ import com.programmersbox.cdm.core.classify.CommandKind
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.data.ActivityRepository
 import com.programmersbox.cdm.data.AppSettings
 import com.programmersbox.cdm.data.PinnedPermission
@@ -20,8 +22,9 @@ import com.programmersbox.cdm.data.BlockedRepository
 import com.programmersbox.cdm.data.DeviceConfigRepository
 import com.programmersbox.cdm.data.ProjectRepository
 import com.programmersbox.cdm.data.SettingsRepository
-import com.programmersbox.cdm.devices.DeviceTracker
+import com.programmersbox.cdm.devices.DeviceSource
 import com.programmersbox.cdm.devices.TrackedDevice
+import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Clock
@@ -55,7 +58,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  * Every allocator call, [HookDecider] call included (Ruling C), runs inside [locked].
  */
 class DeviceManagerService(
-    private val tracker: DeviceTracker,
+    private val tracker: DeviceSource,
     private val deviceConfigs: DeviceConfigRepository,
     private val projects: ProjectRepository,
     private val settings: SettingsRepository,
@@ -66,6 +69,8 @@ class DeviceManagerService(
     private val scanInterval: Duration = 2.seconds,
     private val tickInterval: Duration = 5.seconds,
     private val settingsRetryDelay: Duration = 1.seconds,
+    /** The installed `ios-pin.gradle`, or null when it isn't installed (KMP iOS tests are then denied unless pinned). */
+    private val iosPinScript: () -> Path? = { null },
 ) : DeviceManager {
     private val mutex = Mutex()
     private val started = AtomicBoolean(false)
@@ -113,7 +118,7 @@ class DeviceManagerService(
     private fun newAllocator(blocked: Set<HolderId>) =
         Allocator(clock = clock, blocked = blocked, timers = { timers }, onEvent = { events.trySend(it) })
 
-    private fun newDecider() = HookDecider(allocator, { timers }) { cwd -> defaultCategories[projectKey(cwd)] ?: Category.ANY }
+    private fun newDecider() = HookDecider(allocator, { timers }, iosPinScript) { cwd -> defaultCategories[projectKey(cwd)] ?: Category.ANY }
 
     /** Ruling X: project defaults and Projects rows key on the project root, not the (cd-following) hook cwd. */
     private fun projectKey(cwd: String): String =
@@ -180,19 +185,24 @@ class DeviceManagerService(
     override suspend fun preToolUse(input: HookInput): HookDecision {
         val holder = input.holder
         if (input.toolName == "Bash" && input.command != null) prefetchDefaultCategory(input.cwd)
-        val (reply, device) = locked {
+        val (reply, devices) = locked {
             val r = when (input.toolName) {
                 "Bash" -> input.command?.let { decider.onBash(holder, input.cwd, it) } ?: HookReply.NoOpinion
                 in EDIT_TOOLS -> decider.onEdit(holder)
                 else -> HookReply.NoOpinion
             }
-            r to (allocator.statusOf(holder) as? HolderStatus.Holding)?.device
+            val touched = input.command?.takeIf { input.toolName == "Bash" && r !is HookReply.Deny }
+                ?.let(::devicePlatforms).orEmpty()
+            // Activity resets only the touched platform's hold; the log names that platform's held device.
+            touched.forEach { allocator.recordDeviceActivity(holder, it) }
+            val holds = allocator.holdingsOf(holder)
+            r to touched.mapNotNull { p -> holds.firstOrNull { it.platform == p }?.device }
         }
-        val deviceCommand = input.command?.takeIf {
-            input.toolName == "Bash" && reply !is HookReply.Deny && device != null && isDeviceCommand(it)
-        }
+        val deviceCommand = input.command?.takeIf { devices.isNotEmpty() }
         book.touch(holder, input.cwd, input.agentType, deviceCommand)
-        if (deviceCommand != null && device != null) safely("record command") { activity.recordCommand(holder, device, deviceCommand, clock()) }
+        if (deviceCommand != null) {
+            devices.forEach { d -> safely("record command") { activity.recordCommand(holder, d, deviceCommand, clock()) } }
+        }
         // After the lock is released: reads settings files.
         val permission = (reply as? HookReply.Rewrite)?.let {
             pinnedOverride(it.kind, mirror.decide(it.original, it.kind, input.cwd, input.permissionMode))
@@ -216,20 +226,17 @@ class DeviceManagerService(
     override suspend fun acquire(
         holder: HolderId,
         cwd: String,
-        wants: Set<Category>,
+        wants: Wants,
         timeout: Duration,
         onPosition: suspend (Int) -> Unit,
     ): AcquireResult {
         book.touch(holder, cwd, null)
-        val w = wants.ifEmpty { prefetchDefaultCategory(cwd).members() }
+        val w = if (wants.categories.isEmpty()) wants.copy(categories = prefetchDefaultCategory(cwd).members()) else wants
         val first = locked {
-            // Ruling W: asking for a category the current device doesn't fit gives that device back first.
-            (allocator.statusOf(holder) as? HolderStatus.Holding)?.let { st ->
-                val cat = allocator.snapshot().devices.firstOrNull { it.key == st.device }?.category
-                if (Category.ANY !in w && cat !in w) allocator.release(holder, ReleaseReason.SELF_RELEASE)
-            }
+            releaseUnfitting(holder, w)
             when (val g = allocator.tryGrab(holder, w)) {
-                is GrabResult.Granted -> AcquireResult.Granted(g.serial, g.device.name)
+                is GrabResult.Granted -> allocator.holdingsOf(holder).firstOrNull { it.platform == g.device.platform }
+                    ?.let { grantedFor(holder, it) } ?: AcquireResult.Granted(g.serial, g.device.name, g.device.platform)
                 GrabResult.Blocked -> AcquireResult.Blocked
                 else -> {
                     allocator.enqueue(holder, w)
@@ -253,31 +260,69 @@ class DeviceManagerService(
                     } else true
                 }
             }
-            return locked { resultFor(holder) }
+            return locked { resultFor(holder, w) }
         } finally {
             withContext(NonCancellable) { locked { allocator.detachWaiter(holder) } }
         }
     }
 
-    private fun resultFor(holder: HolderId): AcquireResult = when (val st = allocator.statusOf(holder)) {
-        is HolderStatus.Holding -> {
-            val d = allocator.snapshot().devices.firstOrNull { it.key == st.device }
-            AcquireResult.Granted(allocator.serialFor(holder) ?: st.device.hardwareSerial, d?.name ?: st.device.hardwareSerial)
+    /**
+     * Ruling W, per platform: asking for something a current hold doesn't fit gives that hold back first. A flagged
+     * request looks only at its platform's hold. An unflagged one gives back every hold when none fits, so the request
+     * can be served on the same platform (an unflagged grab never adds a second platform).
+     */
+    private fun releaseUnfitting(holder: HolderId, w: Wants) {
+        val holds = allocator.holdingsOf(holder)
+        if (w.platform != null) {
+            val h = holds.firstOrNull { it.platform == w.platform } ?: return
+            if (!fits(h, w)) allocator.release(holder, ReleaseReason.SELF_RELEASE, h.platform)
+        } else if (holds.isNotEmpty() && holds.none { fits(it, w) }) {
+            allocator.release(holder, ReleaseReason.SELF_RELEASE)
         }
-        HolderStatus.Blocked -> AcquireResult.Blocked
-        is HolderStatus.Queued -> AcquireResult.TimedOut(st.position)
-        else -> AcquireResult.Removed
     }
 
-    override suspend fun release(holder: HolderId) {
+    /** A pair hold fits when either side does, as in [com.programmersbox.cdm.core.allocator.Allocator.tryGrab]. */
+    private fun fits(h: HolderStatus.Holding, w: Wants): Boolean {
+        val devices = allocator.snapshot().devices
+        return listOfNotNull(h.device, h.partner).any { k -> devices.firstOrNull { it.key == k }?.let(w::fits) == true }
+    }
+
+    /** The answer once waiting stops: the hold that fits [w] (not just the holder's first hold), or why there is none. */
+    private fun resultFor(holder: HolderId, w: Wants): AcquireResult = when (val st = allocator.statusOf(holder)) {
+        HolderStatus.Blocked -> AcquireResult.Blocked
+        is HolderStatus.Queued -> AcquireResult.TimedOut(st.position)
+        else -> {
+            val holds = allocator.holdingsOf(holder)
+            val h = holds.firstOrNull { fits(it, w) } ?: holds.firstOrNull { w.platform == null || it.platform == w.platform }
+            h?.let { grantedFor(holder, it) } ?: AcquireResult.Removed
+        }
+    }
+
+    private fun grantedFor(holder: HolderId, h: HolderStatus.Holding): AcquireResult.Granted {
+        val devices = allocator.snapshot().devices
+        val d = devices.firstOrNull { it.key == h.device }
+        val pair = h.partner?.let { p -> devices.firstOrNull { it.key == p }?.connectedSerials?.firstOrNull() ?: p.hardwareSerial }
+        return AcquireResult.Granted(
+            allocator.serialFor(holder, h.platform) ?: h.device.hardwareSerial,
+            d?.name ?: h.device.hardwareSerial,
+            h.platform,
+            pair,
+        )
+    }
+
+    override suspend fun release(holder: HolderId, platform: Platform?) {
         locked {
-            allocator.removeFromQueue(holder)
-            allocator.release(holder, ReleaseReason.SELF_RELEASE)
+            // A queue entry goes too unless it is pinned to the platform that stays held.
+            val queuedFor = (allocator.statusOf(holder) as? HolderStatus.Queued)?.wants?.platform
+            if (platform == null || queuedFor == null || queuedFor == platform) allocator.removeFromQueue(holder)
+            allocator.release(holder, ReleaseReason.SELF_RELEASE, platform)
         }
         book.touch(holder, null, null)
     }
 
     override suspend fun status(holder: HolderId): HolderStatus = locked { allocator.statusOf(holder) }
+
+    override suspend fun holdings(holder: HolderId): List<HolderStatus.Holding> = locked { allocator.holdingsOf(holder) }
 
     // ---- UI actions ----
 
@@ -345,6 +390,9 @@ class DeviceManagerService(
                     category = c?.categoryOverride ?: t.detectedCategory,
                     dontUse = c?.dontUse ?: false,
                     connectedSerials = t.serials,
+                    platform = t.platform,
+                    virtual = t.virtual,
+                    partner = t.partner,
                 )
             }
             // Held devices that went away stay listed (offline · held) so the UI and deny messages can name them.
@@ -373,8 +421,10 @@ class DeviceManagerService(
         }
     }
 
-    private fun isDeviceCommand(command: String) = CommandClassifier.classifyAll(command)
-        .any { it is CommandKind.Device || it == CommandKind.GradleNonDevice }
+    /** Platforms whose held device the command uses: [CommandClassifier.platformsOf], plus Android for a non-device Gradle run. */
+    private fun devicePlatforms(command: String): Set<Platform> =
+        CommandClassifier.platformsOf(command) +
+            (if (CommandClassifier.classifyAll(command).any { it == CommandKind.GradleNonDevice }) setOf(Platform.ANDROID) else emptySet())
 
     /**
      * The user's Pinned commands setting over the mirror's answer. ALWAYS_ASK leaves CDM-only rewrites to the

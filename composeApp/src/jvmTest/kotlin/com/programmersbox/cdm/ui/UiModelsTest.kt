@@ -1,5 +1,6 @@
 package com.programmersbox.cdm.ui
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
 import com.programmersbox.cdm.core.allocator.HolderStatus
@@ -7,6 +8,7 @@ import com.programmersbox.cdm.core.allocator.Timers
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.devices.TrackedDevice
 import com.programmersbox.cdm.service.HolderInfo
 import kotlin.test.Test
@@ -101,7 +103,7 @@ class UiModelsTest {
             queue = listOf(h1),
             statuses = mapOf(
                 h2 to HolderStatus.Holding(w, now - 4.minutes, now, editing = true),
-                h1 to HolderStatus.Queued(1, setOf(Category.WATCH)),
+                h1 to HolderStatus.Queued(1, Wants(setOf(Category.WATCH))),
             ),
         )
         val info = mapOf(h2 to HolderInfo(h2, "/src/watch-launcher", null, null, now, ended = false))
@@ -120,6 +122,138 @@ class UiModelsTest {
         assertEquals(
             "gabb-messenger #a41f · general-purpose",
             holderLabel(HolderId("a41f9c…", "agent-1"), "/src/gabb-messenger", "general-purpose"),
+        )
+    }
+
+    private val iph = DeviceKey("UDID-IPHONE")
+    private val ipad = DeviceKey("UDID-IPAD")
+
+    private fun iosDev(k: DeviceKey, name: String, c: Category, virtual: Boolean = true, partner: DeviceKey? = null) =
+        AllocDevice(k, name, c, false, listOf(k.hardwareSerial), Platform.IOS, virtual, partner)
+
+    private fun iosTracked(k: DeviceKey, c: Category, virtual: Boolean = true) =
+        TrackedDevice(k, listOf(k.hardwareSerial), "m", "18.2", "simulator", c, Platform.IOS, virtual)
+
+    private fun emptySnap(devices: List<AllocDevice>) = AllocatorSnapshot(devices, emptyMap(), emptyList(), emptyMap())
+
+    @Test
+    fun deviceRowsCarryPlatformAndVirtual() {
+        val snap = emptySnap(listOf(dev(p, "Pixel 8", Category.PHONE), iosDev(iph, "iPhone 16 · iOS 18.2", Category.PHONE)))
+        val rows = deviceRows(world(snap, listOf(tracked(p, Category.PHONE), iosTracked(iph, Category.PHONE))))
+        assertEquals(listOf(Platform.ANDROID, Platform.IOS), rows.map { it.platform })
+        assertEquals(listOf(false, true), rows.map { it.virtual })
+        assertEquals(listOf("15", "18.2"), rows.map { it.osVersion })
+    }
+
+    @Test
+    fun rowsGroupedAndroidThenIos() {
+        val snap = emptySnap(listOf(iosDev(iph, "iPhone", Category.PHONE), dev(p, "Pixel 8", Category.PHONE), iosDev(ipad, "iPad", Category.TABLET), dev(w, "Watch", Category.WATCH)))
+        val rows = deviceRows(world(snap, listOf(tracked(p, Category.PHONE), tracked(w, Category.WATCH), iosTracked(iph, Category.PHONE), iosTracked(ipad, Category.TABLET))))
+        assertEquals(listOf("Pixel 8", "Watch", "iPhone", "iPad"), rows.map { it.name })
+    }
+
+    @Test
+    fun pairedWithNameResolved() {
+        val snap = emptySnap(listOf(iosDev(iph, "iPhone 16", Category.PHONE, partner = w), dev(w, "Pixel Watch", Category.WATCH)))
+        val rows = deviceRows(world(snap, listOf(iosTracked(iph, Category.PHONE), tracked(w, Category.WATCH))))
+        assertEquals("Pixel Watch", rows.single { it.key == iph }.pairedWith)
+        assertEquals(null, rows.single { it.key == w }.pairedWith)
+    }
+
+    @Test
+    fun queueRowShowsLimits() {
+        val h = HolderId("a41f")
+        val snap = AllocatorSnapshot(
+            emptyList(), emptyMap(), listOf(h),
+            mapOf(h to HolderStatus.Queued(1, Wants(setOf(Category.PHONE), Platform.IOS, virtual = false))),
+        )
+        val row = queueRows(world(snap, emptyList())).single()
+        assertEquals(listOf("phone", "iOS", "real only"), row.chipLabels)
+    }
+
+    @Test
+    fun waitReasonNoVirtualWatch() {
+        val h = HolderId("a41f")
+        val snap = AllocatorSnapshot(
+            listOf(dev(w, "Gabb Watch 3", Category.WATCH)), emptyMap(), listOf(h),
+            mapOf(h to HolderStatus.Queued(1, Wants(setOf(Category.WATCH), Platform.ANDROID, virtual = true))),
+        )
+        val reasons = waitReasons(h, world(snap, listOf(tracked(w, Category.WATCH))))
+        assertEquals(listOf("no Wear OS emulator running"), reasons.map { it.reason })
+    }
+
+    @Test
+    fun kindLabels() {
+        assertEquals("Real", kindLabel(Platform.ANDROID, virtual = false))
+        assertEquals("Real", kindLabel(Platform.IOS, virtual = false))
+        assertEquals("Emulator", kindLabel(Platform.ANDROID, virtual = true))
+        assertEquals("Simulator", kindLabel(Platform.IOS, virtual = true))
+    }
+
+    @Test
+    fun noMatchReasonWording() {
+        fun r(c: Set<Category>, platform: Platform? = null, virtual: Boolean? = null) = noMatchReason(Wants(c, platform, virtual))
+        assertEquals("no iPhone real device connected", r(setOf(Category.PHONE), Platform.IOS, false))
+        assertEquals("no iPad simulator running", r(setOf(Category.TABLET), Platform.IOS, true))
+        assertEquals("no Apple Watch simulator running", r(setOf(Category.WATCH), Platform.IOS, true))
+        assertEquals("no Wear OS emulator running", r(setOf(Category.WATCH), Platform.ANDROID, true))
+        assertEquals("no watch emulator or simulator running", r(setOf(Category.WATCH), virtual = true))
+        assertEquals("no Android phone/tablet real device connected", r(setOf(Category.PHONE, Category.TABLET), Platform.ANDROID, false))
+        assertEquals("no iOS device connected", r(setOf(Category.ANY), Platform.IOS))
+    }
+
+    // ---- final whole-branch review: per-hold timers ----
+
+    /** One holder, two holds with different activity: each device shows its own hold's timer. */
+    private fun twoHolds(): Pair<HolderId, AllocatorSnapshot> {
+        val h = HolderId("a41f9c00")
+        val android = HolderStatus.Holding(p, now - 10.minutes, now - 1.minutes, editing = false)
+        val ios = HolderStatus.Holding(iph, now - 20.minutes, now - 7.minutes, editing = false, platform = Platform.IOS)
+        return h to AllocatorSnapshot(
+            devices = listOf(dev(p, "Pixel 8", Category.PHONE), iosDev(iph, "iPhone 16", Category.PHONE)),
+            holds = mapOf(p to h, iph to h),
+            queue = emptyList(),
+            statuses = mapOf(h to android),
+            holdings = mapOf(h to listOf(android, ios)),
+        )
+    }
+
+    @Test
+    fun deviceRowsUseEachHoldsTimer() {
+        val (_, snap) = twoHolds()
+        val rows = deviceRows(world(snap, listOf(tracked(p, Category.PHONE), iosTracked(iph, Category.PHONE))))
+        val pixel = rows.single { it.key == p }
+        val iphone = rows.single { it.key == iph }
+        assertEquals("idle 1m", pixel.timerLabel)
+        assertEquals(10.minutes, pixel.heldFor)
+        assertEquals("idle 7m", iphone.timerLabel)
+        assertEquals(20.minutes, iphone.heldFor)
+    }
+
+    @Test
+    fun holdingOfMatchesDeviceOrPartner() {
+        val (h, snap) = twoHolds()
+        val w = world(snap, emptyList())
+        assertEquals(iph, w.holdingOf(h, iph)?.device)
+        assertEquals(p, w.holdingOf(h, p)?.device)
+        assertEquals(null, w.holdingOf(h, g))
+        val watch = DeviceKey("UDID-WATCH")
+        val pair = HolderStatus.Holding(iph, now, now, editing = false, platform = Platform.IOS, partner = watch)
+        val paired = world(snap.copy(holdings = mapOf(h to listOf(pair))), emptyList())
+        assertEquals(iph, paired.holdingOf(h, watch)?.device)
+    }
+
+    @Test
+    fun waitReasonUsesTheHoldOfThatDevice() {
+        val (_, snap) = twoHolds()
+        val q = HolderId("77c20000")
+        val queued = snap.copy(
+            queue = listOf(q),
+            statuses = snap.statuses + (q to HolderStatus.Queued(1, Wants(setOf(Category.PHONE), Platform.IOS))),
+        )
+        assertEquals(
+            listOf(WaitReason("iPhone 16", "held by session #a41f (idle 7m, releases in ≤8m)")),
+            waitReasons(q, world(queued, emptyList())),
         )
     }
 }

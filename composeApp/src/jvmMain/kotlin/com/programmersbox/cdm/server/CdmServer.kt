@@ -1,8 +1,10 @@
 package com.programmersbox.cdm.server
 
 import com.programmersbox.cdm.core.allocator.HolderStatus
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.service.AcquireResult
 import com.programmersbox.cdm.service.DeviceManager
 import io.ktor.http.ContentType
@@ -109,8 +111,16 @@ fun Application.cdmModule(manager: DeviceManager, heartbeat: Duration = 5.second
         post("/cdm/acquire") {
             val holder = call.holder() ?: return@post call.respondText("missing holder\n", status = HttpStatusCode.BadRequest)
             val cwd = call.request.queryParameters["cwd"].orEmpty()
-            val wants = call.request.queryParameters["category"].orEmpty()
+            val categories = call.request.queryParameters["category"].orEmpty()
                 .split(',').map { it.trim() }.filter { it.isNotEmpty() }.map { Category(it) }.toSet()
+            val platform = call.platform().getOrElse { return@post call.respondText("bad platform\n", status = HttpStatusCode.BadRequest) }
+            val virtual = when (call.request.queryParameters["virtual"].orEmpty()) {
+                "" -> null
+                "true" -> true
+                "false" -> false
+                else -> return@post call.respondText("bad virtual\n", status = HttpStatusCode.BadRequest)
+            }
+            val wants = Wants(categories, platform, virtual)
             val timeout = (call.request.queryParameters["timeoutSec"]?.toLongOrNull() ?: DEFAULT_ACQUIRE_TIMEOUT_SEC).seconds
             call.respondTextWriter(ContentType.Text.Plain) {
                 val out = Mutex()
@@ -127,7 +137,7 @@ fun Application.cdmModule(manager: DeviceManager, heartbeat: Duration = 5.second
                     val r = manager.acquire(holder, cwd, wants, timeout) { line("QUEUED $it") }
                     beat.cancel()
                     when (r) {
-                        is AcquireResult.Granted -> line("GRANTED ${r.serial} ${r.name}")
+                        is AcquireResult.Granted -> line("GRANTED ${r.platform.wire} ${r.serial} ${r.name}")
                         is AcquireResult.TimedOut -> line("TIMEOUT ${r.position}")
                         AcquireResult.Blocked -> line("BLOCKED")
                         AcquireResult.Removed -> line("REMOVED")
@@ -137,24 +147,38 @@ fun Application.cdmModule(manager: DeviceManager, heartbeat: Duration = 5.second
         }
         post("/cdm/release") {
             val holder = call.holder() ?: return@post call.respondText("missing holder\n", status = HttpStatusCode.BadRequest)
-            val had = manager.status(holder).let { it is HolderStatus.Holding || it is HolderStatus.Queued }
-            manager.release(holder)
+            val platform = call.platform().getOrElse { return@post call.respondText("bad platform\n", status = HttpStatusCode.BadRequest) }
+            val queuedFor = (manager.status(holder) as? HolderStatus.Queued)?.wants
+            val had = manager.holdings(holder).any { platform == null || it.platform == platform } ||
+                (queuedFor != null && (platform == null || queuedFor.platform == null || queuedFor.platform == platform))
+            manager.release(holder, platform)
             call.respondText(if (had) "RELEASED\n" else "NONE\n")
         }
         get("/cdm/status") {
             val holder = call.holder() ?: return@get call.respondText("missing holder\n", status = HttpStatusCode.BadRequest)
-            val line = when (val s = manager.status(holder)) {
-                is HolderStatus.Holding -> {
-                    val d = manager.snapshot.value.devices.firstOrNull { it.key == s.device }
-                    "HOLDING ${d?.connectedSerials?.firstOrNull() ?: s.device.hardwareSerial} ${d?.name ?: s.device.hardwareSerial}"
-                }
-                is HolderStatus.Queued -> "QUEUED ${s.position}"
-                HolderStatus.Blocked -> "BLOCKED"
-                else -> "NONE"
+            val status = manager.status(holder)
+            val lines = if (status == HolderStatus.Blocked) listOf("BLOCKED") else {
+                // One line per hold, then the queue spot: a holder can hold one platform while queued for the other.
+                val devices = manager.snapshot.value.devices
+                manager.holdings(holder).map { h ->
+                    val d = devices.firstOrNull { it.key == h.device }
+                    "HOLDING ${h.platform.wire} ${d?.connectedSerials?.firstOrNull() ?: h.device.hardwareSerial} ${d?.name ?: h.device.hardwareSerial}"
+                } + listOfNotNull((status as? HolderStatus.Queued)?.let { "QUEUED ${it.position}" })
             }
-            call.respondText(line + "\n")
+            call.respondText(lines.ifEmpty { listOf("NONE") }.joinToString("") { it + "\n" })
         }
     }
+}
+
+/** The platform's name in the `cdm` wire protocol: `android` or `ios`. */
+private val Platform.wire: String get() = name.lowercase()
+
+/** The `platform` query parameter: absent or empty is null; anything but `android` or `ios` fails. */
+private fun ApplicationCall.platform(): Result<Platform?> {
+    val raw = request.queryParameters["platform"].orEmpty()
+    if (raw.isEmpty()) return Result.success(null)
+    return Platform.entries.firstOrNull { it.wire == raw }?.let { Result.success(it) }
+        ?: Result.failure(IllegalArgumentException("bad platform $raw"))
 }
 
 private fun ApplicationCall.holder(): HolderId? =

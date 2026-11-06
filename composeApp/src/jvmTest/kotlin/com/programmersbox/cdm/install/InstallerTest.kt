@@ -92,6 +92,17 @@ class InstallerTest {
     }
 
     @Test
+    fun claudeMdMentionsCdmIosUdid() {
+        val text = Installer(tmpHome()).claudeMdSnippet
+        for (needle in listOf(
+            "xcodebuild", "simctl", "devicectl", "maestro", "KMP iOS",
+            "-destination id=\$CDM_IOS_UDID", "\$CDM_IOS_UDID", "maestro --device \$CDM_IOS_UDID",
+            "--ios", "--android", "--real", "--virtual", "tablet", "cdm release",
+            "Whenever you know the platform, pass `--android` or `--ios`",
+        )) assertTrue(needle in text, "missing \"$needle\" in:\n$text")
+    }
+
+    @Test
     fun appendSnippetIdempotent() {
         val home = tmpHome()
         home.resolve(".claude").createDirectories()
@@ -394,6 +405,46 @@ class InstallerTest {
         assertEquals(older, link.readText())
         assertTrue(PosixFilePermission.OWNER_EXECUTE in Files.getPosixFilePermissions(p))
         assertEquals(listOf("cdm"), Files.list(p.parent).map { it.fileName.toString() }.toList())
+    }
+
+    @Test
+    fun installCdmAlsoInstallsIosPinScript() {
+        val home = tmpHome()
+        val inst = Installer(home)
+        assertTrue(!inst.iosPinInstalled())
+        inst.installCdm()
+        val pin = home.resolve(".claude-device-manager/ios-pin.gradle")
+        assertEquals(pin, inst.iosPinPath)
+        assertTrue(inst.iosPinInstalled())
+        assertTrue(pin.readText().contains("CDM_IOS_UDID"))
+        assertTrue(pin.readText().contains("KotlinNativeSimulatorTest"))
+        // An older copy is replaced.
+        pin.writeText(pin.readText() + "\n// older build\n")
+        assertTrue(!inst.iosPinInstalled())
+        inst.installCdm()
+        assertTrue(inst.iosPinInstalled())
+        assertEquals(listOf("ios-pin.gradle"), Files.list(pin.parent).map { it.fileName.toString() }.filter { !it.endsWith(".json") }.toList())
+    }
+
+    @Test
+    fun uninstallCdmRemovesOnlyOurIosPinScript() {
+        val home = tmpHome()
+        val inst = Installer(home)
+        inst.installCdm()
+        val pin = inst.iosPinPath
+        inst.uninstallCdm()
+        assertTrue(!pin.exists())
+        assertTrue(!inst.iosPinInstalled())
+        inst.uninstallCdm() // missing file: no-op
+        // A file at that path that isn't ours is kept.
+        pin.writeText("// someone else's script\n")
+        inst.uninstallCdm()
+        assertEquals("// someone else's script\n", pin.readText())
+        // An older copy of ours is still ours.
+        inst.installCdm()
+        pin.writeText(pin.readText() + "\n// older build\n")
+        inst.uninstallCdm()
+        assertTrue(!pin.exists())
     }
 
     @Test

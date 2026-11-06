@@ -10,6 +10,7 @@ import com.programmersbox.cdm.ui.UiSources
 import com.programmersbox.cdm.ui.World
 import com.programmersbox.cdm.ui.deviceName
 import com.programmersbox.cdm.ui.holderLabel
+import com.programmersbox.cdm.ui.holdingsOf
 import com.programmersbox.cdm.ui.short
 import com.programmersbox.cdm.ui.timerLabel
 import kotlin.time.Instant
@@ -93,10 +94,13 @@ fun sessionGroups(w: World): List<SessionGroup> {
 private fun holderRow(h: HolderId, w: World): SessionHolderRow {
     val info = w.info[h]
     val st = w.snapshot.statuses[h]
+    // Up to two holds (one per platform), each with its own timer, joined by " + ".
+    val held = w.holdingsOf(h).take(2).joinToString(" + ") { "${w.deviceName(it.device)} · ${w.timerLabel(it)}" }
     val (state, detail) = when {
         st is HolderStatus.Blocked -> HolderState.BLOCKED to "blocked · cdm acquire refuses until unblocked"
-        st is HolderStatus.Holding -> HolderState.HOLDING to "${w.deviceName(st.device)} · ${w.timerLabel(st)}"
-        st is HolderStatus.Queued -> HolderState.WAITING to "#${st.position} in queue"
+        st is HolderStatus.Holding -> HolderState.HOLDING to held
+        // Queued for one platform while holding the other: the held device and its timer still show.
+        st is HolderStatus.Queued -> HolderState.WAITING to listOf("#${st.position} in queue", held).filter { it.isNotEmpty() }.joinToString(" · ")
         info?.ended == true -> HolderState.ENDED to "ended ${short(w.now - info.lastSeen)} ago"
         st is HolderStatus.Released -> HolderState.IDLE to "idle · ${released(st.reason)}"
         else -> HolderState.IDLE to (info?.let { "idle · seen ${short(w.now - it.lastSeen)} ago" } ?: "idle")

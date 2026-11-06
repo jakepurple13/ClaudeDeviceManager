@@ -30,6 +30,7 @@ import kotlinx.coroutines.withTimeout
 class RecordingManager(
     override val snapshot: MutableStateFlow<AllocatorSnapshot>,
     override val holderInfo: MutableStateFlow<Map<HolderId, HolderInfo>> = MutableStateFlow(emptyMap()),
+    override val tracked: MutableStateFlow<List<com.programmersbox.cdm.devices.TrackedDevice>> = MutableStateFlow(emptyList()),
 ) : FakeManager() {
     val moves = mutableListOf<Pair<HolderId, Int>>()
     val dontUseCalls = mutableListOf<Triple<DeviceKey, Boolean, Boolean>>()

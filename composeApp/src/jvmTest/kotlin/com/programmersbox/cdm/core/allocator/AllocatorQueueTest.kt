@@ -3,6 +3,7 @@ package com.programmersbox.cdm.core.allocator
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -22,8 +23,8 @@ class AllocatorQueueTest {
     private fun alloc(blocked: Set<HolderId> = emptySet()) =
         Allocator(clock = { now }, blocked = blocked, onEvent = { events += it }).also { it.setDevices(listOf(p, w)) }
 
-    private val watch = setOf(Category.WATCH)
-    private val phone = setOf(Category.PHONE)
+    private val watch = Wants(setOf(Category.WATCH))
+    private val phone = Wants(setOf(Category.PHONE))
 
     @Test fun grantsFreeDeviceOfWantedCategory() {
         val a = alloc()
@@ -33,7 +34,7 @@ class AllocatorQueueTest {
     }
 
     @Test fun anyMatchesAllCategories() {
-        assertIs<GrabResult.Granted>(alloc().tryGrab(h1, setOf(Category.ANY)))
+        assertIs<GrabResult.Granted>(alloc().tryGrab(h1, Wants.ANY))
     }
 
     @Test fun grabIsIdempotentForHolder() {
@@ -116,9 +117,9 @@ class AllocatorQueueTest {
     @Test fun serialForNullWhenOffline() {
         val a = alloc()
         a.tryGrab(h1, watch)
-        assertEquals("w-usb", a.serialFor(h1))
+        assertEquals("w-usb", a.serialFor(h1, Platform.ANDROID))
         a.setDevices(listOf(p))
-        assertEquals(null, a.serialFor(h1))
+        assertEquals(null, a.serialFor(h1, Platform.ANDROID))
         assertEquals(h1, a.snapshot().holds[w.key])
     }
 

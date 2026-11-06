@@ -1,6 +1,8 @@
 package com.programmersbox.cdm.server
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.model.Category
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.core.model.HolderId
 import com.programmersbox.cdm.service.AcquireResult
 import com.programmersbox.cdm.service.Decision
@@ -125,17 +127,17 @@ class CdmServerTest {
             acquireImpl = { _, _, _, _, onPos ->
                 onPos(1)
                 gate.await()
-                AcquireResult.Granted("W-SERIAL", "Watch 4")
+                AcquireResult.Granted("W-SERIAL", "Watch 4", Platform.ANDROID)
             }
         }
         app(m) {
             coroutineScope {
                 val body = async { client.post("/cdm/acquire?holder=s:main&cwd=/x&category=watch&timeoutSec=5").bodyAsText() }
                 gate.complete(Unit)
-                assertEquals("QUEUED 1\nGRANTED W-SERIAL Watch 4\n", body.await())
+                assertEquals("QUEUED 1\nGRANTED android W-SERIAL Watch 4\n", body.await())
             }
         }
-        assertEquals(setOf(Category.WATCH), m.lastWants)
+        assertEquals(Wants(setOf(Category.WATCH)), m.lastWants)
     }
 
     @Test
@@ -151,7 +153,7 @@ class CdmServerTest {
             val body = client.post("/cdm/acquire?holder=s:main&cwd=/x&category=phone,watch&timeoutSec=1").bodyAsText()
             assertEquals("QUEUED 1\nTIMEOUT 1", body.trim())
         }
-        assertEquals(setOf(Category.PHONE, Category.WATCH), m.lastWants)
+        assertEquals(Wants(setOf(Category.PHONE, Category.WATCH)), m.lastWants)
     }
 
     @Test
@@ -160,7 +162,7 @@ class CdmServerTest {
         app(m) {
             assertEquals("BLOCKED", client.post("/cdm/acquire?holder=s:main&cwd=/x").bodyAsText().trim())
         }
-        assertEquals(emptySet(), m.lastWants)
+        assertEquals(Wants(emptySet()), m.lastWants)
     }
 
     @Test
@@ -168,7 +170,7 @@ class CdmServerTest {
         val m = FakeManager()
         app(m) {
             assertEquals("NONE", client.post("/cdm/release?holder=s:main").bodyAsText().trim())
-            m.statusImpl = { com.programmersbox.cdm.core.allocator.HolderStatus.Queued(2, setOf(Category.ANY)) }
+            m.statusImpl = { com.programmersbox.cdm.core.allocator.HolderStatus.Queued(2, com.programmersbox.cdm.core.allocator.Wants.ANY) }
             assertEquals("RELEASED", client.post("/cdm/release?holder=s:main").bodyAsText().trim())
             assertEquals("QUEUED 2", client.get("/cdm/status?holder=s:main").bodyAsText().trim())
             m.statusImpl = { com.programmersbox.cdm.core.allocator.HolderStatus.Blocked }
@@ -191,6 +193,82 @@ class CdmServerTest {
         }
         assertTrue(m.inputs.isEmpty(), "service must not be called for unknown events")
     }
+
+    @Test
+    fun acquireIosFlagQueuesWithPlatform() {
+        val m = FakeManager()
+        app(m) {
+            client.post("/cdm/acquire?holder=s:main&cwd=/x&category=phone&platform=ios").bodyAsText()
+            assertEquals(Wants(setOf(Category.PHONE), Platform.IOS), m.lastWants)
+            client.post("/cdm/acquire?holder=s:main&cwd=/x&platform=android&virtual=true").bodyAsText()
+            assertEquals(Wants(emptySet(), Platform.ANDROID, virtual = true), m.lastWants)
+            val bad = client.post("/cdm/acquire?holder=s:main&cwd=/x&platform=windows")
+            assertEquals(HttpStatusCode.BadRequest, bad.status)
+        }
+    }
+
+    @Test
+    fun acquireRealFlagSetsVirtualFalse() {
+        val m = FakeManager()
+        app(m) {
+            client.post("/cdm/acquire?holder=s:main&cwd=/x&category=tablet&virtual=false").bodyAsText()
+            assertEquals(Wants(setOf(Category.TABLET), null, virtual = false), m.lastWants)
+            assertEquals(HttpStatusCode.BadRequest, client.post("/cdm/acquire?holder=s:main&cwd=/x&virtual=maybe").status)
+        }
+    }
+
+    @Test
+    fun grantedLineCarriesPlatform() {
+        val m = FakeManager().apply { acquireImpl = { _, _, _, _, _ -> AcquireResult.Granted("UDID-1", "iPhone 16 Pro", Platform.IOS, pairSerial = "W-UDID") } }
+        app(m) {
+            assertEquals("GRANTED ios UDID-1 iPhone 16 Pro\n", client.post("/cdm/acquire?holder=s:main&cwd=/x&platform=ios").bodyAsText())
+            m.acquireImpl = { _, _, _, _, _ -> AcquireResult.Granted("SER", "Pixel 8", Platform.ANDROID) }
+            assertEquals("GRANTED android SER Pixel 8\n", client.post("/cdm/acquire?holder=s:main&cwd=/x").bodyAsText())
+        }
+    }
+
+    @Test
+    fun releaseIosKeepsAndroid() {
+        val m = FakeManager()
+        val h = HolderId("s", "main")
+        app(m) {
+            m.holdingsImpl = { listOf(holding("A", Platform.ANDROID), holding("I", Platform.IOS)) }
+            assertEquals("RELEASED", client.post("/cdm/release?holder=s:main&platform=ios").bodyAsText().trim())
+            assertEquals("RELEASED", client.post("/cdm/release?holder=s:main").bodyAsText().trim())
+            // Only an Android hold: --ios has nothing to release.
+            m.holdingsImpl = { listOf(holding("A", Platform.ANDROID)) }
+            assertEquals("NONE", client.post("/cdm/release?holder=s:main&platform=ios").bodyAsText().trim())
+        }
+        assertEquals(listOf(h to Platform.IOS, h to null, h to Platform.IOS), m.released)
+    }
+
+    @Test
+    fun statusListsBothHolds() {
+        val m = object : FakeManager() {
+            override val snapshot = kotlinx.coroutines.flow.MutableStateFlow(
+                com.programmersbox.cdm.core.allocator.AllocatorSnapshot(
+                    devices = listOf(
+                        com.programmersbox.cdm.core.allocator.AllocDevice(com.programmersbox.cdm.core.model.DeviceKey("A"), "Pixel 8", Category.PHONE, false, listOf("SER-A")),
+                        com.programmersbox.cdm.core.allocator.AllocDevice(com.programmersbox.cdm.core.model.DeviceKey("I"), "iPhone 16 Pro", Category.PHONE, false, listOf("I"), Platform.IOS, virtual = true),
+                    ),
+                    holds = emptyMap(), queue = emptyList(), statuses = emptyMap(),
+                ),
+            )
+        }
+        m.holdingsImpl = { listOf(holding("A", Platform.ANDROID), holding("I", Platform.IOS)) }
+        m.statusImpl = { holding("A", Platform.ANDROID) }
+        app(m) {
+            assertEquals("HOLDING android SER-A Pixel 8\nHOLDING ios I iPhone 16 Pro\n", client.get("/cdm/status?holder=s:main").bodyAsText())
+            // Holding Android while queued for iOS: both show.
+            m.holdingsImpl = { listOf(holding("A", Platform.ANDROID)) }
+            m.statusImpl = { com.programmersbox.cdm.core.allocator.HolderStatus.Queued(1, Wants(setOf(Category.PHONE), Platform.IOS)) }
+            assertEquals("HOLDING android SER-A Pixel 8\nQUEUED 1\n", client.get("/cdm/status?holder=s:main").bodyAsText())
+        }
+    }
+
+    private fun holding(key: String, p: Platform) = com.programmersbox.cdm.core.allocator.HolderStatus.Holding(
+        com.programmersbox.cdm.core.model.DeviceKey(key), kotlin.time.Instant.fromEpochMilliseconds(0), kotlin.time.Instant.fromEpochMilliseconds(0), false, p,
+    )
 
     @Test
     fun pingAnswersCdmOk() = app(FakeManager()) {

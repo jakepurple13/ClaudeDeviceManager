@@ -71,14 +71,14 @@ private fun Waiting(state: QueueDetailState, vm: QueueDetailViewModel, onClose: 
         Muted(
             listOfNotNull(
                 state.cwd.ifBlank { null },
-                "wants: " + state.wants.joinToString(", ") { it.id }.ifBlank { "any" },
+                "wants: ${state.wantsText}",
                 state.queuedAt?.let { "queued ${clockTime(it)}" },
             ).joinToString(" · "),
         )
         CardBox(Modifier.padding(top = 8.dp, bottom = 6.dp)) {
             SectionLabel("Why it's waiting")
             AnimatedLine(state.loaded && state.reasons.isEmpty()) { Muted("No device of a category it wants is known yet.") }
-            AnimatedRows(state.reasons, key = { it.device }) { ReasonLine(it) }
+            AnimatedRows(state.reasons, key = { it.device.ifEmpty { it.reason } }) { ReasonLine(it) }
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             SmallButton("Move to top", onClick = vm::onMoveToTop, enabled = state.position > 1)
@@ -95,7 +95,7 @@ private fun Waiting(state: QueueDetailState, vm: QueueDetailViewModel, onClose: 
 @Composable
 private fun ReasonLine(r: WaitReason) {
     Text(
-        "${r.device} — ${r.reason}",
+        if (r.device.isEmpty()) r.reason else "${r.device} — ${r.reason}",
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier.padding(vertical = 1.dp).alpha(if (r.reason == "marked don't use") 0.6f else 1f),
     )

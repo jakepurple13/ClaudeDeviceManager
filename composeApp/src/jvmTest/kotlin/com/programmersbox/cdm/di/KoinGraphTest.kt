@@ -2,6 +2,7 @@ package com.programmersbox.cdm.di
 
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.devices.IosTracker
 import com.programmersbox.cdm.ui.lifecycle.LifecycleTiming
 import java.nio.file.Path
 import kotlinx.coroutines.flow.StateFlow
@@ -21,6 +22,7 @@ class KoinGraphTest {
                 extraTypes = listOf(
                     Path::class, Set::class, DeviceKey::class, HolderId::class,
                     StateFlow::class, Flow::class, Function0::class, Function1::class, LifecycleTiming::class,
+                    IosTracker::class, // null off macOS, so built inline in the DeviceSource definition
                 ),
             )
     }

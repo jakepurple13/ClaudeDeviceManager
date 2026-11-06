@@ -1,0 +1,53 @@
+{
+  "info" : {
+    "commandType" : "devicectl.list.devices",
+    "jsonVersion" : 3,
+    "outcome" : "success"
+  },
+  "result" : {
+    "devices" : [
+      {
+        "connectionProperties" : { "authenticationType" : "manualPairing", "isMobileDeviceOnly" : false, "pairingState" : "paired", "transportType" : "wired", "tunnelState" : "connected" },
+        "deviceProperties" : { "name" : "Test iPhone", "osVersionNumber" : "26.2", "developerModeStatus" : "enabled" },
+        "hardwareProperties" : { "deviceType" : "iPhone", "platform" : "iOS", "reality" : "physical", "udid" : "00008000-000000000000A001", "serialNumber" : "SERIALA001" },
+        "identifier" : "AAAAAAAA-0000-0000-0000-00000000A001",
+        "visibilityClass" : "default"
+      },
+      {
+        "connectionProperties" : { "authenticationType" : "manualPairing", "isMobileDeviceOnly" : false, "pairingState" : "paired", "transportType" : "localNetwork", "tunnelState" : "connected" },
+        "deviceProperties" : { "name" : "Test iPad", "osVersionNumber" : "18.1", "developerModeStatus" : "enabled" },
+        "hardwareProperties" : { "deviceType" : "iPad", "platform" : "iOS", "reality" : "physical", "udid" : "00008000-000000000000A002", "serialNumber" : "SERIALA002" },
+        "identifier" : "AAAAAAAA-0000-0000-0000-00000000A002",
+        "visibilityClass" : "default"
+      },
+      {
+        "connectionProperties" : { "authenticationType" : "manualPairing", "isMobileDeviceOnly" : false, "pairingState" : "paired", "tunnelState" : "connected" },
+        "deviceProperties" : { "name" : "Test Watch", "osVersionNumber" : "11.1", "developerModeStatus" : "enabled" },
+        "hardwareProperties" : { "deviceType" : "appleWatch", "platform" : "watchOS", "reality" : "physical", "udid" : "00008000-000000000000A003", "serialNumber" : "SERIALA003" },
+        "identifier" : "AAAAAAAA-0000-0000-0000-00000000A003",
+        "visibilityClass" : "default"
+      },
+      {
+        "connectionProperties" : { "authenticationType" : "manualPairing", "isMobileDeviceOnly" : false, "pairingState" : "paired", "tunnelState" : "unavailable" },
+        "deviceProperties" : { "name" : "Offline iPhone", "osVersionNumber" : "26.2", "developerModeStatus" : "enabled" },
+        "hardwareProperties" : { "deviceType" : "iPhone", "platform" : "iOS", "reality" : "physical", "udid" : "00008000-000000000000A004", "serialNumber" : "SERIALA004" },
+        "identifier" : "AAAAAAAA-0000-0000-0000-00000000A004",
+        "visibilityClass" : "default"
+      },
+      {
+        "connectionProperties" : { "authenticationType" : "manualPairing", "isMobileDeviceOnly" : false, "pairingState" : "unpaired", "tunnelState" : "connected" },
+        "deviceProperties" : { "name" : "Unpaired iPhone", "osVersionNumber" : "26.2" },
+        "hardwareProperties" : { "deviceType" : "iPhone", "platform" : "iOS", "reality" : "physical", "udid" : "00008000-000000000000A005", "serialNumber" : "SERIALA005" },
+        "identifier" : "AAAAAAAA-0000-0000-0000-00000000A005",
+        "visibilityClass" : "default"
+      },
+      {
+        "connectionProperties" : { "authenticationType" : "manualPairing", "isMobileDeviceOnly" : false, "pairingState" : "paired", "transportType" : "wired", "tunnelState" : "disconnected" },
+        "deviceProperties" : { "name" : "Idle iPhone", "osVersionNumber" : "26.1", "developerModeStatus" : "enabled" },
+        "hardwareProperties" : { "deviceType" : "iPhone", "platform" : "iOS", "reality" : "physical", "udid" : "00008000-000000000000A006", "serialNumber" : "SERIALA006" },
+        "identifier" : "AAAAAAAA-0000-0000-0000-00000000A006",
+        "visibilityClass" : "default"
+      }
+    ]
+  }
+}

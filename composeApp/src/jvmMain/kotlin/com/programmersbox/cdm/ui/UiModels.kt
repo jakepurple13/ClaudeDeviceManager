@@ -1,5 +1,6 @@
 package com.programmersbox.cdm.ui
 
+import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
 import com.programmersbox.cdm.core.allocator.HolderStatus
@@ -7,6 +8,7 @@ import com.programmersbox.cdm.core.allocator.Timers
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.data.ActivityEntry
 import com.programmersbox.cdm.data.DeviceConfig
 import com.programmersbox.cdm.devices.TrackedDevice
@@ -40,9 +42,42 @@ data class DeviceRow(
     val timerLabel: String?,
     /** Marked don't use while held: it stops being handed out once the current holder releases it. */
     val dontUsePending: Boolean = false,
+    val platform: Platform = Platform.ANDROID,
+    /** An emulator (Android) or simulator (iOS). */
+    val virtual: Boolean = false,
+    /** The OS version the device reports; blank while it isn't connected. */
+    val osVersion: String = "",
+    /** The name of the device it is paired with (watch and phone), when it has a partner. */
+    val pairedWith: String? = null,
 )
 
-data class QueueRow(val holder: HolderId, val label: String, val position: Int, val wants: Set<Category>, val waited: Duration)
+data class QueueRow(val holder: HolderId, val label: String, val position: Int, val wants: Wants, val waited: Duration) {
+    /** The chips the queue card shows, in order: categories, then platform, then real/virtual only. */
+    val chips: List<WantChip> get() = wants.chips()
+
+    /** Chip labels: `["phone", "iOS", "real only"]`. */
+    val chipLabels: List<String> get() = chips.map { it.label }
+}
+
+enum class WantChipKind { CATEGORY, PLATFORM, REAL_ONLY, VIRTUAL_ONLY }
+
+data class WantChip(val label: String, val kind: WantChipKind, val category: Category? = null, val platform: Platform? = null)
+
+fun Wants.chips(): List<WantChip> = categories.map { WantChip(it.id, WantChipKind.CATEGORY, category = it) } +
+    listOfNotNull(
+        platform?.let { WantChip(if (it == Platform.IOS) "iOS" else "Android", WantChipKind.PLATFORM, platform = it) },
+        virtual?.let { WantChip(if (it) "virtual only" else "real only", if (it) WantChipKind.VIRTUAL_ONLY else WantChipKind.REAL_ONLY) },
+    )
+
+/** "Real", "Emulator" (Android) or "Simulator" (iOS). */
+fun kindLabel(platform: Platform, virtual: Boolean): String = when {
+    !virtual -> "Real"
+    platform == Platform.IOS -> "Simulator"
+    else -> "Emulator"
+}
+
+/** What a virtual device is called on [platform]: `emulator`, `simulator`. */
+fun virtualWord(platform: Platform): String = kindLabel(platform, virtual = true).lowercase()
 
 /** One device a queued holder could use, and why it can't have it yet. */
 data class WaitReason(val device: String, val reason: String)
@@ -71,6 +106,19 @@ fun World.deviceName(key: DeviceKey): String =
 
 fun World.holding(h: HolderId): HolderStatus.Holding? = snapshot.statuses[h] as? HolderStatus.Holding
 
+/**
+ * [h]'s hold that covers [device] (as its device or a pair's partner). A holder can hold one device per platform, so
+ * this, not [holding], is what times a given device. Falls back to the status when the snapshot lists no holdings.
+ */
+fun World.holdingOf(h: HolderId, device: DeviceKey): HolderStatus.Holding? {
+    fun HolderStatus.Holding.covers() = this.device == device || partner == device
+    val all = snapshot.holdings[h]
+    return if (all != null) all.firstOrNull { it.covers() } else holding(h)?.takeIf { it.covers() }
+}
+
+/** Every hold of [h], one per platform, in grant order (the status's hold when the snapshot lists none). */
+fun World.holdingsOf(h: HolderId): List<HolderStatus.Holding> = snapshot.holdings[h] ?: listOfNotNull(holding(h))
+
 /** Time left before the holder's auto-release timer fires. */
 fun World.releasesIn(st: HolderStatus.Holding): Duration =
     ((if (st.editing) timers.editing else timers.idle) - (now - st.lastActivity)).coerceAtLeast(Duration.ZERO)
@@ -81,9 +129,10 @@ fun World.timerLabel(st: HolderStatus.Holding): String =
 fun deviceRows(w: World): List<DeviceRow> {
     val trackedKeys = w.tracked.mapTo(HashSet()) { it.key }
     val overrides = w.configs.filter { it.categoryOverride != null }.mapTo(HashSet()) { it.key }
+    val trackedByKey = w.tracked.associateBy { it.key }
     return w.snapshot.devices.map { d ->
         val holder = w.snapshot.holds[d.key]
-        val st = holder?.let { w.holding(it) }
+        val st = holder?.let { w.holdingOf(it, d.key) }
         val online = d.key in trackedKeys && d.connectedSerials.isNotEmpty()
         val state = when {
             holder != null && !online -> DeviceState.OFFLINE_HELD
@@ -102,8 +151,12 @@ fun deviceRows(w: World): List<DeviceRow> {
             heldFor = st?.let { w.now - it.since },
             timerLabel = st?.let { w.timerLabel(it) },
             dontUsePending = holder != null && d.dontUse,
+            platform = d.platform,
+            virtual = d.virtual,
+            osVersion = trackedByKey[d.key]?.osVersion.orEmpty(),
+            pairedWith = d.partner?.let { w.deviceName(it) },
         )
-    }
+    }.sortedBy { it.platform } // stable: Android first, then iOS, each in device order
 }
 
 fun overviewCounts(rows: List<DeviceRow>, waiting: Int) = OverviewCounts(
@@ -117,23 +170,23 @@ fun overviewCounts(rows: List<DeviceRow>, waiting: Int) = OverviewCounts(
 fun World.queuedAt(h: HolderId): Instant? = activity.firstOrNull { it.kind == "queued" && it.holderKey == h.key }?.at
 
 fun queueRows(w: World): List<QueueRow> = w.snapshot.queue.mapIndexed { i, h ->
-    val wants = (w.snapshot.statuses[h] as? HolderStatus.Queued)?.wants.orEmpty()
+    val wants = (w.snapshot.statuses[h] as? HolderStatus.Queued)?.wants ?: Wants(emptySet())
     QueueRow(h, w.labelOf(h), i + 1, wants, w.queuedAt(h)?.let { w.now - it }?.coerceAtLeast(Duration.ZERO) ?: Duration.ZERO)
 }
 
-private fun fits(wants: Set<Category>, d: AllocDevice) = Category.ANY in wants || d.category in wants
-
-private fun World.wantsOf(h: HolderId): Set<Category> = (snapshot.statuses[h] as? HolderStatus.Queued)?.wants.orEmpty()
+private fun World.wantsOf(h: HolderId): Wants = (snapshot.statuses[h] as? HolderStatus.Queued)?.wants ?: Wants(emptySet())
 
 /** Every device [h] could use, in device order, with what keeps it from [h]. */
 fun waitReasons(h: HolderId, w: World): List<WaitReason> {
     val wants = w.wantsOf(h)
-    return w.snapshot.devices.filter { fits(wants, it) }.map { d ->
+    val fitting = w.snapshot.devices.filter { wants.fits(it) }
+    if (fitting.isEmpty() && wants.limits.isNotEmpty()) return listOf(WaitReason("", noMatchReason(wants)))
+    return fitting.map { d ->
         val holder = w.snapshot.holds[d.key]
         val reason = when {
             d.dontUse -> "marked don't use"
             holder != null -> {
-                val st = w.holding(holder)
+                val st = w.holdingOf(holder, d.key)
                 val detail = when {
                     st == null -> ""
                     st.editing -> " (editing, releases in ≤${minutesCeil(w.releasesIn(st))})"
@@ -148,11 +201,32 @@ fun waitReasons(h: HolderId, w: World): List<WaitReason> {
     }
 }
 
+/** "no Wear OS emulator running", "no iPhone real device connected": nothing known fits the limits [wants] sets. */
+internal fun noMatchReason(wants: Wants): String {
+    val cats = wants.categories - Category.ANY
+    val subject = when {
+        cats == setOf(Category.WATCH) -> if (wants.platform == Platform.IOS) "Apple Watch" else if (wants.platform == Platform.ANDROID) "Wear OS" else "watch"
+        wants.platform == Platform.IOS && cats == setOf(Category.PHONE) -> "iPhone"
+        wants.platform == Platform.IOS && cats == setOf(Category.TABLET) -> "iPad"
+        else -> listOfNotNull(
+            wants.platform?.let { if (it == Platform.IOS) "iOS" else "Android" },
+            cats.joinToString("/") { it.id }.ifBlank { null },
+        ).joinToString(" ")
+    }
+    val kind = when (wants.virtual) {
+        true -> wants.platform?.let(::virtualWord) ?: "emulator or simulator"
+        false -> "real device"
+        null -> "device"
+    }
+    val state = if (wants.virtual == true) "running" else "connected"
+    return "no ${listOf(subject, kind).filter { it.isNotBlank() }.joinToString(" ")} $state"
+}
+
 /** Devices "Hand it <device> now" can give [h]: connected, usable, and of a category it wants. */
 fun handOffTargets(h: HolderId, w: World): List<DeviceRef> {
     val wants = w.wantsOf(h)
     return w.snapshot.devices
-        .filter { fits(wants, it) && !it.dontUse && it.connectedSerials.isNotEmpty() && w.snapshot.holds[it.key] != h }
+        .filter { wants.fits(it) && !it.dontUse && it.connectedSerials.isNotEmpty() && w.snapshot.holds[it.key] != h }
         .map { DeviceRef(it.key, it.name) }
 }
 

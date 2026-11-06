@@ -194,12 +194,43 @@ class Installer(private val home: Path) {
             }
         }
         Files.setPosixFilePermissions(target, PosixFilePermissions.fromString("rwxr-xr-x"))
+        installIosPin()
         return target
     }
 
-    /** Deletes ~/.local/bin/cdm only if it is our script, byte for byte. */
+    /** Deletes ~/.local/bin/cdm only if it is our script, byte for byte, and our iOS pin script if it is one. */
     fun uninstallCdm() {
         if (cdmInstalled()) Files.deleteIfExists(cdmPath)
+        if (Files.isRegularFile(iosPinPath, LinkOption.NOFOLLOW_LINKS) &&
+            IOS_PIN_SIGNATURE in String(Files.readAllBytes(iosPinPath), Charsets.UTF_8)
+        ) Files.deleteIfExists(iosPinPath)
+    }
+
+    /** The Gradle init script that pins KMP iOS simulator tests to `CDM_IOS_UDID`, installed with `cdm`. */
+    val iosPinPath: Path get() = home.resolve(".claude-device-manager/ios-pin.gradle")
+
+    private fun bundledIosPin(): ByteArray =
+        (Installer::class.java.getResourceAsStream("/ios-pin.gradle") ?: error("ios-pin.gradle resource missing"))
+            .use { it.readAllBytes() }
+
+    /** [iosPinPath] is a regular file with exactly the bundled script's bytes. */
+    fun iosPinInstalled(): Boolean =
+        Files.isRegularFile(iosPinPath, LinkOption.NOFOLLOW_LINKS) &&
+            Files.readAllBytes(iosPinPath).contentEquals(bundledIosPin())
+
+    /** Writes the bundled init script to [iosPinPath]; the directory is ours, so whatever is there is replaced. */
+    private fun installIosPin() {
+        if (iosPinInstalled()) return
+        val target = iosPinPath
+        target.parent.createDirectories()
+        // Temp file + rename: a Gradle run that is starting never reads a half-written script.
+        val tmp = Files.createTempFile(target.parent, "ios-pin", ".tmp")
+        try {
+            Files.write(tmp, bundledIosPin())
+            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } finally {
+            Files.deleteIfExists(tmp)
+        }
     }
 
     /** Keeps the newest [keep] `settings.json.cdm-backup-*` files (by their timestamp and counter). */
@@ -222,8 +253,11 @@ class Installer(private val home: Path) {
     }
 
     val claudeMdSnippet: String = """
-        ## Android devices (Claude Device Manager)
-        Before ANY work that touches an Android device or emulator (adb, Gradle install/connected tasks, test scripts, scrcpy), run `cdm acquire --category <phone|watch|phone,watch>` and wait for it to finish. It may pause for several minutes while another session uses the device — that is expected; do not work around it. If it says "Still queued", run it again. When you are done testing, run `cdm release`. Subagents must acquire their own device. Never pass a different `-s <serial>` than the one you were given.
+        ## Android and iOS devices (Claude Device Manager)
+        Before ANY work that touches an Android or iOS device, emulator or simulator (adb, Gradle install/connected tasks, KMP iOS tests, xcodebuild test/run, simctl, devicectl, Maestro, test scripts, scrcpy), run `cdm acquire --category <phone|watch|tablet|phone,watch>` and wait for it to finish. Whenever you know the platform, pass `--android` or `--ios` (without it you may get, or be handed back, a device of the other platform); add `--real` or `--virtual` for a real device or an emulator/simulator. To hold one device of each platform, acquire each with its flag. It may pause for several minutes while another session uses the device — that is expected; do not work around it. If it says "Still queued", run it again.
+        Android: your adb and Gradle commands are pinned for you. Never pass a different `-s <serial>` than the one you were given.
+        iOS: your commands get `CDM_IOS_UDID`; pass it explicitly: `xcodebuild -destination id=${'$'}CDM_IOS_UDID`, `xcrun simctl <command> ${'$'}CDM_IOS_UDID`, `xcrun devicectl … --device ${'$'}CDM_IOS_UDID`, `maestro --device ${'$'}CDM_IOS_UDID`. Gradle KMP iOS simulator tests are pinned automatically. Never target a different simulator or device.
+        When you are done testing, run `cdm release` (or `cdm release --ios` / `cdm release --android` for one platform). Subagents must acquire their own device.
     """.trimIndent()
 
     fun appendSnippet(): Result<Unit> = runCatching {
@@ -311,6 +345,7 @@ class Installer(private val home: Path) {
         val PORT_RE = Regex("""127\.0\.0\.1:(\d+)""")
         val BACKUP_RE = Regex("""settings\.json\.cdm-backup-(\d{8}-\d{6})(?:-(\d+))?""")
         const val CDM_SIGNATURE = "cdm: Claude Device Manager CLI"
+        const val IOS_PIN_SIGNATURE = "ios-pin.gradle: Claude Device Manager init script"
         const val SETTINGS_CREATED = "settingsCreated"
         const val CLAUDE_MD_CREATED = "claudeMdCreated"
     }

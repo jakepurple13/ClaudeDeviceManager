@@ -166,7 +166,8 @@ class ActivityRepository(private val dao: ActivityDao) {
         val (kind, holder, device, text) = when (e) {
             is AllocatorEvent.Granted -> Row("granted", e.holder.key, e.device.hardwareSerial, "granted ${e.holder.key} → ${e.device.hardwareSerial}")
             is AllocatorEvent.Released -> Row("released", e.holder.key, e.device.hardwareSerial, "released ${e.holder.key} ← ${e.device.hardwareSerial} (${e.reason})")
-            is AllocatorEvent.Queued -> Row("queued", e.holder.key, null, "queued ${e.holder.key} wants ${e.wants.joinToString { it.id }}")
+            is AllocatorEvent.Queued -> Row("queued", e.holder.key, null, "queued ${e.holder.key} wants ${e.wants.categories.joinToString { it.id }}" +
+                    e.wants.limits.takeIf { it.isNotEmpty() }?.joinToString(prefix = " (", postfix = ")").orEmpty())
             is AllocatorEvent.LeftQueue -> Row("left_queue", e.holder.key, null, "left queue ${e.holder.key}")
             is AllocatorEvent.Blocked -> Row("blocked", e.holder.key, null, "blocked ${e.holder.key}")
             is AllocatorEvent.Unblocked -> Row("unblocked", e.holder.key, null, "unblocked ${e.holder.key}")
