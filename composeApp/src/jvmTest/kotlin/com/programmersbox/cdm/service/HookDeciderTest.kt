@@ -62,7 +62,7 @@ class HookDeciderTest {
 
     @Test fun noneFreeDenies() = runTest {
         allocator.tryGrab(h2, Wants(setOf(Category.WATCH)))
-        assertTrue("`cdm acquire --category watch`" in bash("adb shell ls").reason())
+        assertTrue("`cdm acquire --category watch --android`" in bash("adb shell ls").reason())
     }
 
     @Test fun explicitSerialHeldByOtherDenies() = runTest {
@@ -265,5 +265,51 @@ class HookDeciderTest {
     @Test fun acquireChainedWhileHoldingIsPinned() = runTest {
         bash("adb shell ls")
         assertIs<HookReply.Rewrite>(bash("cdm acquire && adb shell ls"))
+    }
+
+    // ---- final whole-branch review: Android Maestro and platform hints ----
+
+    @Test fun maestroWithoutFlagGrabsAndPinsAndroidSerial() = runTest {
+        assertEquals(pinPrefix("w-usb") + "maestro test flow.yaml", bash("maestro test flow.yaml").cmd())
+        assertEquals(w.key, assertIs<HolderStatus.Holding>(allocator.statusOf(h)).device)
+        assertEquals(pinPrefix("w-usb") + "maestro test flow.yaml", bash("maestro test flow.yaml").cmd())
+    }
+
+    @Test fun maestroDeviceOwnSerialAllowed() = runTest {
+        bash("adb shell ls") // holds W
+        assertEquals(pinPrefix("w-usb") + "maestro --device w-usb test f.yaml", bash("maestro --device w-usb test f.yaml").cmd())
+        assertIs<HookReply.Rewrite>(bash("maestro --device=$wWifi test f.yaml"))
+    }
+
+    @Test fun maestroDeviceFreeSerialGrabsThatDevice() = runTest {
+        assertEquals(pinPrefix("p-usb") + "maestro --device p-usb test f.yaml", bash("maestro --device p-usb test f.yaml").cmd())
+        assertEquals(p.key, assertIs<HolderStatus.Holding>(allocator.statusOf(h)).device)
+    }
+
+    @Test fun maestroDeviceOthersSerialDenied() = runTest {
+        allocator.tryGrab(h2, Wants(setOf(Category.PHONE))) // s2 holds P
+        assertTrue("s2:main" in bash("maestro --device p-usb test f.yaml").reason())
+        bash("adb shell ls") // s1 holds W
+        assertTrue("you hold" in bash("maestro --device p-usb test f.yaml").reason())
+    }
+
+    @Test fun androidHintsSayAndroid() = runTest {
+        allocator.tryGrab(h2, Wants(setOf(Category.WATCH)))
+        assertTrue("`cdm acquire --category watch --android`" in bash("adb shell ls").reason())
+        assertTrue("`cdm acquire --category watch --android`" in bash("adb -s w-usb shell ls").reason())
+        assertTrue("--android" in bash("adb -s nope shell ls").reason())
+        assertTrue("--android" in bash("adb -e shell ls").reason())
+        allocator.release(h2, com.programmersbox.cdm.core.allocator.ReleaseReason.SELF_RELEASE)
+        bash("adb shell ls")
+        assertTrue("`cdm release --android`" in bash("adb -s p-usb shell ls").reason())
+        allocator.releaseDevice(w.key, block = false)
+        assertTrue("`cdm acquire --android`" in bash("adb shell ls").reason())
+    }
+
+    @Test fun timeoutHintSaysAndroid() = runTest {
+        bash("adb shell ls")
+        now = t0 + 16.minutes; allocator.tick()
+        allocator.tryGrab(h2, Wants(setOf(Category.WATCH)))
+        assertTrue("`cdm acquire --category watch --android`" in bash("adb shell ls").reason())
     }
 }

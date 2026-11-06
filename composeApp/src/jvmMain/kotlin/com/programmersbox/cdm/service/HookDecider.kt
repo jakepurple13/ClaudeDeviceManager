@@ -33,7 +33,20 @@ class HookDecider(
     private val iosPinScript: () -> Path? = { null },
     private val defaultCategory: suspend (cwd: String) -> Category,
 ) {
+    /**
+     * Allocator events are held back for the whole decision, so a grab this decision undoes (a mixed command whose
+     * iOS part is denied after its Android part grabbed) never shows as a grab and a release.
+     */
     suspend fun onBash(holder: HolderId, cwd: String, command: String): HookReply {
+        allocator.deferEvents()
+        try {
+            return decide(holder, cwd, command)
+        } finally {
+            allocator.flushEvents()
+        }
+    }
+
+    private suspend fun decide(holder: HolderId, cwd: String, command: String): HookReply {
         var kinds = CommandClassifier.classifyAll(command)
         if (kinds.isEmpty()) return HookReply.NoOpinion
         // KMP Gradle iOS tests are pinned by the init script (it reads CDM_IOS_UDID), when it is installed.
@@ -63,6 +76,14 @@ class HookDecider(
             is IosCheck.Go -> c
         }
 
+        // Maestro without --device from a holder with only an iOS hold: the export can't steer Maestro, and grabbing
+        // an Android device would likely be the wrong platform. Ask for the device instead.
+        val holdsAndroid = allocator.holdingsOf(holder).any { it.platform == Platform.ANDROID }
+        val holdsIos = allocator.holdingsOf(holder).any { it.platform == Platform.IOS }
+        if (holdsIos && !holdsAndroid && req.devices.any { it.bareMaestro && it.explicitSerial == null }) {
+            return HookReply.Deny(MAESTRO_WHICH_DEVICE)
+        }
+
         // Ruling V: an acquire chained with other work would run that work before (or without) the grant.
         if (kinds.any { it == CommandKind.Cdm("acquire") }) {
             val holding = allocator.holdingsOf(holder).map { it.platform }.toSet()
@@ -75,7 +96,7 @@ class HookDecider(
         // ANDROID_SERIAL set anywhere in the command (any command, not only adb) beats the pin, so check it up front.
         if (held != null && req.assigned.any { it !in own }) return HookReply.Deny(differentDevice(held))
 
-        val hadAndroid = allocator.holdingsOf(holder).any { it.platform == Platform.ANDROID }
+        val hadAndroid = holdsAndroid
         val androidSerial = when (
             val part = when {
                 // Holding nothing, an ANDROID_SERIAL=X on any command names a device just like `adb -s X`.
@@ -101,9 +122,7 @@ class HookDecider(
         if (ios.needsDevice) {
             iosGrab(req, ios.named)?.let { deny ->
                 // The command won't run: give back an Android device grabbed for it in this decision (never an older hold).
-                if (!hadAndroid && allocator.holdingsOf(holder).any { it.platform == Platform.ANDROID }) {
-                    allocator.release(holder, ReleaseReason.SELF_RELEASE, Platform.ANDROID)
-                }
+                if (!hadAndroid) allocator.undoGrab(holder, Platform.ANDROID)
                 return deny
             }
         }
@@ -257,7 +276,7 @@ class HookDecider(
             HolderStatus.Blocked -> return HookReply.Deny(releasedByUser(blocked = true))
             is HolderStatus.Released -> when (st.reason) {
                 ReleaseReason.USER_RELEASE, ReleaseReason.USER_HANDOFF, ReleaseReason.DONT_USE ->
-                    return HookReply.Deny(releasedByUser(blocked = false))
+                    return HookReply.Deny(releasedByUser(blocked = false, ios = true))
                 // Like Android: after a timeout, only the same device comes back; otherwise say what happened.
                 ReleaseReason.IDLE_TIMEOUT, ReleaseReason.EDIT_TIMEOUT -> return when (val g = allocator.tryRegrab(holder, Platform.IOS)) {
                     is GrabResult.Granted ->
@@ -310,7 +329,7 @@ class HookDecider(
             is HolderStatus.Released -> when (st.reason) {
                 ReleaseReason.IDLE_TIMEOUT, ReleaseReason.EDIT_TIMEOUT -> regrab(req, st)
                 ReleaseReason.USER_RELEASE, ReleaseReason.USER_HANDOFF, ReleaseReason.DONT_USE ->
-                    Part.Stop(HookReply.Deny(releasedByUser(blocked = false)))
+                    Part.Stop(HookReply.Deny(releasedByUser(blocked = false, ios = false)))
                 else -> freshGrab(req)
             }
             is HolderStatus.Queued, HolderStatus.None -> freshGrab(req)
@@ -320,7 +339,7 @@ class HookDecider(
     private fun whileHolding(req: Request): Part {
         val snap = allocator.snapshot()
         val held = heldDevice(req.holder, Platform.ANDROID, snap)
-            ?: return Part.Stop(HookReply.Deny(releasedByUser(blocked = false)))
+            ?: return Part.Stop(HookReply.Deny(releasedByUser(blocked = false, ios = false)))
         val serials = held.connectedSerials
         if (serials.isEmpty()) {
             return Part.Stop(
@@ -356,7 +375,7 @@ class HookDecider(
             GrabResult.NoneFree -> "is no longer available"
             else -> "is now in use"
         }
-        val flag = if (ios) " --ios" else ""
+        val flag = if (ios) " --ios" else " --android"
         return "Your $name was released after $minutes and $now. " +
             "Run `cdm acquire --category ${category.id}$flag` to wait for a device."
     }
@@ -377,7 +396,7 @@ class HookDecider(
                     androids.firstOrNull { s in it.connectedSerials }
                         ?: return deny(
                             "No connected device has serial $s. Check `adb devices`, or run " +
-                                "`cdm acquire --category ${defaultCategory(req.cwd).id}` to get a device.",
+                                "`cdm acquire --category ${defaultCategory(req.cwd).id} --android` to get a device.",
                         )
                 }.distinct()
                 if (targets.size > 1) return deny(MORE_THAN_ONE)
@@ -391,7 +410,7 @@ class HookDecider(
                 val flag = if (usb) "-d" else "-e"
                 // Same sole-device rule as whileHolding: adb only resolves -d / -e when exactly one device matches.
                 val matching = androids.filter { it.connectedSerials.any(pred) }
-                val acquire = "`cdm acquire --category ${defaultCategory(req.cwd).id}`"
+                val acquire = "`cdm acquire --category ${defaultCategory(req.cwd).id} --android`"
                 when {
                     matching.isEmpty() -> return deny("No $what device is connected. Run $acquire to wait for a device.")
                     matching.size > 1 -> return deny(
@@ -419,7 +438,7 @@ class HookDecider(
             is GrabResult.Granted -> req.pin(pin)
             is GrabResult.HeldByOther -> deny(
                 "${label(g.device)} is in use by ${g.holder.key}. " +
-                    "Run `cdm acquire --category ${g.device.category.id}` to wait for a device.",
+                    "Run `cdm acquire --category ${g.device.category.id} --android` to wait for a device.",
             )
             GrabResult.DontUse -> deny(
                 "${label(target)} is marked don't use in Device Manager. Ask the user, or use another device.",
@@ -444,12 +463,12 @@ class HookDecider(
 
     private fun differentDevice(held: AllocDevice) =
         "This command targets a different device, but you hold ${label(held)}. " +
-            "Drop the -s/-d/-e flag or ANDROID_SERIAL so it runs on your device, or run `cdm release` first."
+            "Drop the -s/-d/-e flag or ANDROID_SERIAL so it runs on your device, or run `cdm release --android` first."
 
     private fun label(d: AllocDevice) = "${d.name} (${d.connectedSerials.firstOrNull() ?: d.key.hardwareSerial})"
 
     private fun noneFree(category: Category, ios: Boolean): String {
-        val flag = if (ios) " --ios" else ""
+        val flag = if (ios) " --ios" else " --android"
         val kind = if (ios) "iOS device" else "device"
         return if (category == Category.ANY) {
             "No $kind is free. Run `cdm acquire --category any$flag` to wait for one."
@@ -459,12 +478,13 @@ class HookDecider(
         }
     }
 
-    private fun releasedByUser(blocked: Boolean) =
+    /** [ios] picks the platform flag of the rejoin hint; the blocked text gives no command to run. */
+    private fun releasedByUser(blocked: Boolean, ios: Boolean = false) =
         if (blocked) {
             "Your device was released from Device Manager and this holder is blocked. " +
                 "`cdm acquire` will refuse until the user unblocks it in Device Manager."
         } else {
-            "Your device was released from Device Manager. Run `cdm acquire` to rejoin the queue."
+            "Your device was released from Device Manager. Run `cdm acquire ${if (ios) "--ios" else "--android"}` to rejoin the queue."
         }
 
     companion object {
@@ -475,6 +495,10 @@ class HookDecider(
         const val DYNAMIC_UDID =
             "Don't set CDM_IOS_UDID or CDM_IOS_PAIR_UDID to a computed value; Device Manager exports them for the " +
                 "device you hold. Use \$CDM_IOS_UDID as it is, or a literal UDID."
+        const val MAESTRO_WHICH_DEVICE =
+            "You hold an iOS device and no Android device, so pass Maestro the device: " +
+                "`maestro --device \$CDM_IOS_UDID …` for your iOS device, or run `cdm acquire --android` first " +
+                "for an Android one."
         const val PASS_IOS_DEVICE = "Pass the device explicitly: -destination id=\$CDM_IOS_UDID / --device \$CDM_IOS_UDID"
         private const val MORE_THAN_ONE =
             "This command names more than one device. A holder can use only one device at a time."

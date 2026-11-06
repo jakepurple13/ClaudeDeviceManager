@@ -52,7 +52,42 @@ class IosCommandClassifierTest {
     @Test fun maestro() {
         assertEquals(IosDevice(emptyList(), false, true), k("maestro --device \$CDM_IOS_UDID test f.yaml"))
         assertEquals(IosDevice(emptyList(), false, true), k("maestro --device \"\${CDM_IOS_UDID}\" test f.yaml"))
-        assertEquals(IosDevice(emptyList(), false, false), k("maestro test f.yaml"))
+        assertEquals(IosDevice(listOf(u), false, true), k("maestro --device $u test f.yaml"))
+        assertEquals(IosDevice(listOf(real), false, true), k("maestro --udid=$real test f.yaml"))
+        // Single-quoted: Maestro gets the literal text, which names no device.
+        assertEquals(IosDevice(emptyList(), false, false), k("maestro --device '\$CDM_IOS_UDID' test f.yaml"))
+    }
+
+    /** Final review: Maestro without an iOS selector is Android, as before iOS support. */
+    @Test fun maestroAndroid() {
+        assertEquals(Device(null, false, false, bareMaestro = true), k("maestro test f.yaml"))
+        assertEquals(Device("emulator-5554", false, false), k("maestro --device emulator-5554 test f.yaml"))
+        assertEquals(Device("R58M123", false, false), k("maestro --device=R58M123 test f.yaml"))
+        assertEquals(Device("p-usb", false, false, bareMaestro = true), k("ANDROID_SERIAL=p-usb maestro test f.yaml"))
+        assertEquals(setOf(Platform.ANDROID), CommandClassifier.platformsOf("maestro test f.yaml"))
+        assertEquals(setOf(Platform.ANDROID), CommandClassifier.platformsOf("maestro --device emulator-5554 test f.yaml"))
+    }
+
+    /** Final review: `-log` takes no argument, so `simctl` after it is still seen. */
+    @Test fun xcrunLogFlagTakesNoArgument() {
+        assertEquals(IosDevice(listOf(u), false, true), k("xcrun -log simctl erase $u"))
+        assertEquals(IosDevice(listOf(u), false, true), k("xcrun --log simctl install $u a.app"))
+        assertEquals(IosDevice(emptyList(), true, true), k("xcrun -l simctl install booted a.app"))
+        assertEquals(IosDevice(emptyList(), true, true), k("xcrun -sdk iphonesimulator simctl install booted a.app"))
+        assertEquals(IosDevice(listOf(u), false, true), k("xcrun -log devicectl device install app --device $u x.app"))
+    }
+
+    /** Final review: macOS (and Mac Catalyst) destinations reach no iOS device. */
+    @Test fun xcodebuildMacOsDestinations() {
+        assertEquals(IosGlobalSafe, k("xcodebuild test -scheme MacApp -destination 'platform=macOS'"))
+        assertEquals(IosGlobalSafe, k("xcodebuild test -scheme MacApp -destination 'platform=macOS,arch=arm64'"))
+        assertEquals(IosGlobalSafe, k("xcodebuild test -scheme App -destination 'platform=macOS,variant=Mac Catalyst'"))
+        assertEquals(IosGlobalSafe, k("xcodebuild test -scheme App -destination 'variant=Mac Catalyst,platform=macOS'"))
+        assertEquals(IosGlobalSafe, k("xcodebuild test-without-building -destination platform=macOS -destination 'platform=macOS,variant=Mac Catalyst'"))
+        assertEquals(IosGlobalSafe, k("xcodebuild build -destination 'generic/platform=macOS'"))
+        // A macOS destination next to an iOS one: only the iOS one selects a device.
+        assertEquals(IosDevice(listOf(u), false, true), k("xcodebuild test -destination platform=macOS -destination id=$u"))
+        assertEquals(IosDevice(emptyList(), false, false), k("xcodebuild test -destination platform=macOS -destination 'platform=iOS Simulator,name=iPhone 16'"))
     }
 
     @Test fun idevice() {

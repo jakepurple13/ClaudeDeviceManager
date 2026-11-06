@@ -24,6 +24,7 @@ while [ $# -gt 0 ]; do
       v="false"; [ "$1" = "--virtual" ] && v="true"
       if [ -n "$virtual" ] && [ "$virtual" != "$v" ]; then echo "Pass only one of --real and --virtual."; exit 2; fi
       virtual="$v"; shift ;;
+    -*) echo "Unknown option: $1"; echo "$usage"; exit 2 ;;
     *) shift ;;
   esac
 done
@@ -89,6 +90,7 @@ case "$cmd" in
     while :; do
       left=$((acquire_end - SECONDS))
       [ "$left" -lt 1 ] && left=1
+      body=""
       while IFS= read -r line; do
         case "$line" in
           .) ;; # heartbeat
@@ -104,11 +106,21 @@ case "$cmd" in
           TIMEOUT\ *) echo "Still queued at position ${line#TIMEOUT }. Run \`cdm acquire\` again to keep waiting."; exit 0 ;;
           BLOCKED) echo "You're blocked in Claude Device Manager. Ask the user to unblock you."; exit 1 ;;
           REMOVED) echo "The user removed you from the device queue. Ask them before trying again."; exit 1 ;;
+          # curl's -w line: a 4xx is a request the app will never accept, so retrying can't help.
+          CDM_HTTP_STATUS\ 4*) echo "Device Manager refused the request: ${body:-HTTP ${line#CDM_HTTP_STATUS }}"; exit 2 ;;
+          CDM_HTTP_STATUS\ *) ;;
+          *) [ -n "$line" ] && body="${body:+$body }$line" ;;
         esac
-      done < <(curl -sN --no-buffer -X POST "${q[@]}" --data-urlencode "category=$wanted" --data-urlencode "platform=$platform" \
-        --data-urlencode "virtual=$virtual" --data-urlencode "timeoutSec=$left" "$base/acquire")
+      done < <(curl -sN --no-buffer -w '\nCDM_HTTP_STATUS %{http_code}\n' -X POST "${q[@]}" --data-urlencode "category=$wanted" \
+        --data-urlencode "platform=$platform" --data-urlencode "virtual=$virtual" --data-urlencode "timeoutSec=$left" "$base/acquire")
       # Stream ended without a verdict: the app went away mid-wait. Its queue grace keeps our spot, so
       # reconnect (retrying for RETRY_SECONDS) and wait again; give up only if it never comes back.
+      # Past the wait's end, stop like a server-side timeout would.
+      if [ "$SECONDS" -ge "$acquire_end" ]; then
+        if [ -n "$last_pos" ]; then echo "Still queued at position $last_pos. Run \`cdm acquire\` again to keep waiting."; exit 0; fi
+        echo "Device Manager didn't answer. Run \`cdm acquire\` again."; exit 1
+      fi
+      sleep 1
       connect || not_running
     done
     ;;

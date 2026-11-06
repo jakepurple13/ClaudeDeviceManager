@@ -6,15 +6,15 @@ import com.programmersbox.cdm.core.model.Platform
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.jsonObject
 
 /**
- * Booted simulators (`simctl`) and connected, paired physical devices (`devicectl`).
+ * Booted simulators (`simctl`) and paired physical devices that are reachable (`devicectl`).
  * Each source fails independently: a failure logs one line, yields nothing for that source and backs off 30 s.
+ * A malformed entry is skipped on its own; the rest of its source still counts.
  * devicectl exposes no watch -> iPhone companion field, so [TrackedDevice.partner] is always null.
  */
 class IosTracker(
@@ -68,7 +68,7 @@ class IosTracker(
             val (family, version) = parseRuntime(runtimeKey) ?: continue
             if (family != "iOS" && family != "watchOS") continue
             for (d in (list as? JsonArray).orEmpty()) {
-                val o = d.jsonObject
+                val o = d as? JsonObject ?: continue
                 if (o.str("state") != "Booted") continue
                 val udid = o.str("udid") ?: continue
                 val type = o.str("deviceTypeIdentifier").orEmpty()
@@ -96,9 +96,10 @@ class IosTracker(
         val devices = json.parseToJsonElement(text).jsonObject["result"]?.jsonObject?.get("devices") as? JsonArray
             ?: return emptyList()
         return devices.mapNotNull { d ->
-            val o = d.jsonObject
-            val conn = o.obj("connectionProperties")
-            if (conn?.str("tunnelState") != "connected" || conn.str("pairingState") != "paired") return@mapNotNull null
+            val o = d as? JsonObject ?: return@mapNotNull null
+            val conn = o.obj("connectionProperties") ?: return@mapNotNull null
+            // An idle plugged-in device reports tunnelState "disconnected"; only "unavailable" means it isn't there.
+            if (conn.str("pairingState") != "paired" || conn.str("tunnelState") == "unavailable") return@mapNotNull null
             val hw = o.obj("hardwareProperties") ?: return@mapNotNull null
             val udid = hw.str("udid") ?: return@mapNotNull null
             val category = when (hw.str("deviceType")) {
@@ -113,7 +114,7 @@ class IosTracker(
                 serials = listOf(udid),
                 model = props?.str("name").orEmpty(),
                 osVersion = props?.str("osVersionNumber").orEmpty(),
-                transport = "usb",
+                transport = if (conn.str("transportType") == "localNetwork") "wifi" else "usb",
                 detectedCategory = category,
                 platform = Platform.IOS,
                 virtual = false,
@@ -129,7 +130,8 @@ class IosTracker(
         return if (family.isEmpty() || version.isEmpty()) null else family to version
     }
 
-    private fun JsonObject.str(k: String): String? = (this[k] as? JsonElement)?.jsonPrimitive?.contentOrNull
+    /** The string at [k], or null when it is missing or not a primitive (never throws). */
+    private fun JsonObject.str(k: String): String? = (this[k] as? JsonPrimitive)?.contentOrNull
     private fun JsonObject.obj(k: String): JsonObject? = this[k] as? JsonObject
 
     private companion object {

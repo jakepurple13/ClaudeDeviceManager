@@ -211,6 +211,37 @@ class CdmScriptTest {
         }
     }
 
+    /** Final whole-branch review: an unknown flag is an error, not silently dropped. */
+    @Test
+    fun unknownFlagPrintsUsage() {
+        for (args in listOf(
+            arrayOf("acquire", "--holder", "s:main", "--cwd", "/x", "--tablet"),
+            arrayOf("release", "--holder", "s:main", "--cwd", "/x", "--iOS"),
+            arrayOf("status", "-x", "--holder", "s:main"),
+        )) {
+            val r = run(dir.resolve("nope"), *args)
+            assertEquals(2, r.code, r.out)
+            assertTrue(r.out.startsWith("Unknown option: "), r.out)
+            assertTrue("Usage: cdm acquire" in r.out, r.out)
+        }
+    }
+
+    /** Final whole-branch review: a 4xx answer (no verdict) ends the wait at once instead of re-POSTing forever. */
+    @Test
+    fun acquireStopsOnClientError() {
+        val m = FakeManager()
+        withServer(m) { pf ->
+            // A blank holder passes the script's own check but the server answers 400 "missing holder".
+            val p = start(pf, "acquire", "--holder", " ", "--cwd", "/x")
+            val done = p.waitFor(20, TimeUnit.SECONDS)
+            if (!done) p.destroyForcibly()
+            assertTrue(done, "cdm acquire kept retrying after a 400")
+            val out = p.inputStream.bufferedReader().readText()
+            assertEquals(2, p.exitValue(), out)
+            assertTrue("missing holder" in out, out)
+        }
+    }
+
     /** Final review #7: the app restarting mid-wait doesn't end the wait; cdm reconnects and re-POSTs. */
     @Test
     fun acquireSurvivesAppRestartMidWait() {

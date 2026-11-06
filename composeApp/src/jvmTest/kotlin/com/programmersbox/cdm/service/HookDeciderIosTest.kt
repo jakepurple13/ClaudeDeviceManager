@@ -1,6 +1,7 @@
 package com.programmersbox.cdm.service
 
 import com.programmersbox.cdm.core.allocator.AllocDevice
+import com.programmersbox.cdm.core.allocator.AllocatorEvent
 import com.programmersbox.cdm.core.allocator.Allocator
 import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.model.Category
@@ -37,7 +38,8 @@ class HookDeciderIosTest {
     private var category = Category.ANY
     private var pinScript: Path? = null
     private var now = Instant.fromEpochMilliseconds(1_000_000)
-    private val allocator = Allocator(clock = { now }).also { it.setDevices(listOf(p, w, i1, i2)) }
+    private val events = mutableListOf<AllocatorEvent>()
+    private val allocator = Allocator(clock = { now }, onEvent = { events += it }).also { it.setDevices(listOf(p, w, i1, i2)) }
     private val decider = HookDecider(allocator, iosPinScript = { pinScript }) { category }
 
     private suspend fun bash(cmd: String, holder: HolderId = h) = decider.onBash(holder, cwd, cmd)
@@ -97,7 +99,6 @@ class HookDeciderIosTest {
         for (c in listOf(
             "xcodebuild test -scheme App",
             "xcodebuild test -scheme App -destination 'platform=iOS Simulator,name=iPhone 15'",
-            "maestro test flow.yaml",
             "xcodebuild test -destination id=foo\$CDM_IOS_UDID",
         )) {
             val r = bash(c).reason()
@@ -300,5 +301,69 @@ class HookDeciderIosTest {
         assertEquals("export ANDROID_SERIAL=x; ", pinPrefix("x", null, null))
         assertEquals("export CDM_IOS_UDID=u; export CDM_IOS_PAIR_UDID=w; ", pinPrefix(null, "u", "w"))
         assertEquals("", pinPrefix(null, null, null))
+    }
+
+    // ---- final whole-branch review ----
+
+    @Test fun maestroWithoutFlagFromIosOnlyHolderDenied() = runTest {
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS))
+        val r = bash("maestro test flow.yaml").reason()
+        assertTrue("maestro --device \$CDM_IOS_UDID" in r && "--android" in r, r)
+        assertEquals(listOf(Platform.IOS), allocator.holdingsOf(h).map { it.platform })
+    }
+
+    @Test fun maestroWithoutFlagFromNonHolderGrabsAndroid() = runTest {
+        assertEquals(pinPrefix("p-usb") + "maestro test flow.yaml", bash("maestro test flow.yaml").cmd())
+        assertEquals(listOf(Platform.ANDROID), allocator.holdingsOf(h).map { it.platform })
+    }
+
+    @Test fun maestroWithoutFlagHoldingBothPinsAndroid() = runTest {
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS))
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.ANDROID))
+        assertEquals(pinPrefix("p-usb", u1, null) + "maestro test flow.yaml", bash("maestro test flow.yaml").cmd())
+    }
+
+    @Test fun maestroWithUdidIsIos() = runTest {
+        assertEquals(
+            "export CDM_IOS_UDID=$u1; maestro --device \$CDM_IOS_UDID test f.yaml",
+            bash("maestro --device \$CDM_IOS_UDID test f.yaml").cmd(),
+        )
+        assertEquals(listOf(Platform.IOS), allocator.holdingsOf(h).map { it.platform })
+        allocator.tryGrab(h2, Wants(setOf(Category.TABLET), Platform.IOS)) // s2 holds u2
+        assertTrue("you hold" in bash("maestro --device $u2 test f.yaml").reason())
+    }
+
+    @Test fun xcrunLogSimctlEraseForeignDenied() = runTest {
+        allocator.tryGrab(h2, Wants(setOf(Category.PHONE), Platform.IOS)) // s2 holds u1
+        assertTrue("s2:main" in bash("xcrun -log simctl erase $u1").reason())
+        allocator.tryGrab(h, Wants(setOf(Category.TABLET), Platform.IOS)) // s1 holds u2
+        assertTrue("you hold" in bash("xcrun -log simctl erase $u1").reason())
+    }
+
+    @Test fun xcodebuildMacOsTestAllowed() = runTest {
+        val c = "xcodebuild test -scheme MacApp -destination 'platform=macOS'"
+        assertEquals(HookReply.NoOpinion, bash(c))
+        assertEquals(HookReply.NoOpinion, bash("xcodebuild test -scheme App -destination 'platform=macOS,variant=Mac Catalyst'"))
+        assertEquals(null, iosHold())
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS))
+        assertEquals("export CDM_IOS_UDID=$u1; $c", bash(c).cmd())
+    }
+
+    @Test fun iosHintsSayIos() = runTest {
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS))
+        allocator.releaseDevice(i1.key, block = false)
+        val r = bash("xcrun simctl install booted a.app").reason()
+        assertTrue("`cdm acquire --ios`" in r, r)
+    }
+
+    @Test fun iosDenyRollbackFiresNoGrabOrReleaseEvents() = runTest {
+        allocator.setDevices(listOf(p, w)) // no iOS device
+        events.clear()
+        assertIs<HookReply.Deny>(bash("adb shell ls && xcrun simctl install booted a.app"))
+        assertEquals(emptyList(), allocator.holdingsOf(h))
+        assertEquals(emptyList(), events.filter { it is AllocatorEvent.Granted || it is AllocatorEvent.Released })
+        // A grab that sticks still fires its event.
+        assertIs<HookReply.Rewrite>(bash("adb shell ls"))
+        assertEquals(1, events.count { it is AllocatorEvent.Granted })
     }
 }

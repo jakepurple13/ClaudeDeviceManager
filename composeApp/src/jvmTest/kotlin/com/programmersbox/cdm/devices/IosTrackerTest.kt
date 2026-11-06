@@ -74,14 +74,51 @@ class IosTrackerTest {
     fun parsesPhysicalIphoneIpadWatch() = runTest {
         val all = IosTracker(FakeIos(physical = real)).scan()
         assertEquals(
-            listOf("00008000-000000000000A001", "00008000-000000000000A002", "00008000-000000000000A003"),
+            listOf("00008000-000000000000A001", "00008000-000000000000A002", "00008000-000000000000A003", "00008000-000000000000A006"),
             all.map { it.key.hardwareSerial },
-        ) // offline and unpaired devices are excluded
-        assertEquals(listOf(Category.PHONE, Category.TABLET, Category.WATCH), all.map { it.detectedCategory })
+        ) // unavailable and unpaired devices are excluded; an idle ("disconnected") plugged-in one is included
+        assertEquals(listOf(Category.PHONE, Category.TABLET, Category.WATCH, Category.PHONE), all.map { it.detectedCategory })
         assertTrue(all.none { it.virtual })
-        assertTrue(all.all { it.platform == Platform.IOS && it.transport == "usb" })
+        assertTrue(all.all { it.platform == Platform.IOS })
+        // wired -> usb, localNetwork -> wifi, missing -> usb
+        assertEquals(listOf("usb", "wifi", "usb", "usb"), all.map { it.transport })
         assertEquals("Test iPhone", all[0].model)
         assertEquals("26.2", all[0].osVersion)
+    }
+
+    /** Final whole-branch review: devicectl reports an idle, plugged-in, paired device with tunnelState "disconnected". */
+    @Test
+    fun idleDisconnectedPairedDeviceIsIncluded() = runTest {
+        val idle = IosTracker(FakeIos(physical = real)).scan().single { it.key.hardwareSerial == "00008000-000000000000A006" }
+        assertEquals("Idle iPhone", idle.model)
+        assertEquals("usb", idle.transport)
+    }
+
+    /** Final whole-branch review: one malformed entry drops only itself, not the whole source. */
+    @Test
+    fun malformedEntriesAreSkipped() = runTest {
+        val good = """{"connectionProperties":{"pairingState":"paired","tunnelState":"connected"},""" +
+            """"deviceProperties":{"name":"Good"},"hardwareProperties":{"deviceType":"iPhone","udid":"00008000-0000000000000001"}}"""
+        val physical = """{"result":{"devices":[
+            42,
+            "text",
+            {"connectionProperties":"oops"},
+            {"connectionProperties":{"pairingState":["paired"],"tunnelState":"connected"},"hardwareProperties":{"deviceType":"iPhone","udid":"x"}},
+            {"connectionProperties":{"pairingState":"paired","tunnelState":"connected"},"hardwareProperties":{"deviceType":"iPhone","udid":{"n":1}}},
+            {"connectionProperties":{"pairingState":"paired","tunnelState":"connected"},"deviceProperties":{"name":{"x":1}},"hardwareProperties":{"deviceType":"iPhone","udid":"00008000-0000000000000002"}},
+            $good
+        ]}}"""
+        val sims = """{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-18-2":[
+            7,
+            {"state":["Booted"],"udid":"BAD"},
+            {"state":"Booted","udid":{"x":1}},
+            {"state":"Booted","udid":"11111111-1111-1111-1111-111111111111","name":"iPhone 16","deviceTypeIdentifier":"x.iPhone-16"}
+        ]}}"""
+        val all = IosTracker(FakeIos(sims = sims, physical = physical)).scan()
+        assertEquals(
+            listOf("11111111-1111-1111-1111-111111111111", "00008000-0000000000000002", "00008000-0000000000000001"),
+            all.map { it.key.hardwareSerial },
+        )
     }
 
     @Test
@@ -117,7 +154,7 @@ class IosTrackerTest {
             override suspend fun bootedSimulatorsJson(): String = error("boom")
             override suspend fun physicalDevicesJson() = real
         }
-        assertEquals(3, IosTracker(client).scan().size)
+        assertEquals(4, IosTracker(client).scan().size)
     }
 
     @Test

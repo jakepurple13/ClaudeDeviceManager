@@ -98,6 +98,7 @@ class InstallerTest {
             "xcodebuild", "simctl", "devicectl", "maestro", "KMP iOS",
             "-destination id=\$CDM_IOS_UDID", "\$CDM_IOS_UDID", "maestro --device \$CDM_IOS_UDID",
             "--ios", "--android", "--real", "--virtual", "tablet", "cdm release",
+            "Whenever you know the platform, pass `--android` or `--ios`",
         )) assertTrue(needle in text, "missing \"$needle\" in:\n$text")
     }
 

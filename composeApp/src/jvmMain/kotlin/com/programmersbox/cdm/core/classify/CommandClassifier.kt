@@ -9,7 +9,13 @@ sealed interface CommandKind {
     data class AdbGlobalSafe(val resetsTimer: Boolean) : CommandKind
     data class AdbGlobalDangerous(val what: String) : CommandKind
     data class AdbDisconnect(val address: String) : CommandKind
-    data class Device(val explicitSerial: String?, val usbFlag: Boolean, val emulatorFlag: Boolean) : CommandKind
+    /** [bareMaestro]: `maestro` with no `--device`/`--udid`; it may target either platform (see HookDecider). */
+    data class Device(
+        val explicitSerial: String?,
+        val usbFlag: Boolean,
+        val emulatorFlag: Boolean,
+        val bareMaestro: Boolean = false,
+    ) : CommandKind
     data object GradleNonDevice : CommandKind
     /** `adb -t <id>`: picks a device by transport ID, which the app can't map to a held device. */
     data object AdbTransportId : CommandKind
@@ -219,7 +225,7 @@ object CommandClassifier {
             "adb" -> classifyAdb(w.drop(1))
             "xcodebuild" -> classifyXcodebuild(w, wi)
             "xcrun" -> classifyXcrun(w, wi)
-            "maestro" -> iosDevice(valuesAfter(wi, "--device", "--udid"), booted = false)
+            "maestro" -> classifyMaestro(w, wi)
             "fastlane" ->
                 if (w.drop(1).any { it in fastlaneDeviceActions }) iosDevice(emptyList(), booted = false) else CommandKind.Other
             "killall" -> if ("Simulator" in w.drop(1)) CommandKind.IosGlobalDangerous("killall Simulator") else CommandKind.Other
@@ -267,7 +273,22 @@ object CommandClassifier {
     )
     /** A whole selector value that is `$CDM_IOS_UDID` / `${CDM_IOS_UDID}`: `id=foo$CDM_IOS_UDID` names another device. */
     private val cdmUdidRef = Regex("""\$(CDM_IOS_UDID|\{CDM_IOS_UDID\})""")
-    private val xcrunOptsWithArg = setOf("-sdk", "--sdk", "-toolchain", "--toolchain", "-log")
+    /** xcrun options that take a value. `-l` / `--log` / `-log` take none. */
+    private val xcrunOptsWithArg = setOf("-sdk", "--sdk", "-toolchain", "--toolchain")
+
+    /**
+     * Maestro picks the device with `--device` (`--udid` is its old name). A UDID or `$CDM_IOS_UDID` selects an iOS
+     * device; any other value is an Android serial (`Device(explicitSerial)`, checked like `adb -s`). With no flag it
+     * is Android, marked [CommandKind.Device.bareMaestro] so the hook can tell when the holder holds only iOS.
+     */
+    private fun classifyMaestro(w: List<String>, wi: List<String>): CommandKind {
+        val raw = valuesAfter(w, "--device", "--udid")
+        if (raw.isEmpty()) return CommandKind.Device(null, false, false, bareMaestro = true)
+        if (raw.any { udidRegex.containsMatchIn(it) || cdmUdidRef.containsMatchIn(it) }) {
+            return iosDevice(valuesAfter(wi, "--device", "--udid"), booted = false)
+        }
+        return CommandKind.Device(raw.first(), false, false)
+    }
 
     /** Values of `flag value` / `flag=value` pairs in [w]. */
     private fun valuesAfter(w: List<String>, vararg flags: String): List<String> {
@@ -292,13 +313,21 @@ object CommandClassifier {
 
     private fun classifyXcodebuild(w: List<String>, wi: List<String>): CommandKind {
         val dests = valuesAfter(w, "-destination")
-        val deviceDest = dests.any { !it.startsWith("generic/") && !it.contains("platform=macOS") }
+        val destsI = valuesAfter(wi, "-destination")
+        // macOS and Mac Catalyst destinations run on this Mac, not on a device CDM hands out.
+        val ios = dests.indices.filter { !isMacDestination(dests[it]) }
+        if (dests.isNotEmpty() && ios.isEmpty()) return CommandKind.IosGlobalSafe
+        val deviceDest = ios.any { !dests[it].startsWith("generic/") }
         val tests = w.drop(1).any { it == "test" || it == "test-without-building" }
         if (!tests && !deviceDest) return CommandKind.IosGlobalSafe
-        // Only the value of the `id=` part of each destination selects a device.
-        val ids = valuesAfter(wi, "-destination").map { d -> d.split(',').firstOrNull { it.startsWith("id=") }?.removePrefix("id=") ?: "" }
+        // Only the value of the `id=` part of each iOS destination selects a device.
+        val ids = ios.map { i -> destsI[i].split(',').firstOrNull { it.startsWith("id=") }?.removePrefix("id=") ?: "" }
         return iosDevice(ids, booted = false)
     }
+
+    /** `platform=macOS[,…]`, `generic/platform=macOS`, or any destination with `variant=Mac Catalyst`. */
+    private fun isMacDestination(d: String): Boolean = d.split(',').map { it.trim().removePrefix("generic/") }
+        .any { it == "platform=macOS" || it == "variant=Mac Catalyst" }
 
     /** True if [segment] (as from [segments]) is `xcrun simctl boot <device>`. */
     fun isSimctlBoot(segment: String): Boolean = simctl(words(segment))?.sub == "boot"

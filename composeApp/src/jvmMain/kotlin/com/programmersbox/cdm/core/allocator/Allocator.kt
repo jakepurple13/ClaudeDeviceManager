@@ -352,5 +352,41 @@ class Allocator(
         }
     }
 
-    private fun emit(e: AllocatorEvent) = onEvent(e)
+    /** Events held back between [deferEvents] and [flushEvents]; null when events go out at once. */
+    private var deferred: MutableList<AllocatorEvent>? = null
+
+    /** Holds events back until [flushEvents], so a grab undone by [undoGrab] in between is never seen. */
+    fun deferEvents() {
+        if (deferred == null) deferred = mutableListOf()
+    }
+
+    /** Sends the events held back since [deferEvents], in order, and goes back to sending them at once. */
+    fun flushEvents() {
+        val d = deferred ?: return
+        deferred = null
+        d.forEach(onEvent)
+    }
+
+    /**
+     * Releases [holder]'s [platform] hold, granted earlier in the same deferred decision, as if it never happened:
+     * its Granted and Released events are dropped (no grab/release notification, no activity entry). Other events
+     * (a queued holder getting the freed device) still go out.
+     */
+    fun undoGrab(holder: HolderId, platform: Platform) {
+        val device = holdings[holder]?.get(platform)?.device ?: return
+        release(holder, ReleaseReason.SELF_RELEASE, platform)
+        released[holder]?.let { r ->
+            if (r[platform]?.lastDevice == device) r.remove(platform)
+            if (r.isEmpty()) released.remove(holder)
+        }
+        deferred?.removeAll {
+            (it is AllocatorEvent.Granted && it.holder == holder && it.device == device) ||
+                (it is AllocatorEvent.Released && it.holder == holder && it.device == device)
+        }
+    }
+
+    private fun emit(e: AllocatorEvent) {
+        val d = deferred
+        if (d != null) d += e else onEvent(e)
+    }
 }
