@@ -3,7 +3,9 @@ package com.programmersbox.cdm.update
 import dev.nucleusframework.updater.NucleusUpdater
 import dev.nucleusframework.updater.UpdateInfo
 import dev.nucleusframework.updater.UpdateResult
+import dev.nucleusframework.updater.provider.GenericProvider
 import dev.nucleusframework.updater.provider.GitHubProvider
+import dev.nucleusframework.updater.provider.UpdateProvider
 import java.io.File
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -43,11 +45,21 @@ const val GITHUB_OWNER = "jakepurple13"
 const val GITHUB_REPO = "ClaudeDeviceManager"
 
 /**
+ * Set to a folder URL holding `latest-*.yml` and the installers to update from there instead of GitHub, for testing
+ * an update locally (`http` works only for localhost). Read at launch.
+ */
+const val UPDATE_URL_ENV = "CDM_UPDATE_URL"
+
+private fun defaultProvider(): UpdateProvider =
+    System.getenv(UPDATE_URL_ENV)?.takeIf { it.isNotBlank() }?.let(::GenericProvider)
+        ?: GitHubProvider(GITHUB_OWNER, GITHUB_REPO)
+
+/**
  * [AppUpdater] over Nucleus, reading `latest-*.yml` from this repo's GitHub releases. Builds are unsigned, so
  * macOS relies on Nucleus's ZIP swap clearing the quarantine flag on the replaced `.app`.
  */
 class NucleusAppUpdater(
-    private val updater: NucleusUpdater = NucleusUpdater { provider = GitHubProvider(GITHUB_OWNER, GITHUB_REPO) },
+    private val updater: NucleusUpdater = NucleusUpdater { provider = defaultProvider() },
 ) : AppUpdater {
     override val currentVersion: String get() = updater.currentVersion
 

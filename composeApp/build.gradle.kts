@@ -80,6 +80,17 @@ val needsAppRuntime: Boolean = gradle.startParameter.taskNames.any { requested -
 // version with the one in the release's latest-*.yml, so every tag must be a higher semver than the last.
 val appVersion: String = providers.gradleProperty("appVersion").getOrElse("1.0.0")
 
+// Nucleus 2.5.18 writes package.json beside each format's output only when it is missing, and electron-builder takes
+// the artifact and latest-*.yml version from it. A leftover file from an earlier build would label a new build with
+// the old version, so drop it before every package task.
+tasks.matching { it.name.startsWith("package") }.configureEach {
+    // A local val, not a script property: the configuration cache can't serialize a reference to the script.
+    val binaries = layout.buildDirectory.dir("compose/binaries")
+    doFirst {
+        binaries.get().asFile.walkTopDown().filter { it.name == "package.json" }.forEach { it.delete() }
+    }
+}
+
 // Packaging is Nucleus (the compose.desktop DSL plus electron-builder formats and the update metadata the in-app
 // updater reads). The Compose plugin stays for its dependencies and compiler wiring.
 nucleus.application {
