@@ -320,6 +320,16 @@ class DeviceManagerService(
         book.touch(holder, null, null)
     }
 
+    override suspend fun renew(holder: HolderId, platform: Platform?): Boolean {
+        val renewed = locked {
+            val holds = allocator.holdingsOf(holder).filter { platform == null || it.platform == platform }
+            holds.forEach { allocator.recordDeviceActivity(holder, it.platform) }
+            holds.isNotEmpty()
+        }
+        if (renewed) book.touch(holder, null, null)
+        return renewed
+    }
+
     override suspend fun status(holder: HolderId): HolderStatus = locked { allocator.statusOf(holder) }
 
     override suspend fun holdings(holder: HolderId): List<HolderStatus.Holding> = locked { allocator.holdingsOf(holder) }

@@ -32,9 +32,11 @@ open class FakeManager : DeviceManager {
     var lastTimeout: Duration? = null
     val released = mutableListOf<Pair<HolderId, Platform?>>()
 
-    override val snapshot: StateFlow<AllocatorSnapshot> = MutableStateFlow(AllocatorSnapshot(emptyList(), emptyMap(), emptyList(), emptyMap()))
+    val snapshotFlow = MutableStateFlow(AllocatorSnapshot(emptyList(), emptyMap(), emptyList(), emptyMap()))
     override val tracked: StateFlow<List<TrackedDevice>> = MutableStateFlow(emptyList())
-    override val holderInfo: StateFlow<Map<HolderId, HolderInfo>> = MutableStateFlow(emptyMap())
+    override val snapshot: StateFlow<AllocatorSnapshot> get() = snapshotFlow
+    val holderInfoFlow = MutableStateFlow<Map<HolderId, HolderInfo>>(emptyMap())
+    override val holderInfo: StateFlow<Map<HolderId, HolderInfo>> get() = holderInfoFlow
 
     override suspend fun preToolUse(input: HookInput): HookDecision { inputs += input; return decision }
     override suspend fun subagentStop(sessionId: String, agentId: String) { stops += sessionId to agentId }
@@ -45,6 +47,9 @@ open class FakeManager : DeviceManager {
         return acquireImpl(holder, cwd, wants, timeout, onPosition)
     }
     override suspend fun release(holder: HolderId, platform: Platform?) { released += holder to platform }
+    val renewed = mutableListOf<Pair<HolderId, Platform?>>()
+    var renewImpl: (HolderId, Platform?) -> Boolean = { _, _ -> false }
+    override suspend fun renew(holder: HolderId, platform: Platform?): Boolean { renewed += holder to platform; return renewImpl(holder, platform) }
     override suspend fun status(holder: HolderId): HolderStatus = statusImpl(holder)
     override suspend fun holdings(holder: HolderId): List<HolderStatus.Holding> = holdingsImpl(holder)
     override suspend fun releaseDevice(key: DeviceKey, block: Boolean): Unit = error("unused")

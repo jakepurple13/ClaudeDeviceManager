@@ -55,11 +55,13 @@ import com.programmersbox.cdm.ui.components.SectionLabel
 import com.programmersbox.cdm.ui.components.SmallButton
 import com.programmersbox.cdm.ui.components.StatusDot
 import com.programmersbox.cdm.ui.update.UpdatesSection
+import java.awt.Desktop
 import java.awt.FileDialog
 import java.awt.Frame
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.io.File
+import java.net.URI
 import org.koin.compose.viewmodel.koinViewModel
 
 private val ErrorBg = Color(0xFF4A2A2A)
@@ -111,6 +113,15 @@ fun SettingsScreen(vm: SettingsViewModel = koinViewModel()) {
                 }
             }
             ResultLine(s.saveResult)
+        }
+
+        SectionLabel("Integrations")
+        CardBox {
+            Muted("Other apps and scripts can take turns on devices through the same local server. The guide shows how, with live device status and a brief to hand to a coding agent.")
+            Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SmallButton("Open integration guide", onClick = { openInBrowser("http://127.0.0.1:${s.saved.port}/") }, enabled = s.listening)
+                AnimatedLine(!s.listening) { Muted("Available while the server is listening.") }
+            }
         }
 
         SectionLabel("Pinned commands")
@@ -364,4 +375,11 @@ private fun PartState.text(detail: String?): String = when (this) {
     PartState.Installed -> "Installed while the app runs" + (detail?.let { " ($it)" } ?: "")
     PartState.NotInstalled -> "Not installed"
     is PartState.Failed -> message
+}
+
+/** Opens [url] in the default browser; does nothing where the desktop can't browse. */
+private fun openInBrowser(url: String) {
+    runCatching {
+        if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) Desktop.getDesktop().browse(URI(url))
+    }.onFailure { System.err.println("cdm: open $url failed: $it") }
 }

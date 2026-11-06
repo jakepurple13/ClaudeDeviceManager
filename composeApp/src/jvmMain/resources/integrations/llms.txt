@@ -1,0 +1,68 @@
+# Claude Device Manager integration brief
+
+You are adding Claude Device Manager (CDM) support to this app. CDM shares
+Android/iOS devices between Claude Code sessions and other tools. This app
+must take turns through CDM and must never touch a device it does not hold.
+CDM is running right now on 127.0.0.1:{{PORT}}.
+
+## Find the server
+- Port: read ~/.claude-device-manager/port (trim whitespace). Host: 127.0.0.1.
+  Do not hard-code {{PORT}}; the user can change it.
+- No port file, or GET /cdm/ping not answering "cdm-ok": CDM is closed.
+  Then run without locking. Never fail because CDM is absent.
+
+## Holder ID
+- Format "<app-name>:<slot>", e.g. "scrcpy-vwr:main". Stable across launches.
+- Use one slot per concurrent device; a holder gets at most one Android
+  and one iOS device.
+
+## Acquire (blocking, streamed)
+POST /cdm/acquire?holder=&category=&platform=&virtual=&timeoutSec=
+- category: phone | watch | tablet | phone,watch | any
+- platform: android | ios (omit for either). virtual: true | false (omit for either)
+- timeoutSec: how long to wait in the queue (default 110).
+- Read the body line by line, never buffered whole:
+  "."                                  heartbeat every 5s, ignore
+  "QUEUED <n>"                         queue position, show it to the user
+  "GRANTED <platform> <id> <name...>"  id = adb serial or iOS UDID; name may have spaces
+  "TIMEOUT <n>"                        re-call acquire to keep waiting
+  "BLOCKED" | "REMOVED"                the user said no, stop and tell the user
+- Closing the connection while queued leaves the queue. Use that for Cancel.
+
+## Use
+- Android: always pass "-s <id>" to adb/scrcpy. iOS: pass the UDID explicitly.
+- Never: adb kill-server, adb -s <other>, simctl ... booted, simctl shutdown all.
+
+## Keep the hold
+- Holds are released after the idle time set in CDM (15 min by default).
+  CDM cannot see this app's device commands, so while the device is in use
+  call POST /cdm/renew?holder= (optionally &platform=) every 60s.
+  It replies RENEWED, or NONE when the hold is gone.
+- NONE, or no HOLDING line from GET /cdm/status?holder=, means the user took
+  the device back: stop using it and re-acquire.
+
+## Release
+POST /cdm/release?holder=&platform=   replies RELEASED or NONE
+- Call it on normal exit, window close, crash handler and shutdown hook.
+- On startup, release once before acquiring, in case a previous run crashed.
+
+## Observe (optional)
+- GET /cdm/devices: JSON {devices:[{key,name,platform,category,virtual,online,
+  dontUse,serial,holder:{id,label,agent}|null}], queue:[{position,holder,
+  categories,platform,virtual}]}.
+- GET /cdm/events: server-sent events; event "devices" carries the same JSON
+  on every change.
+
+## Done means
+Every check passes against a running CDM:
+1. CDM closed: the app starts and works without a lock, no error, no retry loop.
+2. Two copies, one device: the second shows QUEUED 1 and gets the device after
+   the first quits.
+3. kill -9 while holding: on next launch it releases the old hold first.
+4. Cancel while queued: GET /cdm/status for that holder returns NONE.
+5. Release the device from the CDM window: the app notices within 60s.
+6. Every adb or simctl call in the diff names the device.
+
+If you are a Claude Code session testing this on a device yourself, you hold
+a device through `cdm acquire` too. Give the app a different category or use
+two devices, or the checks will deadlock.
