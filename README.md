@@ -118,6 +118,7 @@ There is no `ANDROID_SERIAL` for iOS tools, so pinning works differently:
 
 ### Known limits
 
+- Real iPhone, iPad and Apple Watch support has not been tested on hardware. Detection follows the `xcrun devicectl` output format, and simulators are tested end to end.
 - Apple Watch ↔ iPhone pairing isn't detected yet, so a real watch and its iPhone are held separately (the pair reservation is in place but dormant).
 - A session waits in the queue for one platform at a time.
 - These tools aren't recognised as device commands, so they aren't pinned or checked: `simctl` run by its full path instead of through `xcrun`, `ios-deploy`, `flutter run -d`, `react-native run-ios --udid`, `xctrace --device`.
