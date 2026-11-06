@@ -1,5 +1,7 @@
 package com.programmersbox.cdm.server
 
+import com.programmersbox.cdm.core.allocator.AllocDevice
+import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
 import com.programmersbox.cdm.core.allocator.HolderStatus
 import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.model.Category
@@ -121,7 +123,13 @@ fun Application.cdmModule(manager: DeviceManager, heartbeat: Duration = 5.second
                 "false" -> false
                 else -> return@post call.respondText("bad virtual\n", status = HttpStatusCode.BadRequest)
             }
-            val wants = Wants(categories, platform, virtual)
+            val asked = call.request.queryParameters["device"].orEmpty().trim()
+            val wants = if (asked.isEmpty()) {
+                Wants(categories, platform, virtual)
+            } else {
+                deviceWants(asked, manager.snapshot.value.devices, categories, platform, virtual)
+                    .getOrElse { return@post call.respondText("${it.message}\n", status = HttpStatusCode.BadRequest) }
+            }
             val timeout = (call.request.queryParameters["timeoutSec"]?.toLongOrNull() ?: DEFAULT_ACQUIRE_TIMEOUT_SEC).seconds
             call.respondTextWriter(ContentType.Text.Plain) {
                 val out = Mutex()
@@ -155,6 +163,11 @@ fun Application.cdmModule(manager: DeviceManager, heartbeat: Duration = 5.second
             manager.release(holder, platform)
             call.respondText(if (had) "RELEASED\n" else "NONE\n")
         }
+        get("/cdm/list") {
+            // `holder` is optional: with it, that holder's own devices read "yours".
+            val holder = call.holder()
+            call.respondText(deviceListText(manager.snapshot.value, holder))
+        }
         get("/cdm/status") {
             val holder = call.holder() ?: return@get call.respondText("missing holder\n", status = HttpStatusCode.BadRequest)
             val status = manager.status(holder)
@@ -168,6 +181,74 @@ fun Application.cdmModule(manager: DeviceManager, heartbeat: Duration = 5.second
             }
             call.respondText(lines.ifEmpty { listOf("NONE") }.joinToString("") { it + "\n" })
         }
+    }
+}
+
+/**
+ * Wants for `cdm acquire --device <asked>`. [asked] matches a connected ADB serial, a hardware serial or UDID
+ * (case-insensitive), or else a device name (case-insensitive). The device's platform is filled in, and the
+ * categories default to any, not the project's default. Fails with an agent-readable message when nothing matches,
+ * a name matches more than one device, the device is marked don't use, or the other flags rule it out.
+ */
+internal fun deviceWants(
+    asked: String,
+    devices: List<AllocDevice>,
+    categories: Set<Category>,
+    platform: Platform?,
+    virtual: Boolean?,
+): Result<Wants> {
+    fun fail(msg: String) = Result.failure<Wants>(IllegalArgumentException(msg))
+    val bySerial = devices.filter { d ->
+        asked in d.connectedSerials || d.key.hardwareSerial.equals(asked, ignoreCase = true)
+    }
+    val matches = bySerial.ifEmpty { devices.filter { it.name.equals(asked, ignoreCase = true) } }
+    val d = when (matches.size) {
+        0 -> return fail("No device matches \"$asked\". Run `cdm devices` to list them.")
+        1 -> matches.single()
+        else -> return fail(
+            "More than one device is named \"$asked\" (${matches.joinToString { it.connectedSerials.firstOrNull() ?: it.key.hardwareSerial }}). " +
+                "Pass its serial instead.",
+        )
+    }
+    val label = "${d.name} (${d.connectedSerials.firstOrNull() ?: d.key.hardwareSerial})"
+    if (d.dontUse) return fail("$label is marked don't use in Device Manager. Ask the user, or pick another device.")
+    val wants = Wants(categories.ifEmpty { setOf(Category.ANY) }, platform ?: d.platform, virtual, d.key)
+    if (!wants.fits(d)) {
+        val os = if (d.platform == Platform.IOS) "iOS" else "Android"
+        val kind = when {
+            !d.virtual -> "real device"
+            d.platform == Platform.IOS -> "simulator"
+            else -> "emulator"
+        }
+        return fail("$label is an $os $kind in category ${d.category.id}, so the other flags rule it out. Drop them, or pick another device.")
+    }
+    return Result.success(wants)
+}
+
+/**
+ * `cdm devices`: one line per device, `<serial>  <name> · <platform> <kind> · <category> · <state>`, where the
+ * serial is what `cdm acquire --device` takes. "No devices." when there are none.
+ */
+internal fun deviceListText(snap: AllocatorSnapshot, holder: HolderId?): String {
+    if (snap.devices.isEmpty()) return "No devices.\n"
+    val serials = snap.devices.map { it.connectedSerials.firstOrNull() ?: it.key.hardwareSerial }
+    val width = serials.maxOf { it.length }
+    return snap.devices.zip(serials).joinToString("") { (d, serial) ->
+        val os = if (d.platform == Platform.IOS) "iOS" else "Android"
+        val kind = when {
+            !d.virtual -> "real"
+            d.platform == Platform.IOS -> "simulator"
+            else -> "emulator"
+        }
+        val by = snap.holds[d.key]
+        val state = when {
+            by != null && by == holder -> "yours"
+            by != null -> "in use by ${by.key}"
+            d.dontUse -> "don't use"
+            d.connectedSerials.isEmpty() -> "offline"
+            else -> "free"
+        }
+        "${serial.padEnd(width)}  ${d.name} · $os $kind · ${d.category.id} · $state\n"
     }
 }
 

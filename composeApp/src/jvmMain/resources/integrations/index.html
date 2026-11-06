@@ -184,7 +184,7 @@ tr:last-child td { border-bottom: 0 }
       <h2>How a hold works</h2>
       <p>These steps happen in this order. Your app is one more holder in the queue, next to Claude sessions.</p>
       <div class="flow">
-        <div class="step"><span class="n">1 · acquire</span><h3>Ask for a kind</h3><p>Phone, watch, tablet or any. Optionally Android or iOS, real or virtual.</p></div>
+        <div class="step"><span class="n">1 · acquire</span><h3>Ask for a kind</h3><p>Phone, watch, tablet or any. Optionally Android or iOS, real or virtual. Or name one device.</p></div>
         <div class="step"><span class="n">2 · wait</span><h3>Keep the line open</h3><p>The reply streams <code>QUEUED</code> lines and a <code>.</code> every 5 s until you get a device.</p></div>
         <div class="step"><span class="n">3 · use</span><h3>Talk to that serial only</h3><p>Pass the granted serial to adb or the UDID to simctl. Call renew every 60 s.</p></div>
         <div class="step"><span class="n">4 · release</span><h3>Hand it back</h3><p>Release when done, and on crash or quit. The next holder gets it at once.</p></div>
@@ -260,15 +260,16 @@ params = {<span class="s">"holder"</span>: holder, <span class="s">"category"</s
         <tbody>
           <tr><td><span class="verb get">GET</span> <span class="path">/llms.txt</span></td><td>—</td><td>The agent brief below as plain text, with this server’s port filled in.</td></tr>
           <tr><td><span class="verb get">GET</span> <span class="path">/cdm/ping</span></td><td>—</td><td>Replies <code>cdm-ok</code>. Use it to check the app is up.</td></tr>
-          <tr><td><span class="verb">POST</span> <span class="path">/cdm/acquire</span></td><td><code>holder</code>*, <code>category</code>, <code>platform</code>, <code>virtual</code>, <code>timeoutSec</code>, <code>cwd</code></td><td>Waits for a matching device. Streams <code>QUEUED</code> lines and heartbeats, then one final line. Closing the connection leaves the queue.</td></tr>
+          <tr><td><span class="verb">POST</span> <span class="path">/cdm/acquire</span></td><td><code>holder</code>*, <code>category</code>, <code>platform</code>, <code>virtual</code>, <code>device</code>, <code>timeoutSec</code>, <code>cwd</code></td><td>Waits for a matching device. Streams <code>QUEUED</code> lines and heartbeats, then one final line. Closing the connection leaves the queue.</td></tr>
           <tr><td><span class="verb">POST</span> <span class="path">/cdm/release</span></td><td><code>holder</code>*, <code>platform</code></td><td>Gives back every device, or only one platform’s. Replies <code>RELEASED</code> or <code>NONE</code>.</td></tr>
           <tr><td><span class="verb get">GET</span> <span class="path">/cdm/status</span></td><td><code>holder</code>*</td><td>One <code>HOLDING</code> line per device, then <code>QUEUED n</code> if waiting. <code>NONE</code> if neither.</td></tr>
           <tr><td><span class="verb get">GET</span> <span class="path">/cdm/devices</span></td><td>—</td><td>Every device with platform, kind, category and who holds it, plus the queue. Feeds the list above.</td></tr>
+          <tr><td><span class="verb get">GET</span> <span class="path">/cdm/list</span></td><td><code>holder</code></td><td>The same devices as plain text, one per line: serial, name, platform and kind, category, then <code>free</code>, <code>yours</code>, <code>in use by …</code>, <code>offline</code> or <code>don't use</code>. What <code>cdm devices</code> prints.</td></tr>
           <tr><td><span class="verb">POST</span> <span class="path">/cdm/renew</span></td><td><code>holder</code>*, <code>platform</code></td><td>Resets the idle timer of the hold, or one platform’s with <code>platform</code>. Replies <code>RENEWED</code> or <code>NONE</code>. Call it every 60 s while in use.</td></tr>
           <tr><td><span class="verb get">GET</span> <span class="path">/cdm/events</span></td><td>—</td><td>Server-sent events. Event <code>devices</code> carries the same JSON as <code>/cdm/devices</code> on every change.</td></tr>
         </tbody>
       </table></div>
-      <p style="font-size:13px;color:var(--muted)">* required. <code>category</code>: <code>phone</code>, <code>watch</code>, <code>tablet</code>, <code>phone,watch</code> or <code>any</code>. <code>platform</code>: <code>android</code> or <code>ios</code>. <code>virtual</code>: <code>true</code> for emulators and simulators, <code>false</code> for real hardware.</p>
+      <p style="font-size:13px;color:var(--muted)">* required. <code>category</code>: <code>phone</code>, <code>watch</code>, <code>tablet</code>, <code>phone,watch</code> or <code>any</code>. <code>platform</code>: <code>android</code> or <code>ios</code>. <code>virtual</code>: <code>true</code> for emulators and simulators, <code>false</code> for real hardware. <code>device</code>: one specific device, by adb serial, hardware serial, iOS UDID or exact name (use <code>serial</code> from <code>/cdm/devices</code>). You wait for that device only, and <code>category</code> defaults to <code>any</code>. An unknown, ambiguous or don’t-use device, or one the other parameters rule out, gets HTTP 400 with a one-line reason.</p>
     </section>
 
     <section id="replies">

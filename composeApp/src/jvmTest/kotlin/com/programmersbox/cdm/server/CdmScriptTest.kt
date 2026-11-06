@@ -72,6 +72,30 @@ class CdmScriptTest {
     }
 
     @Test
+    fun deviceFlagAndDevicesCommand() {
+        val pixel = com.programmersbox.cdm.core.allocator.AllocDevice(
+            com.programmersbox.cdm.core.model.DeviceKey("HW"), "Pixel 8", Category.PHONE, false, listOf("SER-A"),
+        )
+        val m = object : FakeManager() {
+            override val snapshot = kotlinx.coroutines.flow.MutableStateFlow(
+                com.programmersbox.cdm.core.allocator.AllocatorSnapshot(listOf(pixel), emptyMap(), emptyList(), emptyMap()),
+            )
+        }
+        m.acquireImpl = { _, _, _, _, onPos -> onPos(1); AcquireResult.TimedOut(1) }
+        withServer(m) { pf ->
+            val base = arrayOf("--holder", "s:main", "--cwd", "/x")
+            val r = run(pf, "acquire", *base, "--device", "SER-A")
+            assertEquals(Wants(setOf(Category.ANY), Platform.ANDROID, null, pixel.key), m.lastWants)
+            assertTrue("Waiting for SER-A… position 1" in r.out, r.out)
+            val bad = run(pf, "acquire", *base, "--device", "nope")
+            assertEquals(2, bad.code, bad.out)
+            assertTrue("Device Manager refused the request: No device matches \"nope\"" in bad.out, bad.out)
+            val list = run(pf, "devices", *base)
+            assertEquals("SER-A  Pixel 8 · Android real · phone · free\n", list.out)
+        }
+    }
+
+    @Test
     fun liveAcquireQueuedThenGranted() {
         val m = FakeManager().apply {
             acquireImpl = { _, _, _, _, onPos ->

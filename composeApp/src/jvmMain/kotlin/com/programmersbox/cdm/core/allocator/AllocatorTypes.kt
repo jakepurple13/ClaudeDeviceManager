@@ -17,18 +17,28 @@ data class AllocDevice(
     val partner: DeviceKey? = null,
 )
 
-/** What a holder asks for: any of [categories], optionally limited to one [platform] and/or real or virtual devices. */
-data class Wants(val categories: Set<Category>, val platform: Platform? = null, val virtual: Boolean? = null) {
+/**
+ * What a holder asks for: any of [categories], optionally limited to one [platform] and/or real or virtual devices.
+ * With [device] set, only that one device fits (`cdm acquire --device`); the other fields must agree with it.
+ */
+data class Wants(
+    val categories: Set<Category>,
+    val platform: Platform? = null,
+    val virtual: Boolean? = null,
+    val device: DeviceKey? = null,
+) {
     fun fits(d: AllocDevice): Boolean =
         (Category.ANY in categories || d.category in categories) &&
             (platform == null || d.platform == platform) &&
-            (virtual == null || d.virtual == virtual)
+            (virtual == null || d.virtual == virtual) &&
+            (device == null || d.key == device)
 
     /** Human-readable limits beyond the categories, e.g. `["iOS", "real only"]`; empty when unlimited. */
     val limits: List<String>
         get() = listOfNotNull(
             platform?.let { if (it == Platform.IOS) "iOS" else "Android" },
             virtual?.let { if (it) "virtual only" else "real only" },
+            device?.let { "only ${it.hardwareSerial}" },
         )
 
     companion object {
