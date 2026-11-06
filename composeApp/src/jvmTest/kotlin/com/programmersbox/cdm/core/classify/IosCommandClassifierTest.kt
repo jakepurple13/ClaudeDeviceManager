@@ -119,6 +119,17 @@ class IosCommandClassifierTest {
         assertEquals(IosDevice(emptyList(), false, true), k("xcrun simctl install \$CDM_IOS_UDID App.app"))
     }
 
+    @Test fun iosUdidAssignments() {
+        val a = CommandClassifier::iosUdidAssignments
+        assertEquals(listOf(CommandClassifier.IosAssignment(false, u)), a("export CDM_IOS_UDID=$u; x"))
+        assertEquals(listOf(CommandClassifier.IosAssignment(true, u)), a("CDM_IOS_PAIR_UDID='$u' ./t.sh"))
+        assertEquals(listOf(CommandClassifier.IosAssignment(false, null)), a("CDM_IOS_UDID=\$(echo x) ./t.sh"))
+        assertEquals(listOf(CommandClassifier.IosAssignment(false, null)), a("CDM_IOS_UDID=\"\$X\" ./t.sh"))
+        assertEquals(listOf(CommandClassifier.IosAssignment(false, null)), a("CDM_IOS_UDID+=x ./t.sh"))
+        assertEquals(listOf(CommandClassifier.IosAssignment(false, "\$X")), a("CDM_IOS_UDID='\$X' ./t.sh"))
+        assertEquals(emptyList(), a("MY_CDM_IOS_UDID=$u ./t.sh; echo \$CDM_IOS_UDID"))
+    }
+
     @Test fun multipleDestinations() {
         assertEquals(
             IosDevice(listOf(u), false, false),

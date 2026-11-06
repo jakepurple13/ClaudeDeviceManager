@@ -36,7 +36,8 @@ class HookDeciderIosTest {
     private val cwd = "/w"
     private var category = Category.ANY
     private var pinScript: Path? = null
-    private val allocator = Allocator(clock = { Instant.fromEpochMilliseconds(1_000_000) }).also { it.setDevices(listOf(p, w, i1, i2)) }
+    private var now = Instant.fromEpochMilliseconds(1_000_000)
+    private val allocator = Allocator(clock = { now }).also { it.setDevices(listOf(p, w, i1, i2)) }
     private val decider = HookDecider(allocator, iosPinScript = { pinScript }) { category }
 
     private suspend fun bash(cmd: String, holder: HolderId = h) = decider.onBash(holder, cwd, cmd)
@@ -229,6 +230,69 @@ class HookDeciderIosTest {
     @Test fun acquireChainedWithIosWorkWhileHoldingNoIosDenied() = runTest {
         allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.ANDROID))
         assertTrue("on its own first" in bash("cdm acquire --ios && xcrun simctl install booted a.app").reason())
+    }
+
+    // ---- fix round 1 ----
+
+    @Test fun udidAssignmentToOtherDeviceDeniedWhileHolding() = runTest {
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS)) // holds u1
+        for (c in listOf(
+            "export CDM_IOS_UDID=$u2; xcrun simctl install \$CDM_IOS_UDID a.app",
+            "CDM_IOS_UDID=$u2 ./gradlew iosSimulatorArm64Test",
+            "CDM_IOS_UDID=\$(echo x) xcrun simctl install \$CDM_IOS_UDID a.app",
+            "CDM_IOS_UDID=`echo x` ./t.sh",
+            "export CDM_IOS_UDID+=x; ./t.sh",
+            "CDM_IOS_PAIR_UDID=$u2 ./t.sh",
+            "env CDM_IOS_UDID=$untracked ./t.sh",
+        )) {
+            assertIs<HookReply.Deny>(bash(c), c)
+        }
+    }
+
+    @Test fun udidAssignmentEqualToOwnAllowed() = runTest {
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS))
+        val c = "export CDM_IOS_UDID=$u1; xcrun simctl install \$CDM_IOS_UDID a.app"
+        assertEquals("export CDM_IOS_UDID=$u1; $c", bash(c).cmd())
+    }
+
+    @Test fun udidAssignmentWithoutHoldIsANamedDevice() = runTest {
+        allocator.tryGrab(h2, Wants(setOf(Category.PHONE), Platform.IOS)) // s2 holds u1
+        assertTrue("s2:main" in bash("CDM_IOS_UDID=$u1 ./t.sh").reason())
+        assertTrue(untracked in bash("CDM_IOS_UDID=$untracked ./t.sh").reason())
+        assertIs<HookReply.Deny>(bash("CDM_IOS_UDID=\$(pick) ./t.sh"))
+        assertEquals(null, iosHold())
+        // A free tracked UDID is grabbed, like ANDROID_SERIAL=<free serial>.
+        assertEquals("export CDM_IOS_UDID=$u2; CDM_IOS_UDID=$u2 ./t.sh", bash("CDM_IOS_UDID=$u2 ./t.sh").cmd())
+        assertEquals(i2.key, iosHold())
+    }
+
+    @Test fun iosDenyRollsBackFreshAndroidGrab() = runTest {
+        allocator.setDevices(listOf(p, w)) // no iOS device
+        assertIs<HookReply.Deny>(bash("adb shell ls && xcrun simctl install booted a.app"))
+        assertEquals(emptyList(), allocator.holdingsOf(h))
+    }
+
+    @Test fun iosDenyKeepsExistingAndroidHold() = runTest {
+        allocator.setDevices(listOf(p, w))
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.ANDROID))
+        assertIs<HookReply.Deny>(bash("adb shell ls && xcrun simctl install booted a.app"))
+        assertEquals(p.key, allocator.holdingsOf(h).single().device)
+    }
+
+    @Test fun iosRegrabTakenDeniesWithReleasedMessage() = runTest {
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS)) // u1
+        now = Instant.fromEpochMilliseconds(1_000_000) + kotlin.time.Duration.parse("16m"); allocator.tick()
+        allocator.tryGrab(h2, Wants(setOf(Category.PHONE), Platform.IOS)) // s2 takes u1; u2 (tablet) still free
+        val r = bash("xcrun simctl install booted a.app").reason()
+        assertTrue("released after 15 min idle" in r && "is now in use" in r, r)
+        assertTrue("cdm acquire --category phone --ios" in r, r)
+        assertEquals(null, iosHold())
+    }
+
+    @Test fun iosRegrabAfterIdle() = runTest {
+        allocator.tryGrab(h, Wants(setOf(Category.TABLET), Platform.IOS)) // u2
+        now = Instant.fromEpochMilliseconds(1_000_000) + kotlin.time.Duration.parse("16m"); allocator.tick()
+        assertEquals("export CDM_IOS_UDID=$u2; xcrun simctl install $u2 a.app", bash("xcrun simctl install booted a.app").cmd())
     }
 
     @Test fun pinPrefixForms() {

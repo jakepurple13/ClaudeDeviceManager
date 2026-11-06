@@ -66,6 +66,24 @@ object CommandClassifier {
         return out
     }
 
+    /** One `CDM_IOS_UDID=` / `CDM_IOS_PAIR_UDID=` assignment. [value] is null when it isn't a literal (`$x`, `$(…)`, backticks). */
+    data class IosAssignment(val pair: Boolean, val value: String?)
+
+    private val iosUdidAssignment =
+        Regex("""(?<![A-Za-z0-9_])CDM_IOS_(PAIR_)?UDID(\+?)=("(?:[^"\\]|\\.)*"|'[^']*'|[^\s;&|()<>]*)""")
+
+    /**
+     * Every `CDM_IOS_UDID=<value>` and `CDM_IOS_PAIR_UDID=<value>` in the raw text, wherever it appears. Like
+     * [serialAssignments] it over-matches on purpose: a later assignment would override the hook's exported UDID.
+     */
+    fun iosUdidAssignments(command: String): List<IosAssignment> =
+        iosUdidAssignment.findAll(command).map { m ->
+            val raw = m.groupValues[3]
+            // `+=` appends to the current value; an unquoted or double-quoted `$` / backtick expands at run time.
+            val dynamic = m.groupValues[2].isNotEmpty() || (!raw.startsWith("'") && ('$' in raw || '`' in raw))
+            IosAssignment(m.groupValues[1].isNotEmpty(), if (dynamic) null else unquote(raw))
+        }.toList()
+
     /**
      * Every `ANDROID_SERIAL=<value>` in the raw text, wherever it appears (inline, `export`, `env`, inside a subshell).
      * A textual scan on purpose: it over-matches (`echo ANDROID_SERIAL=x`) rather than miss a re-targeting.
