@@ -126,7 +126,15 @@ fun DeviceCard(row: DeviceRow, detailed: Boolean, selected: Boolean, onClick: ()
     CardBox(modifier.alpha(dim), selected = selected, onClick = onClick) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             StatusDot(row.state.dot())
-            Text(row.name, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // The name gives way to the chips: it shrinks (ellipsis) while the chips keep their width.
+            Text(
+                row.name,
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
             when (row.state) {
                 DeviceState.DONT_USE -> Chip("don't use", ChipStyle.DontUse)
                 DeviceState.OFFLINE_HELD -> {

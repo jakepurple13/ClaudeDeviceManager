@@ -70,6 +70,8 @@ fun Chip(label: String, style: ChipStyle, modifier: Modifier = Modifier) {
     Text(
         text = label,
         color = content,
+        maxLines = 1,
+        softWrap = false,
         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
         modifier = modifier
             .background(container, RoundedCornerShape(9.dp))
@@ -117,7 +119,7 @@ fun VirtualChip(platform: Platform, modifier: Modifier = Modifier) {
         horizontalArrangement = Arrangement.spacedBy(3.dp),
     ) {
         MonitorIcon()
-        Text(virtualWord(platform), color = DashedTextColor, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp))
+        Text(virtualWord(platform), color = DashedTextColor, maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp))
     }
 }
 
@@ -127,6 +129,8 @@ fun DashedChip(label: String, modifier: Modifier = Modifier) {
     Text(
         label,
         color = DashedTextColor,
+        maxLines = 1,
+        softWrap = false,
         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
         modifier = modifier.dashedPill().padding(horizontal = 6.dp, vertical = 1.dp),
     )
