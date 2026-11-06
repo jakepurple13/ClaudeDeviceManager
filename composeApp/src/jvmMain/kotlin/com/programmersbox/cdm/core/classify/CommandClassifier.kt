@@ -90,6 +90,29 @@ object CommandClassifier {
         "echo", "printf", "grep", "egrep", "fgrep", "rg", "cat", "printenv", "test", "[", "git",
     )
 
+    /** Commands that run text as shell code. One anywhere in the command (`echo '…' | sh`) voids every exemption. */
+    private val runsShellText = setOf("sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "xargs", "parallel")
+
+    /** Git subcommands that only print or record text; anything else (rebase --exec, aliases, hooks) may run it. */
+    private val gitReadOnly = setOf("commit", "log", "grep", "show", "diff", "status")
+
+    /** Git tokens that can run a command: `-c` (config: aliases, sshCommand), `--exec`, `-x`, foreach, bisect. */
+    private fun gitRunsCommand(t: String) =
+        t == "-c" || t == "--config-env" || t.startsWith("--config-env=") || t.startsWith("--exec") || t == "-x" ||
+            t == "foreach" || t == "bisect"
+
+    /** True when a `git …` segment's words ([w], `git` first) are exempt: a read-only subcommand, no runner token. */
+    private fun gitExempt(w: List<String>): Boolean {
+        if (w.any(::gitRunsCommand)) return false
+        var i = 1
+        while (i < w.size && w[i].startsWith("-")) {
+            // Global options with a separate value.
+            if (w[i] == "-C" || w[i] == "--git-dir" || w[i] == "--work-tree" || w[i] == "--namespace") i++
+            i++
+        }
+        return w.getOrNull(i) in gitReadOnly
+    }
+
     /**
      * Every `CDM_IOS_UDID=<value>` and `CDM_IOS_PAIR_UDID=<value>` in the raw text, plus every `${CDM_IOS_UDID=…}` /
      * `${CDM_IOS_UDID:=…}` expansion. Fails closed: like [serialAssignments] it over-matches (a later assignment
@@ -121,7 +144,9 @@ object CommandClassifier {
 
     /**
      * The argument spans (offsets in [command]) of top-level segments whose command word is in [printOrSearch],
-     * minus anything nested in `$(…)` / backticks. The assignment prefix and the command word are never exempt.
+     * minus anything nested in `$(…)`, `<(…)`, `>(…)` or backticks. The assignment prefix and the command word are
+     * never exempt. Nothing is exempt when any segment runs shell text ([runsShellText], `find -exec`): the printed
+     * text may be piped or written into it.
      */
     private fun exemptRanges(command: String): List<IntRange> {
         val nested = nestedPositions(command)
@@ -130,9 +155,15 @@ object CommandClassifier {
             val seg = command.substring(s, e)
             val p = prefixLength(seg)
             if (p >= seg.length) continue
-            val wordEnd = tokenEnd(seg, p)
-            val word = words(seg.substring(p, wordEnd)).firstOrNull()?.substringAfterLast('/') ?: continue
+            val w = words(seg.substring(p))
+            val word = w.firstOrNull()?.substringAfterLast('/') ?: continue
+            if (word in runsShellText) return emptyList()
+            if (word == "find" && w.any { it == "-exec" || it == "-execdir" || it == "-ok" || it == "-okdir" }) {
+                return emptyList()
+            }
             if (word !in printOrSearch) continue
+            if (word == "git" && !gitExempt(w)) continue
+            val wordEnd = tokenEnd(seg, p)
             var start = -1
             for (i in s + wordEnd until e) {
                 if (nested[i]) {
@@ -148,7 +179,7 @@ object CommandClassifier {
     }
 
     /**
-     * True for every position inside `$(…)` (or `$((…))`) or backticks, outside single quotes. Approximate on
+     * True for every position inside `$(…)` (or `$((…))`), `<(…)`, `>(…)` or backticks, outside single quotes. Approximate on
      * purpose: quotes inside a substitution aren't tracked, so it errs towards "nested" (which is never exempt).
      */
     private fun nestedPositions(c: String): BooleanArray {
@@ -169,7 +200,7 @@ object CommandClassifier {
                         i++
                     }
                     ch == '`' && depth == 0 -> tick = false
-                    ch == '$' && c.getOrNull(i + 1) == '(' -> {
+                    (ch == '$' || ch == '<' || ch == '>') && c.getOrNull(i + 1) == '(' -> {
                         depth++
                         out[i + 1] = true
                         i++
@@ -185,7 +216,8 @@ object CommandClassifier {
                     tick = true
                     out[i] = true
                 }
-                ch == '$' && c.getOrNull(i + 1) == '(' -> {
+                // `$(…)`, and process substitution `<(…)` / `>(…)` (not inside double quotes, where it is literal).
+                (ch == '$' || (!double && (ch == '<' || ch == '>'))) && c.getOrNull(i + 1) == '(' -> {
                     depth = 1
                     out[i] = true
                     out[i + 1] = true

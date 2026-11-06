@@ -324,10 +324,37 @@ class HookDeciderTest {
     @Test fun queuedForVirtualOnlyRealFreeDenied() = runTest {
         allocator.enqueue(h, Wants(setOf(Category.PHONE), android, virtual = true))
         val r = bash("adb shell am start -n a/.Main").reason()
-        assertTrue("Android, virtual only" in r && "queue position 1" in r, r)
-        assertTrue("`cdm acquire --category phone --android --virtual`" in r, r)
+        assertEquals(
+            "You're waiting for a phone device (Android, virtual only), #1 in line. " +
+                "Run `cdm acquire --category phone --android --virtual` to keep waiting, " +
+                "`cdm acquire --category <other>` to wait for something else, or `cdm release` to leave the queue.",
+            r,
+        )
         assertTrue(allocator.holdingsOf(h).isEmpty())
         assertIs<HolderStatus.Queued>(allocator.statusOf(h))
+    }
+
+    @Test fun queuedWithoutPlatformDenyHasNoPlatformFlag() = runTest {
+        allocator.enqueue(h, Wants(setOf(Category.TABLET)))
+        val r = bash("adb shell ls").reason()
+        assertTrue("You're waiting for a tablet device, #1 in line." in r, r)
+        assertTrue("Run `cdm acquire --category tablet` to keep waiting" in r, r)
+        assertTrue(allocator.holdingsOf(h).isEmpty())
+    }
+
+    @Test fun queuedExplicitSerialNotFittingIsGranted() = runTest {
+        // Accepted ruling: an explicit -s is the session's own choice, even if it doesn't fit the queued request.
+        allocator.enqueue(h, Wants(setOf(Category.PHONE), android, virtual = true))
+        assertEquals(pinPrefix("p-usb") + "adb -s p-usb shell ls", bash("adb -s p-usb shell ls").cmd())
+        assertEquals(p.key, allocator.holdingsOf(h).single().device)
+    }
+
+    @Test fun queuedExplicitSerialHeldByOtherDenied() = runTest {
+        allocator.tryGrab(h2, Wants(setOf(Category.PHONE)))
+        allocator.enqueue(h, Wants(setOf(Category.PHONE), android, virtual = true))
+        val r = bash("adb -s p-usb shell ls").reason()
+        assertTrue("in use by s2:main" in r, r)
+        assertTrue(allocator.holdingsOf(h).isEmpty())
     }
 
     @Test fun queuedForVirtualGrabsEmulator() = runTest {

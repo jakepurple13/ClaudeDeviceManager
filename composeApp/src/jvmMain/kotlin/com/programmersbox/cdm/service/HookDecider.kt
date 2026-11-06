@@ -295,7 +295,7 @@ class HookDecider(
             return when (allocator.tryGrab(holder, queued.second.copy(platform = Platform.IOS))) {
                 is GrabResult.Granted -> null
                 GrabResult.Blocked -> HookReply.Deny(releasedByUser(blocked = true))
-                else -> HookReply.Deny(stillQueued(queued.first, queued.second, Platform.IOS))
+                else -> HookReply.Deny(stillQueued(queued.first, queued.second))
             }
         }
         val category = named?.category ?: defaultCategory(req.cwd)
@@ -436,7 +436,7 @@ class HookDecider(
                     return when (val g = allocator.tryGrab(req.holder, wants.copy(platform = Platform.ANDROID))) {
                         is GrabResult.Granted -> req.pin(g.serial)
                         GrabResult.Blocked -> deny(releasedByUser(blocked = true))
-                        else -> deny(stillQueued(position, wants, Platform.ANDROID))
+                        else -> deny(stillQueued(position, wants))
                     }
                 }
                 val category = defaultCategory(req.cwd)
@@ -489,19 +489,24 @@ class HookDecider(
     }
 
     /** Denial for a queued holder that nothing free fits; worded with [Wants.limits], like the queue in the app. */
-    private fun stillQueued(position: Int, wants: Wants, platform: Platform): String {
+    private fun stillQueued(position: Int, wants: Wants): String {
         val cats = wants.categories.takeUnless { it.isEmpty() || Category.ANY in it }
         val what = cats?.joinToString(" or ") { it.id }?.let { "a $it device" } ?: "a device"
         val limits = wants.limits.takeIf { it.isNotEmpty() }?.joinToString(prefix = " (", postfix = ")").orEmpty()
         val category = cats?.joinToString(",") { it.id } ?: Category.ANY.id
-        val flags = (if (platform == Platform.IOS) " --ios" else " --android") +
-            when (wants.virtual) {
-                true -> " --virtual"
-                false -> " --real"
-                null -> ""
-            }
-        return "You're waiting for $what$limits (queue position $position). " +
-            "Run `cdm acquire --category $category$flags` to keep waiting."
+        // Repeat exactly the request the holder is queued with: a platform flag only if it named one.
+        val flags = when (wants.platform) {
+            Platform.IOS -> " --ios"
+            Platform.ANDROID -> " --android"
+            null -> ""
+        } + when (wants.virtual) {
+            true -> " --virtual"
+            false -> " --real"
+            null -> ""
+        }
+        return "You're waiting for $what$limits, #$position in line. " +
+            "Run `cdm acquire --category $category$flags` to keep waiting, " +
+            "`cdm acquire --category <other>` to wait for something else, or `cdm release` to leave the queue."
     }
 
     private fun label(d: AllocDevice) = "${d.name} (${d.connectedSerials.firstOrNull() ?: d.key.hardwareSerial})"

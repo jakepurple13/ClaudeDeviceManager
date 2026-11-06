@@ -292,10 +292,42 @@ class HookDeciderIosTest {
         }
     }
 
+    @Test fun exemptionGapsDenied() = runTest {
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS)) // holds u1
+        for (c in listOf(
+            // Process substitution runs its own command.
+            "cat <(CDM_IOS_UDID=$u2 xcrun simctl install \$CDM_IOS_UDID a.app)",
+            "echo >(CDM_IOS_UDID=$u2 ./t.sh)",
+            // Printed text piped or written into a shell.
+            "echo 'CDM_IOS_UDID=$u2 ./t.sh' | sh",
+            "printf 'CDM_IOS_UDID=$u2' > f; bash f",
+            "grep CDM_IOS_UDID= script | bash",
+            "printf 'CDM_IOS_UDID=$u2 ./t.sh' | xargs -I{} sh -c {}",
+            "echo CDM_IOS_UDID=$u2 > f; source f",
+            "echo CDM_IOS_UDID=$u2 > f; . f",
+            "echo 'CDM_IOS_UDID=$u2 ./t.sh' > f.sh; find . -name f.sh -exec sh {} \\;",
+            // Git forms that can run a command.
+            "git -c alias.x='!CDM_IOS_UDID=$u2 cmd' x",
+            "git -c core.sshCommand='CDM_IOS_UDID=$u2 ssh' fetch",
+            "git rebase --exec 'CDM_IOS_UDID=$u2 ./t.sh' HEAD~1",
+        )) {
+            assertIs<HookReply.Deny>(bash(c), c)
+        }
+        assertFalse(bash("git commit -m \"mention CDM_IOS_UDID=$u2\"") is HookReply.Deny)
+        assertFalse(bash("git log --grep CDM_IOS_UDID= && git diff") is HookReply.Deny)
+    }
+
+    @Test fun queuedWithoutPlatformIosUsesQueuedCategories() = runTest {
+        // Project default (any) would take the iPhone listed first; queued for tablets, the grab takes the iPad.
+        allocator.enqueue(h, Wants(setOf(Category.TABLET)))
+        assertEquals("export CDM_IOS_UDID=$u2; xcrun simctl install $u2 a.app", bash("xcrun simctl install booted a.app").cmd())
+        assertEquals(i2.key, iosHold())
+    }
+
     @Test fun queuedForRealIosOnlySimulatorFreeDenied() = runTest {
         allocator.enqueue(h, Wants(setOf(Category.ANY), Platform.IOS, virtual = false))
         val r = bash("xcrun simctl install booted a.app").reason()
-        assertTrue("iOS, real only" in r && "queue position 1" in r, r)
+        assertTrue("a device (iOS, real only), #1 in line." in r, r)
         assertTrue("`cdm acquire --category any --ios --real`" in r, r)
         assertEquals(null, iosHold())
         assertTrue(allocator.holdingsOf(h).isEmpty())
