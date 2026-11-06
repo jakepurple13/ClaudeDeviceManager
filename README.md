@@ -99,12 +99,14 @@ cdm acquire --category phone             # wait for a phone (also: watch, tablet
 cdm acquire --category phone --ios       # only an iPhone (or an iPhone simulator)
 cdm acquire --category watch --android --virtual   # only a Wear OS emulator
 cdm acquire --category tablet --ios --real         # only a real iPad
+cdm devices                              # every device: serial, name, platform, kind, category, free/in use
+cdm acquire --device 39071FDJH00A2K      # that one device (serial, UDID or exact name); waits if it's in use
 cdm release                              # give back every device this session holds
 cdm release --ios                        # give back only the iOS device (or --android)
 cdm status                               # what this session holds, and its queue position
 ```
 
-`--android` / `--ios` pick the platform and `--real` / `--virtual` pick a real device or an emulator/simulator. Without them, any platform and either kind fits. To hold one device of each platform, run `cdm acquire` once with each flag. A session waits in the queue for one platform at a time. An unknown flag prints the usage and exits with status 2.
+`--android` / `--ios` pick the platform and `--real` / `--virtual` pick a real device or an emulator/simulator. Without them, any platform and either kind fits. To hold one device of each platform, run `cdm acquire` once with each flag. A session waits in the queue for one platform at a time. `--device` asks for one specific device and waits in the queue for that device only; it takes the serial `cdm devices` prints, a UDID, or an exact device name, and implies its platform and any category. A device that doesn't exist, is marked don't use, or conflicts with the other flags is refused with exit status 2. An unknown flag prints the usage and exits with status 2.
 
 `cdm acquire` waits up to about 110 seconds, which keeps it under Claude Code's default 2-minute Bash timeout. If it's still queued, it says so and Claude runs it again. If the app isn't running, it prints `Device Manager not running; proceeding without a device lock.` and exits 0.
 

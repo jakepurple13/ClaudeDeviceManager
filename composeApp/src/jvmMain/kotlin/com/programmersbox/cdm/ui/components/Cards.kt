@@ -192,6 +192,8 @@ fun QueueCard(
             AnimatedVisibility(platform != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { platform?.let { PlatformChip(it) } }
             AnimatedVisibility(chips.any { it.kind == WantChipKind.REAL_ONLY }, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { Chip("real only", ChipStyle.Neutral) }
             AnimatedVisibility(chips.any { it.kind == WantChipKind.VIRTUAL_ONLY }, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { DashedChip("virtual only") }
+            val device = chips.firstOrNull { it.kind == WantChipKind.DEVICE }?.label
+            AnimatedVisibility(device != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { device?.let { Chip(it, ChipStyle.Neutral) } }
         }
         Muted("waiting ${short(row.waited)}", Modifier.padding(top = 2.dp))
     }

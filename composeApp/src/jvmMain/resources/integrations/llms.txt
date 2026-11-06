@@ -17,9 +17,13 @@ CDM is running right now on 127.0.0.1:{{PORT}}.
   and one iOS device.
 
 ## Acquire (blocking, streamed)
-POST /cdm/acquire?holder=&category=&platform=&virtual=&timeoutSec=
+POST /cdm/acquire?holder=&category=&platform=&virtual=&device=&timeoutSec=
 - category: phone | watch | tablet | phone,watch | any
 - platform: android | ios (omit for either). virtual: true | false (omit for either)
+- device: one specific device, by adb serial, hardware serial, iOS UDID or exact
+  name (take "serial" from GET /cdm/devices). Waits in the queue for that device
+  only. Category defaults to any. Unknown, ambiguous, don't-use, or ruled out by
+  the other params: HTTP 400 with a one-line reason.
 - timeoutSec: how long to wait in the queue (default 110).
 - Read the body line by line, never buffered whole:
   "."                                  heartbeat every 5s, ignore
@@ -49,7 +53,7 @@ POST /cdm/release?holder=&platform=   replies RELEASED or NONE
 ## Observe (optional)
 - GET /cdm/devices: JSON {devices:[{key,name,platform,category,virtual,online,
   dontUse,serial,holder:{id,label,agent}|null}], queue:[{position,holder,
-  categories,platform,virtual}]}.
+  categories,platform,virtual,device}]}.
 - GET /cdm/events: server-sent events; event "devices" carries the same JSON
   on every change.
 

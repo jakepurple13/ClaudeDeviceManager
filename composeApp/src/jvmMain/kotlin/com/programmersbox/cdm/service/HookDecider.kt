@@ -228,7 +228,8 @@ class HookDecider(
                 return IosCheck.Stop(
                     HookReply.Deny(
                         "${label(d)} is in use by ${other.key}. " +
-                            "Run `cdm acquire --category ${d.category.id} --ios` to wait for a device.",
+                            "Run `cdm acquire --category ${d.category.id} --ios` to wait for a device, " +
+                            "or `cdm acquire --device ${d.key.hardwareSerial}` to wait for this one.",
                     ),
                 )
             }
@@ -311,7 +312,10 @@ class HookDecider(
             GrabResult.DontUse -> HookReply.Deny(
                 "${named?.let(::label) ?: "That device"} is marked don't use in Device Manager. Ask the user, or use another device.",
             )
-            is GrabResult.HeldByOther -> HookReply.Deny("${label(g.device)} is in use by ${g.holder.key}. Run $acquire to wait for a device.")
+            is GrabResult.HeldByOther -> HookReply.Deny(
+                "${label(g.device)} is in use by ${g.holder.key}. Run $acquire to wait for a device, " +
+                    "or `cdm acquire --device ${g.device.key.hardwareSerial}` to wait for this one.",
+            )
             GrabResult.NoneFree -> HookReply.Deny(
                 if (named != null) "${label(named)} is offline. Boot it, or run $acquire to wait for a device."
                 else noneFree(category, ios = true),
@@ -455,7 +459,8 @@ class HookDecider(
             is GrabResult.Granted -> req.pin(pin)
             is GrabResult.HeldByOther -> deny(
                 "${label(g.device)} is in use by ${g.holder.key}. " +
-                    "Run `cdm acquire --category ${g.device.category.id} --android` to wait for a device.",
+                    "Run `cdm acquire --category ${g.device.category.id} --android` to wait for a device, " +
+                    "or `cdm acquire --device $pin` to wait for this one.",
             )
             GrabResult.DontUse -> deny(
                 "${label(target)} is marked don't use in Device Manager. Ask the user, or use another device.",
@@ -503,7 +508,7 @@ class HookDecider(
             true -> " --virtual"
             false -> " --real"
             null -> ""
-        }
+        } + wants.device?.let { " --device ${it.hardwareSerial}" }.orEmpty()
         return "You're waiting for $what$limits, #$position in line. " +
             "Run `cdm acquire --category $category$flags` to keep waiting, " +
             "`cdm acquire --category <other>` to wait for something else, or `cdm release` to leave the queue."

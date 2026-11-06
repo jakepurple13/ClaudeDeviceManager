@@ -100,6 +100,7 @@ internal fun devicesJson(snap: AllocatorSnapshot, info: Map<HolderId, HolderInfo
                     putJsonArray("categories") { wants.categories.sortedBy { it.id }.forEach { add(it.id) } }
                     put("platform", wants.platform?.name?.lowercase())
                     put("virtual", wants.virtual)
+                    put("device", wants.device?.hardwareSerial)
                 }
             }
         }
