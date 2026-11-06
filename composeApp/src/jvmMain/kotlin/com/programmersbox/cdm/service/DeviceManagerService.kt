@@ -35,7 +35,10 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
@@ -72,6 +75,11 @@ class DeviceManagerService(
 
     /** Allocator events, persisted by the consumer launched in [start]. */
     private val events = Channel<AllocatorEvent>(Channel.UNLIMITED)
+
+    private val _allocatorEvents = MutableSharedFlow<AllocatorEvent>(extraBufferCapacity = 256)
+
+    /** Every allocator event, in order, re-published after it is persisted (the notifier listens here). */
+    val allocatorEvents: SharedFlow<AllocatorEvent> = _allocatorEvents.asSharedFlow()
 
     // Replaced once in start() after the blocked set loads; guarded by mutex.
     private var allocator = newAllocator(emptySet())
@@ -141,7 +149,12 @@ class DeviceManagerService(
                     pinned = it.pinnedPermission
                 }
         }
-        scope.launch { for (e in events) persist(e) }
+        scope.launch {
+            for (e in events) {
+                persist(e)
+                _allocatorEvents.tryEmit(e)
+            }
+        }
         scope.launch {
             while (isActive) {
                 scanOnce()

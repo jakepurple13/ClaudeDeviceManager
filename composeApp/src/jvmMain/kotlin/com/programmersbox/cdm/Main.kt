@@ -1,6 +1,17 @@
 package com.programmersbox.cdm
 
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.awt.ComposeWindow
+import androidx.compose.ui.window.Tray
+import androidx.compose.ui.window.TrayState
+import com.programmersbox.cdm.notify.Notifier
+import java.awt.Frame
+import kotlinx.coroutines.flow.map
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.application
@@ -34,6 +45,7 @@ fun main() {
     val appScope = koin.get<CoroutineScope>(named(APP_SCOPE))
     // Ruling L: start() first, then accept hooks.
     koin.get<DeviceManagerService>().start(appScope)
+    koin.get<Notifier>().start(appScope)
     val port = runBlocking { koin.get<SettingsRepository>().current().port }
     // Port in use, second instance, ...: the controller keeps the UI up and puts the error in ServerStatus.
     // A successful bind installs the Claude Code integration (InstallLifecycle is the controller's listener);
@@ -53,22 +65,52 @@ fun main() {
     runBlocking { server.start(port) }
     applyDevStartRoute(koin.get<Navigator>())
     val chrome = windowChrome()
+    val trayState = koin.get<TrayState>()
+    val notificationsOn = koin.get<SettingsRepository>().settings.map { it.notifications.any }
     application {
+        var mainWindow by remember { mutableStateOf<ComposeWindow?>(null) }
+        val quit = {
+            shutdown()
+            appScope.cancel()
+            exitApplication()
+        }
+        // Compose only shows notifications while a Tray exists, so the menu-bar icon is there only while one is on.
+        val showTray by notificationsOn.collectAsState(initial = false)
+        val trayIcon = AppIcon.painter
+        if (showTray && trayIcon != null) {
+            Tray(
+                icon = trayIcon,
+                state = trayState,
+                tooltip = APP_TITLE,
+                onAction = { mainWindow?.bringToFront() },
+            ) {
+                Item("Show $APP_TITLE", onClick = { mainWindow?.bringToFront() })
+                Separator()
+                Item("Quit", onClick = quit)
+            }
+        }
         AppWindow(
-            onCloseRequest = {
-                shutdown()
-                appScope.cancel()
-                exitApplication()
-            },
+            onCloseRequest = quit,
             title = APP_TITLE,
             chrome = chrome,
             state = rememberWindowState(size = DpSize(1100.dp, 720.dp)),
             titleBar = { TitleBarStatus(APP_TITLE) },
         ) {
-            LaunchedEffect(Unit) { window.minimumSize = Dimension(800, 560) }
+            LaunchedEffect(Unit) {
+                window.minimumSize = Dimension(800, 560)
+                mainWindow = window
+            }
             AppNavigation()
         }
     }
+}
+
+/** The tray's "Show" action: un-minimizes the window and raises it. */
+private fun ComposeWindow.bringToFront() {
+    if (extendedState and Frame.ICONIFIED != 0) extendedState = extendedState and Frame.ICONIFIED.inv()
+    isVisible = true
+    toFront()
+    requestFocus()
 }
 
 /**

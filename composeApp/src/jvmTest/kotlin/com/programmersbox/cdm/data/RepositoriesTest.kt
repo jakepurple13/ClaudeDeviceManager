@@ -55,6 +55,10 @@ class RepositoriesTest {
         assertEquals(PinnedPermission.MIRROR, repo.current().pinnedPermission)
         repo.update { it.copy(pinnedPermission = PinnedPermission.ALWAYS_ASK) }
         assertEquals(AppSettings(47823, 30, 5, PinnedPermission.ALWAYS_ASK), repo.current())
+        assertEquals(NotificationSettings(true, true, true, true), repo.current().notifications)
+        repo.update { it.copy(notifications = NotificationSettings(grab = false, release = true, queued = false, queueStart = true)) }
+        assertEquals(NotificationSettings(false, true, false, true), repo.current().notifications)
+        assertEquals(PinnedPermission.ALWAYS_ASK, repo.current().pinnedPermission)
         db.close()
     }
 

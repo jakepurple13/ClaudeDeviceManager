@@ -20,6 +20,13 @@ import com.programmersbox.cdm.service.DeviceManager
 import com.programmersbox.cdm.service.DeviceManagerService
 import com.programmersbox.cdm.service.PermissionMirror
 import kotlin.io.path.Path
+import androidx.compose.ui.window.TrayState
+import com.programmersbox.cdm.notify.NotificationSender
+import com.programmersbox.cdm.notify.NotificationTester
+import com.programmersbox.cdm.notify.Notifier
+import com.programmersbox.cdm.notify.TrayNotificationSender
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import com.programmersbox.cdm.ui.nav.Navigator
 import com.programmersbox.cdm.ui.nav.ShellViewModel
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -70,6 +77,16 @@ fun appModules(): List<Module> = listOf(
         single { ServerController(get(), get(), listener = get()) } bind ServerControl::class
         single { DeviceManagerService(get(), get(), get(), get(), get(), get(), get()) } bind DeviceManager::class
         single { Navigator() }
+        single { TrayState() }
+        single<NotificationSender> { TrayNotificationSender(get(), get(named(APP_SCOPE))) }
+        single {
+            Notifier(
+                events = get<DeviceManagerService>().allocatorEvents,
+                settings = get<SettingsRepository>().settings.map { it.notifications }.distinctUntilChanged(),
+                manager = get(),
+                sender = get(),
+            )
+        } bind NotificationTester::class
         single<CoroutineScope>(named(APP_SCOPE)) {
             CoroutineScope(
                 SupervisorJob() + Dispatchers.Default +

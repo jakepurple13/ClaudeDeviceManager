@@ -1,7 +1,9 @@
 package com.programmersbox.cdm.ui
 
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
+import com.programmersbox.cdm.data.NotificationSettings
 import com.programmersbox.cdm.data.PinnedPermission
+import com.programmersbox.cdm.notify.NotificationTester
 import com.programmersbox.cdm.data.SettingsRepository
 import com.programmersbox.cdm.install.InstallLifecycle
 import com.programmersbox.cdm.install.InstallStatus
@@ -65,7 +67,10 @@ class SettingsViewModelTest {
     private val status = ServerStatus()
     private val manager = RecordingManager(MutableStateFlow(AllocatorSnapshot(emptyList(), emptyMap(), emptyList(), emptyMap())))
 
-    private fun vm() = SettingsViewModel(testActions(manager), settings, lifecycle, server, status).also { vms += it }
+    private var testSends = 0
+    private val tester = NotificationTester { testSends++ }
+
+    private fun vm() = SettingsViewModel(testActions(manager), settings, lifecycle, server, status, tester).also { vms += it }
 
     private suspend fun SettingsViewModel.loaded() = withTimeout(5_000) { uiState.first { it.loaded } }
 
@@ -167,7 +172,7 @@ class SettingsViewModelTest {
     @Test
     fun saveFailureIsShown() = runBlocking {
         val failing = SettingsRepository(FailingSettingDao())
-        val vm = SettingsViewModel(testActions(manager), failing, lifecycle, server, status).also { vms += it }
+        val vm = SettingsViewModel(testActions(manager), failing, lifecycle, server, status, tester).also { vms += it }
         vm.loaded()
         vm.onIdleChanged("30")
         vm.onSave()
@@ -224,5 +229,28 @@ class SettingsViewModelTest {
         status.fail("Port 47823 is in use — change the port below.")
         val s = withTimeout(5_000) { vm.uiState.first { it.serverError != null } }
         assertEquals("Port 47823 is in use — change the port below.", s.serverError)
+    }
+
+    @Test
+    fun notificationSwitchesPersistAndTestSendsOnlyWhenOneIsOn(): Unit = runBlocking {
+        val vm = vm()
+        vm.loaded()
+        assertEquals(NotificationSettings(), vm.uiState.value.notifications)
+        vm.onSendTestNotification()
+        assertEquals(1, testSends)
+
+        val off = NotificationSettings(grab = false, release = false, queued = false, queueStart = false)
+        vm.onNotificationsChanged(off.copy(release = true))
+        withTimeout(5_000) { settings.settings.first { it.notifications == off.copy(release = true) } }
+        vm.onSendTestNotification()
+        assertEquals(2, testSends)
+        assertEquals(
+            "Sent 1 test notification. None showing? Check the OS notification settings for this app.",
+            vm.uiState.value.notificationResult?.text,
+        )
+
+        vm.onNotificationsChanged(off)
+        vm.onSendTestNotification()
+        assertEquals(2, testSends)
     }
 }

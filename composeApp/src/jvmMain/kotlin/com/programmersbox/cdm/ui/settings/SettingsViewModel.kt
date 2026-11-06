@@ -3,6 +3,8 @@ package com.programmersbox.cdm.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.programmersbox.cdm.data.AppSettings
+import com.programmersbox.cdm.data.NotificationSettings
+import com.programmersbox.cdm.notify.NotificationTester
 import com.programmersbox.cdm.data.PinnedPermission
 import com.programmersbox.cdm.data.SettingsRepository
 import com.programmersbox.cdm.install.InstallLifecycle
@@ -46,6 +48,10 @@ data class SettingsState(
     val pinnedPermission: PinnedPermission = PinnedPermission.MIRROR,
     /** Set when storing a pinned-command mode failed. */
     val pinnedResult: ActionResult? = null,
+    /** The notification switches shown; applied on toggle, not with Save. */
+    val notifications: NotificationSettings = NotificationSettings(),
+    /** Set after a test send, or when storing a switch failed. */
+    val notificationResult: ActionResult? = null,
 ) {
     /** The fields differ from what's stored. */
     val dirty: Boolean get() = loaded && (port != "${saved.port}" || idle != "${saved.idleMinutes}" || editing != "${saved.editingMinutes}")
@@ -73,6 +79,7 @@ class SettingsViewModel(
     private val integration: InstallLifecycle,
     private val server: ServerControl,
     serverStatus: ServerStatus,
+    private val notificationTester: NotificationTester,
 ) : ViewModel() {
     private val state = MutableStateFlow(SettingsState(snippet = integration.snippet, integration = integration.state.value))
     val uiState: StateFlow<SettingsState> = state.asStateFlow()
@@ -81,16 +88,21 @@ class SettingsViewModel(
     /** A selected mode not yet seen back from the DB, so a stale emission doesn't flick the radio back. */
     @Volatile private var pendingPinned: PinnedPermission? = null
 
+    /** Switches toggled but not yet seen back from the DB, so a stale emission doesn't flick them back. */
+    @Volatile private var pendingNotifications: NotificationSettings? = null
+
     init {
         viewModelScope.launch {
             settings.settings.collect { s ->
                 if (pendingPinned == s.pinnedPermission) pendingPinned = null
                 val pinned = pendingPinned ?: s.pinnedPermission
+                if (pendingNotifications == s.notifications) pendingNotifications = null
+                val notifications = pendingNotifications ?: s.notifications
                 state.update { st ->
                     // Fill the fields on first load, and after a save; never over the user's unsaved edits.
                     if (!st.loaded || !st.dirty) {
-                        st.copy(loaded = true, saved = s, port = "${s.port}", idle = "${s.idleMinutes}", editing = "${s.editingMinutes}", portError = null, idleError = null, editingError = null, pinnedPermission = pinned)
-                    } else st.copy(saved = s, pinnedPermission = pinned)
+                        st.copy(loaded = true, saved = s, port = "${s.port}", idle = "${s.idleMinutes}", editing = "${s.editingMinutes}", portError = null, idleError = null, editingError = null, pinnedPermission = pinned, notifications = notifications)
+                    } else st.copy(saved = s, pinnedPermission = pinned, notifications = notifications)
                 }
             }
         }
@@ -154,6 +166,33 @@ class SettingsViewModel(
                 state.update { it.copy(pinnedPermission = it.saved.pinnedPermission, pinnedResult = ActionResult(false, "Could not save: ${e.message ?: e}")) }
             }
         }
+    }
+
+    /** Stores the notification switches at once (no Save). */
+    fun onNotificationsChanged(new: NotificationSettings) {
+        if (new == state.value.notifications) return
+        pendingNotifications = new
+        state.update { it.copy(notifications = new, notificationResult = null) }
+        actions.launch {
+            try {
+                settings.update { it.copy(notifications = new) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (pendingNotifications == new) pendingNotifications = null
+                state.update { it.copy(notifications = it.saved.notifications, notificationResult = ActionResult(false, "Could not save: ${e.message ?: e}")) }
+            }
+        }
+    }
+
+    /** Sends one sample of each enabled notification, so the user can check the OS lets them through. */
+    fun onSendTestNotification() {
+        val n = state.value.notifications
+        val count = listOf(n.grab, n.release, n.queued, n.queueStart).count { it }
+        if (count == 0) return
+        notificationTester.sendTest()
+        val plural = if (count > 1) "s" else ""
+        state.update { it.copy(notificationResult = ActionResult(true, "Sent $count test notification$plural. None showing? Check the OS notification settings for this app.")) }
     }
 
     /** The error banner's Retry: start the server again on the stored port. */

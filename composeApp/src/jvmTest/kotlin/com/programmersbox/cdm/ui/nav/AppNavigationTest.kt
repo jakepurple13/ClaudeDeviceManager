@@ -66,6 +66,7 @@ class AppNavigationTest {
                     single { InstallLifecycle(get()) }
                     single { ServerStatus() }
                     single<ServerControl> { object : ServerControl { override suspend fun restart(port: Int) = Unit } }
+                    single { com.programmersbox.cdm.notify.NotificationTester {} }
                 },
             )
         }

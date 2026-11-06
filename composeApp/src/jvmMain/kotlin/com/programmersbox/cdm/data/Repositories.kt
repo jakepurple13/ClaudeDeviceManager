@@ -30,7 +30,18 @@ data class AppSettings(
     val idleMinutes: Int = 15,
     val editingMinutes: Int = 5,
     val pinnedPermission: PinnedPermission = PinnedPermission.MIRROR,
+    val notifications: NotificationSettings = NotificationSettings(),
 )
+
+/** Which allocator events show a system notification. */
+data class NotificationSettings(
+    val grab: Boolean = true,
+    val release: Boolean = true,
+    val queued: Boolean = true,
+    val queueStart: Boolean = true,
+) {
+    val any: Boolean get() = grab || release || queued || queueStart
+}
 
 data class ActivityEntry(
     val id: Long,
@@ -91,6 +102,10 @@ class SettingsRepository(private val dao: SettingDao) {
         dao.put(SettingEntity(IDLE, n.idleMinutes.toString()))
         dao.put(SettingEntity(EDITING, n.editingMinutes.toString()))
         dao.put(SettingEntity(PINNED, n.pinnedPermission.name))
+        dao.put(SettingEntity(NOTIFY_GRAB, n.notifications.grab.toString()))
+        dao.put(SettingEntity(NOTIFY_RELEASE, n.notifications.release.toString()))
+        dao.put(SettingEntity(NOTIFY_QUEUED, n.notifications.queued.toString()))
+        dao.put(SettingEntity(NOTIFY_QUEUE_START, n.notifications.queueStart.toString()))
     }
 
     private fun List<SettingEntity>.toSettings(): AppSettings {
@@ -101,6 +116,12 @@ class SettingsRepository(private val dao: SettingDao) {
             m[IDLE]?.toIntOrNull() ?: d.idleMinutes,
             m[EDITING]?.toIntOrNull() ?: d.editingMinutes,
             m[PINNED]?.let { v -> PinnedPermission.entries.firstOrNull { it.name == v } } ?: d.pinnedPermission,
+            NotificationSettings(
+                m[NOTIFY_GRAB]?.toBooleanStrictOrNull() ?: d.notifications.grab,
+                m[NOTIFY_RELEASE]?.toBooleanStrictOrNull() ?: d.notifications.release,
+                m[NOTIFY_QUEUED]?.toBooleanStrictOrNull() ?: d.notifications.queued,
+                m[NOTIFY_QUEUE_START]?.toBooleanStrictOrNull() ?: d.notifications.queueStart,
+            ),
         )
     }
 
@@ -109,6 +130,10 @@ class SettingsRepository(private val dao: SettingDao) {
         const val IDLE = "idleMinutes"
         const val EDITING = "editingMinutes"
         const val PINNED = "pinnedPermission"
+        const val NOTIFY_GRAB = "notifyGrab"
+        const val NOTIFY_RELEASE = "notifyRelease"
+        const val NOTIFY_QUEUED = "notifyQueued"
+        const val NOTIFY_QUEUE_START = "notifyQueueStart"
     }
 }
 
