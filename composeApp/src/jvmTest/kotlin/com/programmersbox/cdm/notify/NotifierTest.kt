@@ -49,7 +49,7 @@ class NotifierTest {
     private val settings = MutableStateFlow(NotificationSettings())
     private val sent = mutableListOf<SystemNotice>()
     private val scope = CoroutineScope(Dispatchers.Unconfined)
-    private val notifier = Notifier(events, settings, manager) { title, body -> sent += SystemNotice(title, body) }
+    private val notifier = Notifier(events, settings, manager) { sent += it }
         .also { it.start(scope) }
 
     @AfterTest fun tearDown() = scope.cancel()
@@ -62,8 +62,13 @@ class NotifierTest {
         emit(AllocatorEvent.Released(t0, app, pixel, ReleaseReason.IDLE_TIMEOUT))
         assertEquals(
             listOf(
-                SystemNotice("Pixel 8 grabbed", "gabb-watch-app now holds Pixel 8."),
-                SystemNotice("Pixel 8 released", "gabb-watch-app was idle too long."),
+                SystemNotice(
+                    "Pixel 8 grabbed",
+                    "gabb-watch-app now holds Pixel 8.",
+                    open = NoticeTarget.Device(pixel),
+                    release = HeldDevice(pixel, app),
+                ),
+                SystemNotice("Pixel 8 released", "gabb-watch-app was idle too long.", open = NoticeTarget.Device(pixel)),
             ),
             sent,
         )
@@ -75,8 +80,13 @@ class NotifierTest {
         emit(AllocatorEvent.Granted(t0 + 252.seconds, sub, pixel))
         assertEquals(
             listOf(
-                SystemNotice("Waiting for a phone", "launcher-tests (subagent) is #2 in line."),
-                SystemNotice("launcher-tests (subagent) is up", "Got Pixel 8 after waiting 4 min 12 s."),
+                SystemNotice("Waiting for a phone", "launcher-tests (subagent) is #2 in line.", open = NoticeTarget.Queue(sub)),
+                SystemNotice(
+                    "launcher-tests (subagent) is up",
+                    "Got Pixel 8 after waiting 4 min 12 s.",
+                    open = NoticeTarget.Device(pixel),
+                    release = HeldDevice(pixel, sub),
+                ),
             ),
             sent,
         )
@@ -108,7 +118,7 @@ class NotifierTest {
     @Test
     fun unknownHolderAndDeviceFallBackToIds() {
         emit(AllocatorEvent.Granted(t0, unknown, DeviceKey("ZX81")))
-        assertEquals(SystemNotice("ZX81 grabbed", "Session deadbeef now holds ZX81."), sent.single())
+        assertEquals("ZX81 grabbed" to "Session deadbeef now holds ZX81.", sent.single().let { it.title to it.body })
     }
 
     @Test

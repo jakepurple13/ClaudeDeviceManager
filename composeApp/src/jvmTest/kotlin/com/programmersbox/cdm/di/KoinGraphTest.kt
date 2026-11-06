@@ -14,8 +14,7 @@ class KoinGraphTest {
         // One module including all: uiModule's definitions depend on singles declared in the core module.
         // DeviceKey / HolderId are the detail view models' parametersOf arguments.
         // Flow: the Notifier's events and settings, built inline from other singles.
-        // Function0: the native notification sender's click callback (the main window's bringToFront).
         module { includes(appModules()) }
-            .verify(extraTypes = listOf(Path::class, Set::class, DeviceKey::class, HolderId::class, Flow::class, Function0::class))
+            .verify(extraTypes = listOf(Path::class, Set::class, DeviceKey::class, HolderId::class, Flow::class))
     }
 }

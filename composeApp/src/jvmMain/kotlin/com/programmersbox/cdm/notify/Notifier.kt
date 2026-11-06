@@ -16,7 +16,7 @@ import kotlinx.coroutines.launch
 
 /** Shows one system notification. */
 fun interface NotificationSender {
-    fun send(title: String, body: String)
+    fun send(notice: SystemNotice)
 }
 
 /** The Settings screen's "Send test notification". */
@@ -24,7 +24,31 @@ fun interface NotificationTester {
     fun sendTest()
 }
 
-data class SystemNotice(val title: String, val body: String)
+/** What clicking a notification (or its Open button) shows. */
+sealed interface NoticeTarget {
+    data class Device(val key: DeviceKey) : NoticeTarget
+    data class Queue(val holder: HolderId) : NoticeTarget
+
+    /** The Devices list (test notifications). */
+    data object Devices : NoticeTarget
+
+    /** The Queue list (test notifications). */
+    data object QueueList : NoticeTarget
+}
+
+/** A device a notification offers to release, and who held it when the notification was sent. */
+data class HeldDevice(val device: DeviceKey, val holder: HolderId)
+
+/**
+ * One notification. [open] is where a click goes; [release] adds a Release button (grab and queue start); the
+ * others get an Open button. Senders without button support show only the title and body.
+ */
+data class SystemNotice(
+    val title: String,
+    val body: String,
+    val open: NoticeTarget? = null,
+    val release: HeldDevice? = null,
+)
 
 /**
  * Turns allocator events into system notifications, filtered by the user's [NotificationSettings].
@@ -48,16 +72,21 @@ class Notifier(
         scope.launch { events.collect { e -> notice(e)?.let { send(it) } } }
     }
 
+    /**
+     * One sample per enabled switch, with the same buttons as the real ones. Their Release names a holder that holds
+     * nothing, so it can't free a real device; their Open goes to the Devices and Queue lists.
+     */
     override fun sendTest() {
         val on = enabled
-        if (on.grab) send(SystemNotice("Pixel 8 grabbed", "my-app now holds Pixel 8. (Test notification)"))
-        if (on.release) send(SystemNotice("Pixel 8 released", "my-app released it. (Test notification)"))
-        if (on.queued) send(SystemNotice("Waiting for a phone", "my-app is #2 in line. (Test notification)"))
-        if (on.queueStart) send(SystemNotice("my-app is up", "Got Pixel 8 after waiting 4 min 12 s. (Test notification)"))
+        val fake = HeldDevice(DeviceKey("test-device"), HolderId("test-session"))
+        if (on.grab) send(SystemNotice("Pixel 8 grabbed", "my-app now holds Pixel 8. (Test notification)", release = fake))
+        if (on.release) send(SystemNotice("Pixel 8 released", "my-app released it. (Test notification)", open = NoticeTarget.Devices))
+        if (on.queued) send(SystemNotice("Waiting for a phone", "my-app is #2 in line. (Test notification)", open = NoticeTarget.QueueList))
+        if (on.queueStart) send(SystemNotice("my-app is up", "Got Pixel 8 after waiting 4 min 12 s. (Test notification)", release = fake))
     }
 
     private fun send(n: SystemNotice) {
-        runCatching { sender.send(n.title, n.body) }
+        runCatching { sender.send(n) }
             .onFailure { System.err.println("cdm: notification failed: $it") }
     }
 
@@ -77,12 +106,19 @@ class Notifier(
                 val since = queuedAt.remove(e.holder)
                 when {
                     since != null && on.queueStart -> queueStarted(e.holder, e.device, e.at - since)
-                    on.grab -> SystemNotice("${device(e.device)} grabbed", "${holder(e.holder)} now holds ${device(e.device)}.")
+                    on.grab -> SystemNotice(
+                        "${device(e.device)} grabbed",
+                        "${holder(e.holder)} now holds ${device(e.device)}.",
+                        open = NoticeTarget.Device(e.device),
+                        release = HeldDevice(e.device, e.holder),
+                    )
                     else -> null
                 }
             }
             is AllocatorEvent.Released ->
-                if (on.release) SystemNotice("${device(e.device)} released", releaseBody(holder(e.holder), e.reason)) else null
+                if (on.release) {
+                    SystemNotice("${device(e.device)} released", releaseBody(holder(e.holder), e.reason), open = NoticeTarget.Device(e.device))
+                } else null
             is AllocatorEvent.Blocked, is AllocatorEvent.Unblocked -> null
         }
     }
@@ -91,11 +127,16 @@ class Notifier(
         val what = if (wants.isEmpty() || Category.ANY in wants) "a device" else "a " + wants.joinToString(" or ") { it.id }
         val position = manager.snapshot.value.queue.indexOf(h) + 1
         val body = if (position > 0) "${holder(h)} is #$position in line." else "${holder(h)} is in line."
-        return SystemNotice("Waiting for $what", body)
+        return SystemNotice("Waiting for $what", body, open = NoticeTarget.Queue(h))
     }
 
     private fun queueStarted(h: HolderId, d: DeviceKey, waited: Duration) =
-        SystemNotice("${holder(h)} is up", "Got ${device(d)} after waiting ${waitText(waited)}.")
+        SystemNotice(
+            "${holder(h)} is up",
+            "Got ${device(d)} after waiting ${waitText(waited)}.",
+            open = NoticeTarget.Device(d),
+            release = HeldDevice(d, h),
+        )
 
     private fun device(key: DeviceKey): String =
         manager.snapshot.value.devices.firstOrNull { it.key == key }?.name ?: key.hardwareSerial

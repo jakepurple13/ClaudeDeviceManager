@@ -21,6 +21,8 @@ import com.programmersbox.cdm.service.DeviceManagerService
 import com.programmersbox.cdm.service.PermissionMirror
 import kotlin.io.path.Path
 import androidx.compose.ui.window.TrayState
+import com.programmersbox.cdm.notify.AppNoticeActions
+import com.programmersbox.cdm.notify.NoticeActions
 import com.programmersbox.cdm.notify.NotificationSender
 import com.programmersbox.cdm.notify.NotificationTester
 import com.programmersbox.cdm.notify.Notifier
@@ -83,12 +85,8 @@ fun appModules(): List<Module> = listOf(
         single { MainWindowHolder() }
         // Native notifications; the Compose tray is the fallback where Nucleus isn't available (`./gradlew run`).
         single<NotificationSender> { TrayNotificationSender(get(), get(named(APP_SCOPE))) }
-        single {
-            NucleusNotificationSender(
-                fallback = get(),
-                onActivated = get<MainWindowHolder>()::bringToFront,
-            )
-        }
+        single<NoticeActions> { AppNoticeActions(get(), get(), get()) }
+        single { NucleusNotificationSender(fallback = get(), actions = get()) }
         single {
             Notifier(
                 events = get<DeviceManagerService>().allocatorEvents,

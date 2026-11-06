@@ -62,10 +62,8 @@ fun main() {
     val chrome = windowChrome()
     val trayState = koin.get<TrayState>()
     val mainWindow = koin.get<MainWindowHolder>()
-    // Ask for notification permission at launch (when any switch is on), not on the first event, which would be lost.
-    appScope.launch {
-        if (koin.get<SettingsRepository>().current().notifications.any) koin.get<NucleusNotificationSender>().requestPermission()
-    }
+    // Register notification buttons and ask for permission at launch, not on the first event, which would be lost.
+    appScope.launch { koin.get<NucleusNotificationSender>().requestPermission() }
     application {
         val quit = {
             shutdown()

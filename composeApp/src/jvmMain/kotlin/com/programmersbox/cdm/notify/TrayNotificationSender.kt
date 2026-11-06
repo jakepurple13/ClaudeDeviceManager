@@ -32,7 +32,8 @@ class TrayNotificationSender(
         }
     }
 
-    override fun send(title: String, body: String) {
-        queue.trySend(Notification(title, body, Notification.Type.Info))
+    /** Title and body only: tray notifications have no buttons or click handling. */
+    override fun send(notice: SystemNotice) {
+        queue.trySend(Notification(notice.title, notice.body, Notification.Type.Info))
     }
 }
