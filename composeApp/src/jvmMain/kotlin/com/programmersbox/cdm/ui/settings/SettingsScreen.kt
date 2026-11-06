@@ -49,6 +49,7 @@ import com.programmersbox.cdm.ui.components.Muted
 import com.programmersbox.cdm.ui.components.SectionLabel
 import com.programmersbox.cdm.ui.components.SmallButton
 import com.programmersbox.cdm.ui.components.StatusDot
+import com.programmersbox.cdm.ui.update.UpdatesSection
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import org.koin.compose.viewmodel.koinViewModel
@@ -141,6 +142,8 @@ fun SettingsScreen(vm: SettingsViewModel = koinViewModel()) {
             }
             ResultLine(s.repairResult)
         }
+
+        UpdatesSection()
 
         SectionLabel("CLAUDE.md snippet")
         CardBox {

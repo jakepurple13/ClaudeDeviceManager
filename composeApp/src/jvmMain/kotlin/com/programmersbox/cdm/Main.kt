@@ -14,6 +14,7 @@ import com.programmersbox.cdm.di.appModules
 import com.programmersbox.cdm.install.InstallLifecycle
 import com.programmersbox.cdm.server.ServerController
 import com.programmersbox.cdm.service.DeviceManagerService
+import com.programmersbox.cdm.update.UpdateController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
@@ -59,6 +60,9 @@ fun main() {
     routeQuitThroughWindowClose()
     AppIcon.applyToDock()
     runBlocking { server.start(port) }
+    // Checks GitHub releases now and every 6 h; a no-op when run from Gradle. Installing exits through the
+    // shutdown hook above, so the integration is removed before the new version starts.
+    koin.get<UpdateController>().start()
     val navigator = koin.get<Navigator>()
     applyDevStartRoute(navigator)
     val lifecycle = koin.get<LifecycleController>()

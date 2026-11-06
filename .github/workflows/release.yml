@@ -1,0 +1,98 @@
+# Builds unsigned installers on each OS, writes the latest-*.yml update metadata the in-app updater reads, and
+# publishes them as a GitHub release. Trigger: push a tag such as v1.2.0 (stable) or v1.3.0-beta.1 (pre-release,
+# beta channel). Each tag must be a higher semver than the last, or installed apps won't see it as an update.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: NucleusFramework/Nucleus/.github/actions/setup-nucleus@v2.5.18
+        with:
+          java-version: '25'
+          packaging-tools: 'true'
+      - run: ./gradlew :composeApp:jvmTest --stacktrace --no-daemon
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, arch: arm64 }
+          - { os: windows-latest, arch: amd64 }
+          - { os: ubuntu-latest, arch: amd64 }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: NucleusFramework/Nucleus/.github/actions/setup-nucleus@v2.5.18
+        with:
+          java-version: '25'
+          packaging-tools: 'true'
+      - name: Version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      # No signing secrets: macOS gets an ad-hoc signature, Windows and Linux ship unsigned.
+      - name: Package
+        run: ./gradlew :composeApp:packageDistributionForCurrentOS -PappVersion="$VERSION" --stacktrace --no-daemon
+      # Only installers and their block maps. generate-update-yml lists every non-yml file it finds, so the .app
+      # bundle, package.json and per-format latest-*.yml must not be in the uploaded folder.
+      - name: Stage installers
+        run: |
+          mkdir -p release-assets
+          find composeApp/build/compose/binaries -type f -name 'ClaudeDeviceManager-*' -exec cp {} release-assets/ \;
+          ls -l release-assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ runner.os }}-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: release-assets-*
+      - name: Channel from tag
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          VERSION="${TAG#v}"
+          case "$VERSION" in
+            *-alpha*) CHANNEL=alpha; RELEASE_TYPE=prerelease ;;
+            *-beta*)  CHANNEL=beta;  RELEASE_TYPE=prerelease ;;
+            *)        CHANNEL=latest; RELEASE_TYPE=release ;;
+          esac
+          {
+            echo "TAG=$TAG"
+            echo "VERSION=$VERSION"
+            echo "CHANNEL=$CHANNEL"
+            echo "RELEASE_TYPE=$RELEASE_TYPE"
+          } >> "$GITHUB_ENV"
+      - uses: NucleusFramework/Nucleus/.github/actions/generate-update-yml@v2.5.18
+        with:
+          artifacts-path: artifacts
+          version: ${{ env.VERSION }}
+          channel: ${{ env.CHANNEL }}
+      - name: Show update metadata
+        run: for f in artifacts/update-yml/*.yml; do echo "== $f"; cat "$f"; done
+      - uses: NucleusFramework/Nucleus/.github/actions/publish-release@v2.5.18
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        with:
+          artifacts-path: artifacts
+          tag: ${{ env.TAG }}
+          release-type: ${{ env.RELEASE_TYPE }}

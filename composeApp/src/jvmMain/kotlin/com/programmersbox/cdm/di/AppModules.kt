@@ -42,6 +42,10 @@ import com.programmersbox.cdm.ui.queue.QueueViewModel
 import com.programmersbox.cdm.ui.projects.ProjectsViewModel
 import com.programmersbox.cdm.ui.sessions.SessionsViewModel
 import com.programmersbox.cdm.ui.settings.SettingsViewModel
+import com.programmersbox.cdm.ui.update.UpdateViewModel
+import com.programmersbox.cdm.update.AppUpdater
+import com.programmersbox.cdm.update.NucleusAppUpdater
+import com.programmersbox.cdm.update.UpdateController
 import org.koin.dsl.bind
 import org.koin.dsl.module
 
@@ -83,6 +87,8 @@ fun appModules(): List<Module> = listOf(
                 repairIntegration = { integration.repair() },
             )
         }
+        single<AppUpdater> { NucleusAppUpdater() }
+        single { UpdateController(get(), get(named(APP_SCOPE))) }
         single<CoroutineScope>(named(APP_SCOPE)) {
             CoroutineScope(
                 SupervisorJob() + Dispatchers.Default +
@@ -107,4 +113,5 @@ val uiModule: Module = module {
     viewModelOf(::SessionsViewModel)
     viewModelOf(::ProjectsViewModel)
     viewModelOf(::SettingsViewModel)
+    viewModelOf(::UpdateViewModel)
 }
