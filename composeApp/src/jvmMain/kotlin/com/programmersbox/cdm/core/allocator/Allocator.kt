@@ -87,8 +87,11 @@ class Allocator(
             if (d.connectedSerials.isEmpty() || !partnerFree(d)) return GrabResult.NoneFree
             return grant(holder, d)
         }
-        val existing = heldDevicesOf(holder).firstOrNull { wants.fits(it) }
-        if (existing != null) return granted(existing, holder)
+        // A pair hold fits when either side does; the result always reports the primary, matching serialFor.
+        val existing = holdingsOf(holder).firstOrNull { h ->
+            listOfNotNull(h.device, h.partner).any { k -> known[k]?.let(wants::fits) == true }
+        }
+        if (existing != null) return granted(known.getValue(existing.device), holder)
         val free = devices.firstOrNull {
             !it.dontUse && it.connectedSerials.isNotEmpty() && it.key !in holds && wants.fits(it) &&
                 !holds(holder, it.platform) && partnerFree(it)
@@ -323,22 +326,21 @@ class Allocator(
     /**
      * Gives a free, connected, usable device to the first queued holder it fits who doesn't hold its platform yet.
      * [except] is the holder that just gave the device up: it may still be queued for its other platform.
-     * For one of a pair, the partner is tried too (a holder queued for the watch gets it when the iPhone frees up),
-     * and each side is granted only when the other is usable and free.
+     * For one of a pair, both sides are offered at once: the first queued holder (in queue order) that fits either
+     * side gets the pair, with the side it fits as primary. A side is offered only when its partner is usable and free.
      */
     private fun passToQueue(device: DeviceKey, except: HolderId? = null) {
-        passOne(device, except)
-        known[device]?.partner?.let { passOne(it, except) }
-    }
-
-    private fun passOne(device: DeviceKey, except: HolderId?) {
-        if (device in holds) return
-        val d = devices.firstOrNull { it.key == device } ?: return
-        if (d.dontUse || d.connectedSerials.isEmpty() || !partnerFree(d)) return
-        val next = queue.firstOrNull {
-            it != except && it !in blockedHolders && queueWants[it]?.fits(d) == true && !holds(it, d.platform)
-        } ?: return
-        grant(next, d)
+        val sides = listOfNotNull(device, known[device]?.partner).distinct()
+            .mapNotNull { k -> devices.firstOrNull { it.key == k } }
+            .filter { it.key !in holds && !it.dontUse && it.connectedSerials.isNotEmpty() && partnerFree(it) }
+        if (sides.isEmpty()) return
+        for (holder in queue) {
+            if (holder == except || holder in blockedHolders) continue
+            val wants = queueWants[holder] ?: continue
+            val side = sides.firstOrNull { wants.fits(it) && !holds(holder, it.platform) } ?: continue
+            grant(holder, side)
+            return
+        }
     }
 
     private fun emit(e: AllocatorEvent) = onEvent(e)

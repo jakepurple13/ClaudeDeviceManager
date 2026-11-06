@@ -140,4 +140,32 @@ class AllocatorPairTest {
         assertEquals(watchKey, hold.device)
         assertEquals(phoneKey, hold.partner)
     }
+    @Test fun pairGoesToEarliestQueuedHolderFittingEitherSide() {
+        val h3 = HolderId("s3")
+        for (released in listOf(watchKey, phoneKey)) {
+            for (first in listOf(iosPhone, iosWatch)) {
+                val second = if (first == iosPhone) iosWatch else iosPhone
+                val a = alloc()
+                a.tryGrab(h1, iosWatch)
+                assertEquals(1, a.enqueue(h2, first))
+                assertEquals(2, a.enqueue(h3, second))
+                a.releaseDevice(released, block = false)
+                pairHeldBy(a, h2)
+                val hold = a.holdingsOf(h2).single()
+                val (primary, partner) = if (first == iosPhone) phoneKey to watchKey else watchKey to phoneKey
+                assertEquals(primary, hold.device, "released=$released first=$first")
+                assertEquals(partner, hold.partner)
+                assertEquals(HolderStatus.Queued(1, second), a.statusOf(h3))
+            }
+        }
+    }
+
+    @Test fun unflaggedGrabMatchingPartnerReportsPrimary() {
+        val a = alloc()
+        a.tryGrab(h1, iosWatch)
+        val before = a.holdingsOf(h1)
+        assertEquals(GrabResult.Granted(w, "W-UDID"), a.tryGrab(h1, Wants(setOf(Category.PHONE))))
+        assertEquals(before, a.holdingsOf(h1))
+        assertEquals("W-UDID", a.serialFor(h1, Platform.IOS))
+    }
 }
