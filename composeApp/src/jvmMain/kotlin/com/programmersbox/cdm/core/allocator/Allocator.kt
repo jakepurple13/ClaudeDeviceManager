@@ -15,6 +15,11 @@ data class Timers(val idle: Duration = 15.minutes, val editing: Duration = 5.min
  *
  * A holder holds at most one device per [Platform]. Each hold has its own idle/editing timer and its own
  * Released record, so a timeout on one platform can be regrabbed without touching the other.
+ *
+ * A device with [AllocDevice.partner] set (a real Apple Watch and its iPhone) is held as a pair: one hold whose
+ * [HolderStatus.Holding.device] is the requested key and [HolderStatus.Holding.partner] the other. Both keys map to
+ * the holder in [holds]. A pair is grantable only when the partner is listed, connected, usable and free. Release,
+ * hand-off and timeouts act on the pair as a unit.
  */
 class Allocator(
     private val clock: () -> Instant,
@@ -79,13 +84,14 @@ class Allocator(
             if (holds(holder, d.platform)) return GrabResult.NoneFree
             if (d.dontUse) return GrabResult.DontUse
             holds[d.key]?.let { return GrabResult.HeldByOther(d, it) }
-            if (d.connectedSerials.isEmpty()) return GrabResult.NoneFree
+            if (d.connectedSerials.isEmpty() || !partnerFree(d)) return GrabResult.NoneFree
             return grant(holder, d)
         }
-        val existing = holdingsOf(holder).map { known.getValue(it.device) }.firstOrNull { wants.fits(it) }
+        val existing = heldDevicesOf(holder).firstOrNull { wants.fits(it) }
         if (existing != null) return granted(existing, holder)
         val free = devices.firstOrNull {
-            !it.dontUse && it.connectedSerials.isNotEmpty() && it.key !in holds && wants.fits(it) && !holds(holder, it.platform)
+            !it.dontUse && it.connectedSerials.isNotEmpty() && it.key !in holds && wants.fits(it) &&
+                !holds(holder, it.platform) && partnerFree(it)
         }
         return if (free != null) grant(holder, free) else GrabResult.NoneFree
     }
@@ -101,7 +107,7 @@ class Allocator(
         val satisfied = if (wants.platform != null) {
             holds(holder, wants.platform)
         } else {
-            holdingsOf(holder).any { h -> known[h.device]?.let(wants::fits) == true } || Platform.entries.all { holds(holder, it) }
+            heldDevicesOf(holder).any(wants::fits) || Platform.entries.all { holds(holder, it) }
         }
         if (satisfied) return 0
         val existing = queue.indexOf(holder)
@@ -124,7 +130,10 @@ class Allocator(
         }
     }
 
-    /** Releases [device]. With [block], the holder's other holds are released too and the holder is blocked. */
+    /**
+     * Releases [device] (with its partner, when it is one of a pair). With [block], the holder's other holds are
+     * released too and the holder is blocked.
+     */
     fun releaseDevice(device: DeviceKey, block: Boolean) {
         val holder = holds[device] ?: return
         if (block) removeFromQueueInternal(holder)
@@ -141,14 +150,16 @@ class Allocator(
 
     /**
      * No-op if [to] is blocked or already holds a device of this device's platform, or the device is don't-use or
-     * offline (no connected serials).
+     * offline (no connected serials). [device] may be either key of a pair: the whole pair moves, keeping its
+     * primary, and only when the partner is usable too.
      */
     fun handOff(device: DeviceKey, to: HolderId) {
         val old = holds[device] ?: return
-        val d = known[device] ?: return
+        val primary = holdingOf(old, device)?.device ?: device
+        val d = known[primary] ?: return
         if (old == to || to in blockedHolders || holds(to, d.platform)) return
-        if (d.dontUse || devices.firstOrNull { it.key == device }?.connectedSerials.isNullOrEmpty()) return
-        free(device, old, ReleaseReason.USER_HANDOFF)
+        if (!usable(primary) || d.partner?.let(::usable) == false) return
+        free(primary, old, ReleaseReason.USER_HANDOFF)
         grant(to, d)
     }
 
@@ -196,10 +207,11 @@ class Allocator(
         val d = devices.firstOrNull { it.key == st.lastDevice } ?: return GrabResult.NoneFree
         if (d.dontUse) return GrabResult.DontUse
         holds[d.key]?.let { return GrabResult.HeldByOther(d, it) }
-        if (d.connectedSerials.isEmpty()) return GrabResult.NoneFree
+        if (d.connectedSerials.isEmpty() || !partnerFree(d)) return GrabResult.NoneFree
         return grant(holder, d)
     }
 
+    /** With [releaseNow], a held pair is released as a unit whichever of its keys is marked. */
     fun setDontUse(device: DeviceKey, dontUse: Boolean, releaseNow: Boolean) {
         known[device]?.let { known[device] = it.copy(dontUse = dontUse) }
         devices = devices.map { if (it.key == device) it.copy(dontUse = dontUse) else it }
@@ -242,6 +254,24 @@ class Allocator(
 
     private fun holds(holder: HolderId, platform: Platform): Boolean = holdings[holder]?.containsKey(platform) == true
 
+    /** The holder's hold covering [device] as its primary or its partner. */
+    private fun holdingOf(holder: HolderId, device: DeviceKey): HolderStatus.Holding? =
+        holdings[holder]?.values?.firstOrNull { it.device == device || it.partner == device }
+
+    /** Every device the holder has, partners included, primaries first within each hold. */
+    private fun heldDevicesOf(holder: HolderId): List<AllocDevice> =
+        holdingsOf(holder).flatMap { listOfNotNull(it.device, it.partner) }.mapNotNull { known[it] }
+
+    /** Listed, connected and not don't-use. Says nothing about holds. */
+    private fun usable(key: DeviceKey): Boolean =
+        devices.firstOrNull { it.key == key }?.let { !it.dontUse && it.connectedSerials.isNotEmpty() } == true
+
+    /** True for an unpaired device; for a paired one, the partner must be usable and not held. */
+    private fun partnerFree(d: AllocDevice): Boolean {
+        val partner = d.partner ?: return true
+        return partner != d.key && partner !in holds && usable(partner)
+    }
+
     private fun platformsOf(wants: Wants): List<Platform> = wants.platform?.let(::listOf) ?: Platform.entries
 
     private fun granted(d: AllocDevice, holder: HolderId): GrabResult.Granted {
@@ -258,23 +288,28 @@ class Allocator(
         if (queuedFor == null || queuedFor == d.platform) removeFromQueueInternal(holder, emitEvent = false)
         val now = clock()
         holds[d.key] = holder
+        d.partner?.let { holds[it] = holder }
         holdings.getOrPut(holder) { LinkedHashMap() }[d.platform] =
-            HolderStatus.Holding(d.key, now, now, editing = false, platform = d.platform)
+            HolderStatus.Holding(d.key, now, now, editing = false, platform = d.platform, partner = d.partner)
         released[holder]?.remove(d.platform)
         emit(AllocatorEvent.Granted(now, holder, d.key))
         return granted(d, holder)
     }
 
+    /** Frees [device], or the whole pair when [device] is either key of one. Records and emits the primary. */
     private fun free(device: DeviceKey, holder: HolderId, reason: ReleaseReason) {
-        holds.remove(device)
         val m = holdings[holder]
-        val platform = m?.entries?.firstOrNull { it.value.device == device }?.key ?: known[device]?.platform ?: Platform.ANDROID
+        val entry = m?.entries?.firstOrNull { it.value.device == device || it.value.partner == device }
+        val primary = entry?.value?.device ?: device
+        holds.remove(primary)
+        entry?.value?.partner?.let { if (holds[it] == holder) holds.remove(it) }
+        val platform = entry?.key ?: known[device]?.platform ?: Platform.ANDROID
         m?.remove(platform)
         if (m != null && m.isEmpty()) holdings.remove(holder)
         val r = released.getOrPut(holder) { LinkedHashMap() }
         r.remove(platform) // re-insert so the most recent release is last
-        r[platform] = HolderStatus.Released(reason, device)
-        emit(AllocatorEvent.Released(clock(), holder, device, reason))
+        r[platform] = HolderStatus.Released(reason, primary)
+        emit(AllocatorEvent.Released(clock(), holder, primary, reason))
     }
 
     private fun removeFromQueueInternal(holder: HolderId, emitEvent: Boolean = true) {
@@ -288,11 +323,18 @@ class Allocator(
     /**
      * Gives a free, connected, usable device to the first queued holder it fits who doesn't hold its platform yet.
      * [except] is the holder that just gave the device up: it may still be queued for its other platform.
+     * For one of a pair, the partner is tried too (a holder queued for the watch gets it when the iPhone frees up),
+     * and each side is granted only when the other is usable and free.
      */
     private fun passToQueue(device: DeviceKey, except: HolderId? = null) {
+        passOne(device, except)
+        known[device]?.partner?.let { passOne(it, except) }
+    }
+
+    private fun passOne(device: DeviceKey, except: HolderId?) {
         if (device in holds) return
         val d = devices.firstOrNull { it.key == device } ?: return
-        if (d.dontUse || d.connectedSerials.isEmpty()) return
+        if (d.dontUse || d.connectedSerials.isEmpty() || !partnerFree(d)) return
         val next = queue.firstOrNull {
             it != except && it !in blockedHolders && queueWants[it]?.fits(d) == true && !holds(it, d.platform)
         } ?: return

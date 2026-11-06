@@ -35,9 +35,11 @@ enum class ReleaseReason {
 
 sealed interface HolderStatus {
     data object None : HolderStatus
+    /** [partner] is the paired device (watch/iPhone) held together with [device], which is the one requested. */
     data class Holding(
         val device: DeviceKey, val since: Instant, val lastActivity: Instant, val editing: Boolean,
         val platform: Platform = Platform.ANDROID,
+        val partner: DeviceKey? = null,
     ) : HolderStatus
 
     /** [position] is 1-based. */
