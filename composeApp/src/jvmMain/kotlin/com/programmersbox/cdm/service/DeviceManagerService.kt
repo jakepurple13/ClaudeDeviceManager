@@ -14,6 +14,7 @@ import com.programmersbox.cdm.core.classify.CommandKind
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.core.model.Platform
 import com.programmersbox.cdm.data.ActivityRepository
 import com.programmersbox.cdm.data.AppSettings
 import com.programmersbox.cdm.data.PinnedPermission
@@ -23,6 +24,7 @@ import com.programmersbox.cdm.data.ProjectRepository
 import com.programmersbox.cdm.data.SettingsRepository
 import com.programmersbox.cdm.devices.DeviceSource
 import com.programmersbox.cdm.devices.TrackedDevice
+import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Clock
@@ -67,6 +69,8 @@ class DeviceManagerService(
     private val scanInterval: Duration = 2.seconds,
     private val tickInterval: Duration = 5.seconds,
     private val settingsRetryDelay: Duration = 1.seconds,
+    /** The installed `ios-pin.gradle`, or null when it isn't installed (KMP iOS tests are then denied unless pinned). */
+    private val iosPinScript: () -> Path? = { null },
 ) : DeviceManager {
     private val mutex = Mutex()
     private val started = AtomicBoolean(false)
@@ -114,7 +118,7 @@ class DeviceManagerService(
     private fun newAllocator(blocked: Set<HolderId>) =
         Allocator(clock = clock, blocked = blocked, timers = { timers }, onEvent = { events.trySend(it) })
 
-    private fun newDecider() = HookDecider(allocator, { timers }) { cwd -> defaultCategories[projectKey(cwd)] ?: Category.ANY }
+    private fun newDecider() = HookDecider(allocator, { timers }, iosPinScript) { cwd -> defaultCategories[projectKey(cwd)] ?: Category.ANY }
 
     /** Ruling X: project defaults and Projects rows key on the project root, not the (cd-following) hook cwd. */
     private fun projectKey(cwd: String): String =
@@ -181,19 +185,24 @@ class DeviceManagerService(
     override suspend fun preToolUse(input: HookInput): HookDecision {
         val holder = input.holder
         if (input.toolName == "Bash" && input.command != null) prefetchDefaultCategory(input.cwd)
-        val (reply, device) = locked {
+        val (reply, devices) = locked {
             val r = when (input.toolName) {
                 "Bash" -> input.command?.let { decider.onBash(holder, input.cwd, it) } ?: HookReply.NoOpinion
                 in EDIT_TOOLS -> decider.onEdit(holder)
                 else -> HookReply.NoOpinion
             }
-            r to (allocator.statusOf(holder) as? HolderStatus.Holding)?.device
+            val touched = input.command?.takeIf { input.toolName == "Bash" && r !is HookReply.Deny }
+                ?.let(::devicePlatforms).orEmpty()
+            // Activity resets only the touched platform's hold; the log names that platform's held device.
+            touched.forEach { allocator.recordDeviceActivity(holder, it) }
+            val holds = allocator.holdingsOf(holder)
+            r to touched.mapNotNull { p -> holds.firstOrNull { it.platform == p }?.device }
         }
-        val deviceCommand = input.command?.takeIf {
-            input.toolName == "Bash" && reply !is HookReply.Deny && device != null && isDeviceCommand(it)
-        }
+        val deviceCommand = input.command?.takeIf { devices.isNotEmpty() }
         book.touch(holder, input.cwd, input.agentType, deviceCommand)
-        if (deviceCommand != null && device != null) safely("record command") { activity.recordCommand(holder, device, deviceCommand, clock()) }
+        if (deviceCommand != null) {
+            devices.forEach { d -> safely("record command") { activity.recordCommand(holder, d, deviceCommand, clock()) } }
+        }
         // After the lock is released: reads settings files.
         val permission = (reply as? HookReply.Rewrite)?.let {
             pinnedOverride(it.kind, mirror.decide(it.original, it.kind, input.cwd, input.permissionMode))
@@ -377,8 +386,10 @@ class DeviceManagerService(
         }
     }
 
-    private fun isDeviceCommand(command: String) = CommandClassifier.classifyAll(command)
-        .any { it is CommandKind.Device || it == CommandKind.GradleNonDevice }
+    /** Platforms whose held device the command uses: [CommandClassifier.platformsOf], plus Android for a non-device Gradle run. */
+    private fun devicePlatforms(command: String): Set<Platform> =
+        CommandClassifier.platformsOf(command) +
+            (if (CommandClassifier.classifyAll(command).any { it == CommandKind.GradleNonDevice }) setOf(Platform.ANDROID) else emptySet())
 
     /**
      * The user's Pinned commands setting over the mirror's answer. ALWAYS_ASK leaves CDM-only rewrites to the

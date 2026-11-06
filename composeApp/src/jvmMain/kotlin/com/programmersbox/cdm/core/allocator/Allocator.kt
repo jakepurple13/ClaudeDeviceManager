@@ -63,6 +63,15 @@ class Allocator(
 
     fun holdingsOf(holder: HolderId): List<HolderStatus.Holding> = holdings[holder]?.values?.toList().orEmpty()
 
+    /** The holder's status for one [platform]: Blocked, then its hold there, then Queued, then that platform's last release, then None. */
+    fun statusOf(holder: HolderId, platform: Platform): HolderStatus {
+        if (holder in blockedHolders) return HolderStatus.Blocked
+        holdings[holder]?.get(platform)?.let { return it }
+        val i = queue.indexOf(holder)
+        if (i >= 0) return HolderStatus.Queued(i + 1, queueWants[holder] ?: Wants(emptySet()))
+        return released[holder]?.get(platform) ?: HolderStatus.None
+    }
+
     fun setDevices(devices: List<AllocDevice>) {
         this.devices = devices.toList()
         devices.forEach { known[it.key] = it }

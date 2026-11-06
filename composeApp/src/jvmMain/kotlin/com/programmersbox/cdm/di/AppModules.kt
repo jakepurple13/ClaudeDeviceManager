@@ -89,7 +89,14 @@ fun appModules(): List<Module> = listOf(
         single { Installer(Path(System.getProperty("user.home"))) }
         single { InstallLifecycle(get()) } bind ServerListener::class
         single { ServerController(get(), get(), listener = get()) } bind ServerControl::class
-        single { DeviceManagerService(get(), get(), get(), get(), get(), get(), get()) } bind DeviceManager::class
+        single {
+            val installer = get<Installer>()
+            DeviceManagerService(
+                get(), get(), get(), get(), get(), get(), get(),
+                // Read only for a KMP iOS test command that isn't pinned otherwise.
+                iosPinScript = { if (installer.iosPinInstalled()) installer.iosPinPath.toAbsolutePath() else null },
+            )
+        } bind DeviceManager::class
         single { Navigator() }
         single { TrayState() }
         single { MainWindowHolder() }

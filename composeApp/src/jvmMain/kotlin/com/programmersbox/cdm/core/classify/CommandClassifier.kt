@@ -247,7 +247,8 @@ object CommandClassifier {
     private val udidRegex = Regex(
         "(?<![0-9A-Fa-f-])([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16})(?![0-9A-Fa-f])",
     )
-    private val cdmUdidRef = Regex("""\$\{?CDM_IOS_UDID\}?(?![A-Za-z0-9_])""")
+    /** A whole selector value that is `$CDM_IOS_UDID` / `${CDM_IOS_UDID}`: `id=foo$CDM_IOS_UDID` names another device. */
+    private val cdmUdidRef = Regex("""\$(CDM_IOS_UDID|\{CDM_IOS_UDID\})""")
     private val xcrunOptsWithArg = setOf("-sdk", "--sdk", "-toolchain", "--toolchain", "-log")
 
     /** Values of `flag value` / `flag=value` pairs in [w]. */
@@ -263,11 +264,11 @@ object CommandClassifier {
 
     /**
      * [selectors] are the argument values that select a device (empty: the command names none). It is pinnable when it
-     * uses `booted`, or when there are selectors and every one is a UDID or `$CDM_IOS_UDID`.
+     * uses `booted`, or when there are selectors and every one is a UDID or exactly `$CDM_IOS_UDID`.
      */
     private fun iosDevice(selectors: List<String>, booted: Boolean, allowPin: Boolean = true): CommandKind.IosDevice {
         val udids = selectors.flatMap { t -> udidRegex.findAll(t).map { it.value }.toList() }.distinct()
-        val pinned = selectors.isNotEmpty() && selectors.all { t -> udidRegex.containsMatchIn(t) || cdmUdidRef.containsMatchIn(t) }
+        val pinned = selectors.isNotEmpty() && selectors.all { t -> udidRegex.containsMatchIn(t) || cdmUdidRef.matches(t) }
         return CommandKind.IosDevice(udids, booted, allowPin && (booted || pinned))
     }
 
@@ -276,10 +277,13 @@ object CommandClassifier {
         val deviceDest = dests.any { !it.startsWith("generic/") && !it.contains("platform=macOS") }
         val tests = w.drop(1).any { it == "test" || it == "test-without-building" }
         if (!tests && !deviceDest) return CommandKind.IosGlobalSafe
-        // Only the `id=` part of each destination selects a device.
-        val ids = valuesAfter(wi, "-destination").map { d -> d.split(',').firstOrNull { it.startsWith("id=") } ?: "" }
+        // Only the value of the `id=` part of each destination selects a device.
+        val ids = valuesAfter(wi, "-destination").map { d -> d.split(',').firstOrNull { it.startsWith("id=") }?.removePrefix("id=") ?: "" }
         return iosDevice(ids, booted = false)
     }
+
+    /** True if [segment] (as from [segments]) is `xcrun simctl boot <device>`. */
+    fun isSimctlBoot(segment: String): Boolean = simctl(words(segment))?.sub == "boot"
 
     private class Simctl(val sub: String?, val subIndex: Int, val devIndex: Int?, val bootedIndex: Int?)
 

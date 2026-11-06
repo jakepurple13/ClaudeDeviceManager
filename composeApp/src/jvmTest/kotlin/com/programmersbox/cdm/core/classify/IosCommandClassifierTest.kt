@@ -109,6 +109,16 @@ class IosCommandClassifierTest {
         assertEquals(IosDevice(emptyList(), false, true), k("xcodebuild test -destination id=\$CDM_IOS_UDID"))
     }
 
+    /** A selector only counts as the held device when its whole value is `$CDM_IOS_UDID`, not merely contains it. */
+    @Test fun cdmRefMustBeWholeSelector() {
+        assertEquals(IosDevice(emptyList(), false, false), k("xcodebuild test -destination id=foo\$CDM_IOS_UDID"))
+        assertEquals(IosDevice(emptyList(), false, false), k("xcodebuild test -destination id=\${CDM_IOS_UDID}x"))
+        assertEquals(IosDevice(emptyList(), false, false), k("maestro --device x\$CDM_IOS_UDID test f.yaml"))
+        assertEquals(IosDevice(emptyList(), false, false), k("xcrun simctl install \$CDM_IOS_UDID-2 App.app"))
+        assertEquals(IosDevice(emptyList(), false, true), k("xcodebuild test -destination id=\${CDM_IOS_UDID}"))
+        assertEquals(IosDevice(emptyList(), false, true), k("xcrun simctl install \$CDM_IOS_UDID App.app"))
+    }
+
     @Test fun multipleDestinations() {
         assertEquals(
             IosDevice(listOf(u), false, false),
