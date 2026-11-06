@@ -17,6 +17,9 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import com.programmersbox.cdm.ui.update.UpdateBanner
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -102,59 +105,62 @@ fun AppNavigation(
             remember(slidePx) { { sceneTransition(slidePx, pop = true) } }
         // Screens draw on the bare background (no Surface), so give their text the right default colour.
         CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground) {
-            NavDisplay(
-                backStack = navigator.backStack,
-                onBack = navigator::back,
-                modifier = Modifier.weight(1f).fillMaxHeight().background(MaterialTheme.colorScheme.background),
-                entryDecorators = listOf(
-                    rememberSaveableStateHolderNavEntryDecorator(),
-                    rememberViewModelStoreNavEntryDecorator(),
-                ),
-                sceneStrategies = listOf(rememberListDetailSceneStrategy()),
-                transitionSpec = forward,
-                popTransitionSpec = pop,
-                entryProvider = entryProvider {
-                    entry<Route.Overview>(metadata = section(TopLevel.OVERVIEW)) {
-                        OverviewScreen(
-                            onOpenDevice = { key ->
-                                navigator.selectTopLevel(TopLevel.DEVICES)
-                                navigator.openDetail(Route.DeviceDetail(key))
-                            },
-                            onOpenHolder = { h ->
-                                navigator.selectTopLevel(TopLevel.QUEUE)
-                                navigator.openDetail(Route.QueueDetail(h))
-                            },
-                        )
-                    }
-                    entry<Route.Devices>(
-                        metadata = ListDetailSceneStrategy.listPane(detailPlaceholder = { DetailPane { Placeholder("Select a device") } }) +
-                            section(TopLevel.DEVICES),
-                    ) {
-                        DevicesScreen(
-                            selected = (navigator.backStack.getOrNull(1) as? Route.DeviceDetail)?.key,
-                            onOpen = { navigator.openDetail(Route.DeviceDetail(it)) },
-                        )
-                    }
-                    entry<Route.DeviceDetail>(metadata = ListDetailSceneStrategy.detailPane() + section(TopLevel.DEVICES)) {
-                        DetailPane(navigator, it) { DeviceDetailScreen(it.key) }
-                    }
-                    entry<Route.Queue>(
-                        metadata = ListDetailSceneStrategy.listPane(detailPlaceholder = { DetailPane { Placeholder("Select a holder") } }) +
-                            section(TopLevel.QUEUE),
-                    ) {
-                        QueueScreen(
-                            selected = (navigator.backStack.getOrNull(1) as? Route.QueueDetail)?.holder,
-                            onOpen = { navigator.openDetail(Route.QueueDetail(it)) },
-                        )
-                    }
-                    entry<Route.QueueDetail>(metadata = ListDetailSceneStrategy.detailPane() + section(TopLevel.QUEUE)) {
-                        DetailPane(navigator, it) { QueueDetailScreen(it.holder, onClose = navigator::back) }
-                    }
-                    entry<Route.Sessions>(metadata = section(TopLevel.SESSIONS)) { SessionsScreen() }
-                    entry<Route.Projects>(metadata = section(TopLevel.PROJECTS)) { ProjectsScreen() }
-                    entry<Route.Settings>(metadata = section(TopLevel.SETTINGS)) { SettingsScreen() }
-                },
-            )
+            Column(Modifier.weight(1f).fillMaxHeight()) {
+                UpdateBanner()
+                NavDisplay(
+                    backStack = navigator.backStack,
+                    onBack = navigator::back,
+                    modifier = Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.background),
+                    entryDecorators = listOf(
+                        rememberSaveableStateHolderNavEntryDecorator(),
+                        rememberViewModelStoreNavEntryDecorator(),
+                    ),
+                    sceneStrategies = listOf(rememberListDetailSceneStrategy()),
+                    transitionSpec = forward,
+                    popTransitionSpec = pop,
+                    entryProvider = entryProvider {
+                        entry<Route.Overview>(metadata = section(TopLevel.OVERVIEW)) {
+                            OverviewScreen(
+                                onOpenDevice = { key ->
+                                    navigator.selectTopLevel(TopLevel.DEVICES)
+                                    navigator.openDetail(Route.DeviceDetail(key))
+                                },
+                                onOpenHolder = { h ->
+                                    navigator.selectTopLevel(TopLevel.QUEUE)
+                                    navigator.openDetail(Route.QueueDetail(h))
+                                },
+                            )
+                        }
+                        entry<Route.Devices>(
+                            metadata = ListDetailSceneStrategy.listPane(detailPlaceholder = { DetailPane { Placeholder("Select a device") } }) +
+                                section(TopLevel.DEVICES),
+                        ) {
+                            DevicesScreen(
+                                selected = (navigator.backStack.getOrNull(1) as? Route.DeviceDetail)?.key,
+                                onOpen = { navigator.openDetail(Route.DeviceDetail(it)) },
+                            )
+                        }
+                        entry<Route.DeviceDetail>(metadata = ListDetailSceneStrategy.detailPane() + section(TopLevel.DEVICES)) {
+                            DetailPane(navigator, it) { DeviceDetailScreen(it.key) }
+                        }
+                        entry<Route.Queue>(
+                            metadata = ListDetailSceneStrategy.listPane(detailPlaceholder = { DetailPane { Placeholder("Select a holder") } }) +
+                                section(TopLevel.QUEUE),
+                        ) {
+                            QueueScreen(
+                                selected = (navigator.backStack.getOrNull(1) as? Route.QueueDetail)?.holder,
+                                onOpen = { navigator.openDetail(Route.QueueDetail(it)) },
+                            )
+                        }
+                        entry<Route.QueueDetail>(metadata = ListDetailSceneStrategy.detailPane() + section(TopLevel.QUEUE)) {
+                            DetailPane(navigator, it) { QueueDetailScreen(it.holder, onClose = navigator::back) }
+                        }
+                        entry<Route.Sessions>(metadata = section(TopLevel.SESSIONS)) { SessionsScreen() }
+                        entry<Route.Projects>(metadata = section(TopLevel.PROJECTS)) { ProjectsScreen() }
+                        entry<Route.Settings>(metadata = section(TopLevel.SETTINGS)) { SettingsScreen() }
+                    },
+                )
+            }
         }
     }
 }
