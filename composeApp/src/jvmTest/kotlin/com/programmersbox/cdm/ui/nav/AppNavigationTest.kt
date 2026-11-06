@@ -23,6 +23,8 @@ import com.programmersbox.cdm.server.ServerStatus
 import java.nio.file.Files
 import com.programmersbox.cdm.di.APP_SCOPE
 import com.programmersbox.cdm.di.uiModule
+import com.programmersbox.cdm.update.UnsupportedUpdater
+import com.programmersbox.cdm.update.UpdateController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -66,6 +68,7 @@ class AppNavigationTest {
                     single { InstallLifecycle(get()) }
                     single { ServerStatus() }
                     single<ServerControl> { object : ServerControl { override suspend fun restart(port: Int) = Unit } }
+                    single { UpdateController(UnsupportedUpdater, get(named(APP_SCOPE))) }
                 },
             )
         }
