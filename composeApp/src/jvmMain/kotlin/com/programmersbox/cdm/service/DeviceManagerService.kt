@@ -21,7 +21,7 @@ import com.programmersbox.cdm.data.BlockedRepository
 import com.programmersbox.cdm.data.DeviceConfigRepository
 import com.programmersbox.cdm.data.ProjectRepository
 import com.programmersbox.cdm.data.SettingsRepository
-import com.programmersbox.cdm.devices.DeviceTracker
+import com.programmersbox.cdm.devices.DeviceSource
 import com.programmersbox.cdm.devices.TrackedDevice
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -56,7 +56,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  * Every allocator call, [HookDecider] call included (Ruling C), runs inside [locked].
  */
 class DeviceManagerService(
-    private val tracker: DeviceTracker,
+    private val tracker: DeviceSource,
     private val deviceConfigs: DeviceConfigRepository,
     private val projects: ProjectRepository,
     private val settings: SettingsRepository,

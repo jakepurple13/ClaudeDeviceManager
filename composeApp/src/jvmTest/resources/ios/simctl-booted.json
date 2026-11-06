@@ -1,0 +1,49 @@
+{
+  "devices" : {
+    "com.apple.CoreSimulator.SimRuntime.iOS-18-2" : [
+      {
+        "lastBootedAt" : "2026-11-06T10:00:00Z",
+        "dataPath" : "/Users/dev/Library/Developer/CoreSimulator/Devices/11111111-1111-1111-1111-111111111111/data",
+        "dataPathSize" : 1000000,
+        "logPath" : "/Users/dev/Library/Logs/CoreSimulator/11111111-1111-1111-1111-111111111111",
+        "udid" : "11111111-1111-1111-1111-111111111111",
+        "isAvailable" : true,
+        "deviceTypeIdentifier" : "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro",
+        "state" : "Booted",
+        "name" : "iPhone 16 Pro"
+      },
+      {
+        "udid" : "22222222-2222-2222-2222-222222222222",
+        "isAvailable" : true,
+        "deviceTypeIdentifier" : "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4",
+        "state" : "Booted",
+        "name" : "iPad Pro 13-inch (M4)"
+      },
+      {
+        "udid" : "33333333-3333-3333-3333-333333333333",
+        "isAvailable" : true,
+        "deviceTypeIdentifier" : "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
+        "state" : "Shutdown",
+        "name" : "iPhone 16"
+      }
+    ],
+    "com.apple.CoreSimulator.SimRuntime.watchOS-11-2" : [
+      {
+        "udid" : "44444444-4444-4444-4444-444444444444",
+        "isAvailable" : true,
+        "deviceTypeIdentifier" : "com.apple.CoreSimulator.SimDeviceType.Apple-Watch-Series-10-46mm",
+        "state" : "Booted",
+        "name" : "Apple Watch Series 10 (46mm)"
+      }
+    ],
+    "com.apple.CoreSimulator.SimRuntime.tvOS-18-2" : [
+      {
+        "udid" : "55555555-5555-5555-5555-555555555555",
+        "isAvailable" : true,
+        "deviceTypeIdentifier" : "com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation-4K",
+        "state" : "Booted",
+        "name" : "Apple TV 4K (3rd generation)"
+      }
+    ]
+  }
+}

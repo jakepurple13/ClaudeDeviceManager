@@ -8,7 +8,11 @@ import com.programmersbox.cdm.data.ProjectRepository
 import com.programmersbox.cdm.data.SettingsRepository
 import com.programmersbox.cdm.data.fileDatabase
 import com.programmersbox.cdm.devices.AdbClient
+import com.programmersbox.cdm.devices.DeviceSource
 import com.programmersbox.cdm.devices.DeviceTracker
+import com.programmersbox.cdm.devices.IosTracker
+import com.programmersbox.cdm.devices.ProcessIosClient
+import com.programmersbox.cdm.devices.iosSupported
 import com.programmersbox.cdm.devices.ProcessAdbClient
 import com.programmersbox.cdm.install.InstallLifecycle
 import com.programmersbox.cdm.install.Installer
@@ -79,6 +83,7 @@ fun appModules(): List<Module> = listOf(
         single { BlockedRepository(get()) }
         single<AdbClient> { ProcessAdbClient() }
         single { DeviceTracker(get()) }
+        single { DeviceSource(get(), if (iosSupported()) IosTracker(ProcessIosClient()) else null) }
         single { PermissionMirror(Path(System.getProperty("user.home"))) }
         single { ServerStatus() }
         single { Installer(Path(System.getProperty("user.home"))) }
