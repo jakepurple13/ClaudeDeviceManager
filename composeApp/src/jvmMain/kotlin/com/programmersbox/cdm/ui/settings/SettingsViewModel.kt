@@ -2,9 +2,12 @@ package com.programmersbox.cdm.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.programmersbox.cdm.data.AdbMode
 import com.programmersbox.cdm.data.AppSettings
 import com.programmersbox.cdm.data.PinnedPermission
 import com.programmersbox.cdm.data.SettingsRepository
+import com.programmersbox.cdm.devices.AdbLocation
+import com.programmersbox.cdm.devices.AdbSelection
 import com.programmersbox.cdm.install.InstallLifecycle
 import com.programmersbox.cdm.install.IntegrationState
 import com.programmersbox.cdm.server.ServerControl
@@ -46,7 +49,20 @@ data class SettingsState(
     val pinnedPermission: PinnedPermission = PinnedPermission.MIRROR,
     /** Set when storing a pinned-command mode failed. */
     val pinnedResult: ActionResult? = null,
+    /** The adb choice shown; applied on selection, not with Save. */
+    val adbMode: AdbMode = AdbMode.AUTO,
+    /** The custom adb path field; stored with Use or Browse. */
+    val adbPath: String = "",
+    /** The adb the app runs now (null before the first resolve). */
+    val adbInUse: AdbLocation? = null,
+    /** The bundled adb, or null when this build has none. */
+    val bundledAdb: String? = null,
+    /** Set when storing the adb choice failed. */
+    val adbResult: ActionResult? = null,
 ) {
+    /** The path field differs from the stored custom path. */
+    val adbPathDirty: Boolean get() = adbPath.trim() != saved.adbPath
+
     /** The fields differ from what's stored. */
     val dirty: Boolean get() = loaded && (port != "${saved.port}" || idle != "${saved.idleMinutes}" || editing != "${saved.editingMinutes}")
     val valid: Boolean get() = portError == null && idleError == null && editingError == null
@@ -73,29 +89,38 @@ class SettingsViewModel(
     private val integration: InstallLifecycle,
     private val server: ServerControl,
     serverStatus: ServerStatus,
+    private val adb: AdbSelection,
 ) : ViewModel() {
-    private val state = MutableStateFlow(SettingsState(snippet = integration.snippet, integration = integration.state.value))
+    private val state = MutableStateFlow(
+        SettingsState(snippet = integration.snippet, integration = integration.state.value, bundledAdb = adb.bundledPath),
+    )
     val uiState: StateFlow<SettingsState> = state.asStateFlow()
     private var copiedJob: Job? = null
 
     /** A selected mode not yet seen back from the DB, so a stale emission doesn't flick the radio back. */
     @Volatile private var pendingPinned: PinnedPermission? = null
+    @Volatile private var pendingAdb: AdbMode? = null
 
     init {
         viewModelScope.launch {
             settings.settings.collect { s ->
                 if (pendingPinned == s.pinnedPermission) pendingPinned = null
                 val pinned = pendingPinned ?: s.pinnedPermission
+                if (pendingAdb == s.adbMode) pendingAdb = null
+                val adbMode = pendingAdb ?: s.adbMode
                 state.update { st ->
+                    // The adb path field follows the store unless the user is mid-edit.
+                    val path = if (!st.loaded || !st.adbPathDirty) s.adbPath else st.adbPath
                     // Fill the fields on first load, and after a save; never over the user's unsaved edits.
                     if (!st.loaded || !st.dirty) {
-                        st.copy(loaded = true, saved = s, port = "${s.port}", idle = "${s.idleMinutes}", editing = "${s.editingMinutes}", portError = null, idleError = null, editingError = null, pinnedPermission = pinned)
-                    } else st.copy(saved = s, pinnedPermission = pinned)
+                        st.copy(loaded = true, saved = s, port = "${s.port}", idle = "${s.idleMinutes}", editing = "${s.editingMinutes}", portError = null, idleError = null, editingError = null, pinnedPermission = pinned, adbMode = adbMode, adbPath = path)
+                    } else st.copy(saved = s, pinnedPermission = pinned, adbMode = adbMode, adbPath = path)
                 }
             }
         }
         viewModelScope.launch { serverStatus.serverError.collect { e -> state.update { it.copy(serverError = e) } } }
         viewModelScope.launch { integration.state.collect { i -> state.update { it.copy(integration = i) } } }
+        viewModelScope.launch { adb.current.collect { a -> state.update { it.copy(adbInUse = a) } } }
         // Pick up hand edits made since the last install; off the UI thread (app scope, Dispatchers.Default + IO).
         actions.launch { integration.refresh() }
     }
@@ -152,6 +177,38 @@ class SettingsViewModel(
             } catch (e: Throwable) {
                 if (pendingPinned == mode) pendingPinned = null
                 state.update { it.copy(pinnedPermission = it.saved.pinnedPermission, pinnedResult = ActionResult(false, "Could not save: ${e.message ?: e}")) }
+            }
+        }
+    }
+
+    /** Stores the adb choice at once (no Save); the next device scan runs the newly chosen adb. */
+    fun onAdbModeSelected(mode: AdbMode) {
+        if (mode == state.value.adbMode) return
+        storeAdb(mode, path = null)
+    }
+
+    fun onAdbPathChanged(text: String) = state.update { it.copy(adbPath = text, adbResult = null) }
+
+    /** Use: store the typed path and switch to it. */
+    fun onAdbPathSubmit() = storeAdb(AdbMode.CUSTOM, state.value.adbPath.trim())
+
+    /** Browse picked a file: fill the field and switch to it. */
+    fun onAdbPathPicked(path: String) {
+        state.update { it.copy(adbPath = path) }
+        storeAdb(AdbMode.CUSTOM, path)
+    }
+
+    private fun storeAdb(mode: AdbMode, path: String?) {
+        pendingAdb = mode
+        state.update { it.copy(adbMode = mode, adbResult = null) }
+        actions.launch {
+            try {
+                settings.update { s -> s.copy(adbMode = mode, adbPath = path ?: s.adbPath) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (pendingAdb == mode) pendingAdb = null
+                state.update { it.copy(adbMode = it.saved.adbMode, adbResult = ActionResult(false, "Could not save: ${e.message ?: e}")) }
             }
         }
     }

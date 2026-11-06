@@ -25,11 +25,20 @@ data class Project(val path: String, val defaultCategory: Category)
  */
 enum class PinnedPermission { MIRROR, ALWAYS_ALLOW, ALWAYS_ASK }
 
+/**
+ * Which `adb` the app runs. [AUTO] uses the user's own adb when one is found and the bundled copy otherwise;
+ * [BUNDLED] always uses the copy shipped with the app; [CUSTOM] uses [AppSettings.adbPath].
+ */
+enum class AdbMode { AUTO, BUNDLED, CUSTOM }
+
 data class AppSettings(
     val port: Int = 47823,
     val idleMinutes: Int = 15,
     val editingMinutes: Int = 5,
     val pinnedPermission: PinnedPermission = PinnedPermission.MIRROR,
+    val adbMode: AdbMode = AdbMode.AUTO,
+    /** The adb file for [AdbMode.CUSTOM]; kept when another mode is picked so switching back restores it. */
+    val adbPath: String = "",
 )
 
 data class ActivityEntry(
@@ -87,10 +96,16 @@ class SettingsRepository(private val dao: SettingDao) {
 
     suspend fun update(transform: (AppSettings) -> AppSettings) {
         val n = transform(current())
-        dao.put(SettingEntity(PORT, n.port.toString()))
-        dao.put(SettingEntity(IDLE, n.idleMinutes.toString()))
-        dao.put(SettingEntity(EDITING, n.editingMinutes.toString()))
-        dao.put(SettingEntity(PINNED, n.pinnedPermission.name))
+        dao.putAll(
+            listOf(
+                SettingEntity(PORT, n.port.toString()),
+                SettingEntity(IDLE, n.idleMinutes.toString()),
+                SettingEntity(EDITING, n.editingMinutes.toString()),
+                SettingEntity(PINNED, n.pinnedPermission.name),
+                SettingEntity(ADB_MODE, n.adbMode.name),
+                SettingEntity(ADB_PATH, n.adbPath),
+            ),
+        )
     }
 
     private fun List<SettingEntity>.toSettings(): AppSettings {
@@ -101,6 +116,8 @@ class SettingsRepository(private val dao: SettingDao) {
             m[IDLE]?.toIntOrNull() ?: d.idleMinutes,
             m[EDITING]?.toIntOrNull() ?: d.editingMinutes,
             m[PINNED]?.let { v -> PinnedPermission.entries.firstOrNull { it.name == v } } ?: d.pinnedPermission,
+            m[ADB_MODE]?.let { v -> AdbMode.entries.firstOrNull { it.name == v } } ?: d.adbMode,
+            m[ADB_PATH] ?: d.adbPath,
         )
     }
 
@@ -109,6 +126,8 @@ class SettingsRepository(private val dao: SettingDao) {
         const val IDLE = "idleMinutes"
         const val EDITING = "editingMinutes"
         const val PINNED = "pinnedPermission"
+        const val ADB_MODE = "adbMode"
+        const val ADB_PATH = "adbPath"
     }
 }
 

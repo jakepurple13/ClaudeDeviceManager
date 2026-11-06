@@ -39,7 +39,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.programmersbox.cdm.data.AdbMode
 import com.programmersbox.cdm.data.PinnedPermission
+import com.programmersbox.cdm.devices.AdbLocation
+import com.programmersbox.cdm.devices.AdbSource
 import com.programmersbox.cdm.install.PartState
 import com.programmersbox.cdm.ui.components.AnimatedLine
 import com.programmersbox.cdm.ui.components.AnimatedValue
@@ -50,8 +53,11 @@ import com.programmersbox.cdm.ui.components.SectionLabel
 import com.programmersbox.cdm.ui.components.SmallButton
 import com.programmersbox.cdm.ui.components.StatusDot
 import com.programmersbox.cdm.ui.update.UpdatesSection
+import java.awt.FileDialog
+import java.awt.Frame
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
+import java.io.File
 import org.koin.compose.viewmodel.koinViewModel
 
 private val ErrorBg = Color(0xFF4A2A2A)
@@ -122,6 +128,53 @@ fun SettingsScreen(vm: SettingsViewModel = koinViewModel()) {
                 )
             }
             ResultLine(s.pinnedResult)
+        }
+
+        SectionLabel("adb")
+        CardBox {
+            Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Muted("The adb the app uses to see devices. Changes apply at once.", Modifier.padding(bottom = 4.dp))
+                PinnedOption(
+                    "Automatic (recommended)",
+                    "Your own adb (Android SDK, PATH, Homebrew) when one is found, else the bundled copy.",
+                    selected = s.adbMode == AdbMode.AUTO,
+                ) { vm.onAdbModeSelected(AdbMode.AUTO) }
+                PinnedOption(
+                    "Bundled",
+                    if (s.bundledAdb != null) "The adb shipped with the app." else "Not included in this build.",
+                    selected = s.adbMode == AdbMode.BUNDLED,
+                ) { vm.onAdbModeSelected(AdbMode.BUNDLED) }
+                PinnedOption("Custom", "An adb file you choose.", selected = s.adbMode == AdbMode.CUSTOM) {
+                    vm.onAdbModeSelected(AdbMode.CUSTOM)
+                }
+            }
+            AnimatedLine(s.adbMode == AdbMode.CUSTOM) {
+                Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = s.adbPath,
+                        onValueChange = vm::onAdbPathChanged,
+                        label = { Text("adb path", fontSize = 11.sp) },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    SmallButton("Browse…", onClick = { chooseAdbFile()?.let(vm::onAdbPathPicked) })
+                    SmallButton("Use", onClick = vm::onAdbPathSubmit, enabled = s.adbPathDirty && s.adbPath.isNotBlank())
+                }
+            }
+            AnimatedValue(s.adbInUse) { loc ->
+                val missing = loc.source == AdbSource.NotFound
+                val color by animateColorAsState(if (missing) ErrorFg else MaterialTheme.colorScheme.onSurfaceVariant, tween(200))
+                SelectionContainer {
+                    Text(adbStatusText(loc, s.adbMode), color = color, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
+                }
+            }
+            Muted(
+                "Every adb on this computer shares one adb server. Pick the same version Claude's sessions run, " +
+                    "or adb restarts the server and connected devices drop briefly.",
+                Modifier.padding(top = 4.dp),
+            )
+            ResultLine(s.adbResult)
         }
 
         SectionLabel("Claude Code integration")
@@ -237,6 +290,27 @@ private fun StatusRow(name: String, part: PartState, detail: String?) {
             }
         }
     }
+}
+
+private fun adbStatusText(loc: AdbLocation, mode: AdbMode): String = when (loc.source) {
+    AdbSource.NotFound -> when (mode) {
+        AdbMode.AUTO -> "No adb found. Install Android platform-tools, or choose Custom."
+        AdbMode.BUNDLED -> "This build has no bundled adb. Choose Automatic or Custom."
+        AdbMode.CUSTOM -> if (loc.path.isBlank()) "Choose an adb file." else "Not an executable file: ${loc.path}"
+    }
+    AdbSource.AndroidSdk -> "In use: ${loc.path} (Android SDK)"
+    AdbSource.Path -> "In use: ${loc.path} (PATH)"
+    AdbSource.KnownLocation -> "In use: ${loc.path}"
+    AdbSource.Bundled -> "In use: bundled adb (${loc.path})"
+    AdbSource.Custom -> "In use: ${loc.path}"
+}
+
+/** The OS file picker for an adb binary; null when cancelled. */
+private fun chooseAdbFile(): String? {
+    val dialog = FileDialog(null as Frame?, "Choose adb", FileDialog.LOAD)
+    dialog.isVisible = true
+    val file = dialog.file ?: return null
+    return File(dialog.directory, file).path
 }
 
 private fun PartState.dot(): DotStatus = when (this) {

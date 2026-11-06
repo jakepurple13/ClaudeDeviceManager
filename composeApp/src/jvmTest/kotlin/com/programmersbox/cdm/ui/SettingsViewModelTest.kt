@@ -1,8 +1,13 @@
 package com.programmersbox.cdm.ui
 
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
+import com.programmersbox.cdm.data.AdbMode
 import com.programmersbox.cdm.data.PinnedPermission
 import com.programmersbox.cdm.data.SettingsRepository
+import com.programmersbox.cdm.devices.AdbLocation
+import com.programmersbox.cdm.devices.AdbLocator
+import com.programmersbox.cdm.devices.AdbSelection
+import com.programmersbox.cdm.devices.AdbSource
 import com.programmersbox.cdm.install.InstallLifecycle
 import com.programmersbox.cdm.install.InstallStatus
 import com.programmersbox.cdm.install.PartState
@@ -44,6 +49,7 @@ class FailingSettingDao : com.programmersbox.cdm.data.SettingDao {
     override fun observeAll() = kotlinx.coroutines.flow.flowOf(emptyList<com.programmersbox.cdm.data.SettingEntity>())
     override suspend fun getAll() = emptyList<com.programmersbox.cdm.data.SettingEntity>()
     override suspend fun put(entity: com.programmersbox.cdm.data.SettingEntity): Unit = error("disk full")
+    override suspend fun putAll(entities: List<com.programmersbox.cdm.data.SettingEntity>): Unit = error("disk full")
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -65,9 +71,46 @@ class SettingsViewModelTest {
     private val status = ServerStatus()
     private val manager = RecordingManager(MutableStateFlow(AllocatorSnapshot(emptyList(), emptyMap(), emptyList(), emptyMap())))
 
-    private fun vm() = SettingsViewModel(testActions(manager), settings, lifecycle, server, status).also { vms += it }
+    /** Only /bundled/platform-tools/adb and /tools/adb "exist". */
+    private val adb = AdbSelection(
+        AdbLocator(
+            env = emptyMap(), resourcesDir = "/bundled", home = "/home", isWindows = false, isMac = true,
+            canExecute = { it.path == "/bundled/platform-tools/adb" || it.path == "/tools/adb" },
+        ),
+    )
+
+    private fun vm() = SettingsViewModel(testActions(manager), settings, lifecycle, server, status, adb).also { vms += it }
 
     private suspend fun SettingsViewModel.loaded() = withTimeout(5_000) { uiState.first { it.loaded } }
+
+    @Test
+    fun adbChoicePersistsAndCustomPathIsStored(): Unit = runBlocking {
+        val vm = vm()
+        vm.loaded()
+        assertEquals(AdbMode.AUTO, vm.uiState.value.adbMode)
+        assertEquals("/bundled/platform-tools/adb", vm.uiState.value.bundledAdb)
+        vm.onAdbModeSelected(AdbMode.BUNDLED)
+        assertEquals(AdbMode.BUNDLED, vm.uiState.value.adbMode)
+        withTimeout(5_000) { settings.settings.first { it.adbMode == AdbMode.BUNDLED } }
+        vm.onAdbPathChanged("/tools/adb")
+        assertTrue(vm.uiState.value.adbPathDirty)
+        vm.onAdbPathSubmit()
+        val stored = withTimeout(5_000) { settings.settings.first { it.adbMode == AdbMode.CUSTOM } }
+        assertEquals("/tools/adb", stored.adbPath)
+        withTimeout(5_000) { vm.uiState.first { !it.adbPathDirty } }
+        // Switching away keeps the custom path for later.
+        vm.onAdbModeSelected(AdbMode.AUTO)
+        assertEquals("/tools/adb", withTimeout(5_000) { settings.settings.first { it.adbMode == AdbMode.AUTO } }.adbPath)
+    }
+
+    @Test
+    fun adbInUseFollowsSelection(): Unit = runBlocking {
+        val vm = vm()
+        adb.apply(AdbMode.CUSTOM, "/tools/adb")
+        assertEquals(AdbLocation("/tools/adb", AdbSource.Custom), withTimeout(5_000) { vm.uiState.first { it.adbInUse != null } }.adbInUse)
+        adb.apply(AdbMode.AUTO, "")
+        assertEquals(AdbSource.Bundled, vm.uiState.value.adbInUse?.source)
+    }
 
     @Test
     fun pinnedPermissionDefaultsToMirrorAndSelectionPersists(): Unit = runBlocking {
@@ -167,7 +210,7 @@ class SettingsViewModelTest {
     @Test
     fun saveFailureIsShown() = runBlocking {
         val failing = SettingsRepository(FailingSettingDao())
-        val vm = SettingsViewModel(testActions(manager), failing, lifecycle, server, status).also { vms += it }
+        val vm = SettingsViewModel(testActions(manager), failing, lifecycle, server, status, adb).also { vms += it }
         vm.loaded()
         vm.onIdleChanged("30")
         vm.onSave()

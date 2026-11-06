@@ -55,6 +55,8 @@ class RepositoriesTest {
         assertEquals(PinnedPermission.MIRROR, repo.current().pinnedPermission)
         repo.update { it.copy(pinnedPermission = PinnedPermission.ALWAYS_ASK) }
         assertEquals(AppSettings(47823, 30, 5, PinnedPermission.ALWAYS_ASK), repo.current())
+        repo.update { it.copy(adbMode = AdbMode.CUSTOM, adbPath = "/opt/adb") }
+        assertEquals(AppSettings(47823, 30, 5, PinnedPermission.ALWAYS_ASK, AdbMode.CUSTOM, "/opt/adb"), repo.current())
         db.close()
     }
 

@@ -67,6 +67,7 @@ class AppNavigationTest {
                     single { Installer(Files.createTempDirectory("cdm-nav-home")) }
                     single { InstallLifecycle(get()) }
                     single { ServerStatus() }
+                    single { com.programmersbox.cdm.devices.AdbSelection() }
                     single<ServerControl> { object : ServerControl { override suspend fun restart(port: Int) = Unit } }
                     single { UpdateController(UnsupportedUpdater, get(named(APP_SCOPE))) }
                 },

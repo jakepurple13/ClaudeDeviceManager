@@ -78,6 +78,10 @@ interface SettingDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun put(entity: SettingEntity)
+
+    /** One transaction, so observers never see half of a multi-key change (e.g. a new adb mode with the old path). */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun putAll(entities: List<SettingEntity>)
 }
 
 @Dao
