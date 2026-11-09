@@ -273,7 +273,7 @@ class HookDecider(
     private suspend fun iosGrab(req: Request, named: AllocDevice?): HookReply.Deny? {
         val holder = req.holder
         when (val st = allocator.statusOf(holder, Platform.IOS)) {
-            is HolderStatus.Holding -> return null
+            is HolderStatus.Holding, is HolderStatus.HoldingSet -> return null
             HolderStatus.Blocked -> return HookReply.Deny(releasedByUser(blocked = true))
             is HolderStatus.Released -> when (st.reason) {
                 ReleaseReason.USER_RELEASE, ReleaseReason.USER_HANDOFF, ReleaseReason.DONT_USE ->
@@ -337,7 +337,7 @@ class HookDecider(
 
     private suspend fun onDevice(req: Request): Part {
         return when (val st = allocator.statusOf(req.holder, Platform.ANDROID)) {
-            is HolderStatus.Holding -> whileHolding(req)
+            is HolderStatus.Holding, is HolderStatus.HoldingSet -> whileHolding(req) // set handling refined in a later task
             HolderStatus.Blocked -> Part.Stop(HookReply.Deny(releasedByUser(blocked = true)))
             is HolderStatus.Released -> when (st.reason) {
                 ReleaseReason.IDLE_TIMEOUT, ReleaseReason.EDIT_TIMEOUT -> regrab(req, st)
