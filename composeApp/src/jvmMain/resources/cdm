@@ -42,17 +42,26 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# A single plain request (one spec or one --device, count 1) keeps today's single-device wire format and output.
-# The count is the leading digits of the value before ":" (default 1); the server validates the rest.
-legacy=1 legacy_member=""
-if [ $(( ${#specs[@]} + ${#devices[@]} )) -gt 1 ]; then
-  legacy=0
-elif [ ${#specs[@]} -eq 1 ]; then
-  val="${specs[0]#*:}"; first="${val%%:*}"
-  case "$first" in [0-9]*) count="${first%%[!0-9]*}" ;; *) count=1 ;; esac
-  if [ "$((10#$count))" != 1 ]; then legacy=0
-  elif [ -n "$val" ]; then legacy_member="${specs[0]}"
+# A single plain request keeps today's single-device wire format and output. That is one --device with at most
+# bare platform flags (a platform filter), or no --device and one spec with count 1. The count is the leading
+# digits of the value before ":" (default 1); the server validates the rest.
+legacy=1 legacy_member="" members_out=()
+valued=()
+for sp in ${specs[@]+"${specs[@]}"}; do [ -n "${sp#*:}" ] && valued+=("$sp"); done
+if [ ${#devices[@]} -eq 0 ]; then
+  if [ ${#specs[@]} -eq 1 ]; then
+    val="${specs[0]#*:}"; first="${val%%:*}"
+    case "$first" in [0-9]*) count="${first%%[!0-9]*}" ;; *) count=1 ;; esac
+    if [ "$((10#$count))" != 1 ]; then legacy=0
+    elif [ -n "$val" ]; then legacy_member="${specs[0]}"
+    fi
+  elif [ ${#specs[@]} -gt 1 ]; then legacy=0
   fi
+  if [ "$legacy" = 0 ]; then members_out=(${specs[@]+"${specs[@]}"}); fi
+elif [ ${#devices[@]} -gt 1 ] || [ ${#valued[@]} -gt 0 ]; then
+  # Set mode: bare platform flags beside --device are ignored, since the devices imply their platform.
+  legacy=0
+  members_out=(${valued[@]+"${valued[@]}"})
 fi
 if [ "$legacy" = 1 ] || [ "$cmd" != "acquire" ]; then
   for sp in ${specs[@]+"${specs[@]}"}; do
@@ -60,7 +69,7 @@ if [ "$legacy" = 1 ] || [ "$cmd" != "acquire" ]; then
     if [ -n "$platform" ] && [ "$platform" != "$p" ]; then echo "Pass only one of --ios and --android."; exit 2; fi
     platform="$p"
   done
-  [ -n "$legacy_member" ] && platform=""
+  if [ -n "$legacy_member" ]; then platform=""; fi
 fi
 
 case "$cmd" in
@@ -128,7 +137,7 @@ case "$cmd" in
       req+=(--data-urlencode "platform=$platform" --data-urlencode "device=$device")
       [ -n "$legacy_member" ] && req+=(--data-urlencode "member=$legacy_member")
     else
-      for sp in ${specs[@]+"${specs[@]}"}; do req+=(--data-urlencode "member=$sp"); done
+      for sp in ${members_out[@]+"${members_out[@]}"}; do req+=(--data-urlencode "member=$sp"); done
       for dv in ${devices[@]+"${devices[@]}"}; do req+=(--data-urlencode "device=$dv"); done
     fi
     acquire_end=$((SECONDS + ACQUIRE_TIMEOUT))

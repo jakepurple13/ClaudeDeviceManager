@@ -391,6 +391,56 @@ class CdmScriptTest {
         assertEquals(2, run(dir.resolve("nope"), "run", "android1", "--").code)
     }
 
+    /** No arguments at all (an empty array under `set -u`, bash 3.2 included) is a usage error, not "unbound variable". */
+    @Test
+    fun runWithNoArgsPrintsUsage() {
+        val r = run(dir.resolve("nope"), "run")
+        assertEquals(2, r.code, r.out)
+        assertTrue("cdm run <name|all> -- <command>" in r.out && "unbound" !in r.out, r.out)
+        val sys = java.io.File("/bin/bash")
+        if (sys.exists()) {
+            for (args in listOf(listOf("run"), listOf("run", "name", "--"))) {
+                val p = ProcessBuilder(listOf(sys.path, script.toString()) + args).redirectErrorStream(true).start()
+                val out = p.inputStream.bufferedReader().readText()
+                assertTrue(p.waitFor(60, TimeUnit.SECONDS))
+                assertEquals(2, p.exitValue(), out)
+                assertTrue("Usage: cdm acquire" in out && "unbound" !in out, out)
+            }
+        }
+    }
+
+    @Test
+    fun platformFlagWithDeviceStaysLegacy() {
+        val pixel = com.programmersbox.cdm.core.allocator.AllocDevice(
+            com.programmersbox.cdm.core.model.DeviceKey("HW"), "Pixel 8", Category.PHONE, false, listOf("SER-A"),
+        )
+        val iphone = com.programmersbox.cdm.core.allocator.AllocDevice(
+            com.programmersbox.cdm.core.model.DeviceKey("UDID-1"), "iPhone", Category.PHONE, false, listOf("UDID-1"), Platform.IOS,
+        )
+        val pixel2 = pixel.copy(key = com.programmersbox.cdm.core.model.DeviceKey("HW2"), name = "Pixel 9", connectedSerials = listOf("SER-B"))
+        val m = object : FakeManager() {
+            override val snapshot = kotlinx.coroutines.flow.MutableStateFlow(
+                com.programmersbox.cdm.core.allocator.AllocatorSnapshot(listOf(pixel, iphone, pixel2), emptyMap(), emptyList(), emptyMap()),
+            )
+        }
+        m.acquireImpl = { _, _, _, _, onPos -> onPos(1); AcquireResult.TimedOut(1) }
+        m.acquireSetImpl = { _, _, _, _, _ -> AcquireResult.TimedOut(1) }
+        withServer(m) { pf ->
+            val r = run(pf, "acquire", *base, "--android", "--device", "SER-A")
+            assertEquals(Wants(setOf(Category.ANY), Platform.ANDROID, null, pixel.key), m.lastWants)
+            assertTrue("Waiting for SER-A (Android)… position 1" in r.out, r.out)
+            m.lastWants = null
+            run(pf, "acquire", *base, "--ios", "--device", "UDID-1")
+            assertEquals(Wants(setOf(Category.ANY), Platform.IOS, null, iphone.key), m.lastWants)
+            m.lastWants = null
+            run(pf, "acquire", *base, "--android", "--device", "SER-A", "--device", "SER-B")
+            assertEquals(null, m.lastWants)
+            assertEquals(listOf(pixel.key, pixel2.key), m.lastSet?.members?.map { it.device })
+            // Two different bare flags beside one --device are the legacy conflict.
+            assertEquals(2, run(pf, "acquire", *base, "--ios", "--android", "--device", "SER-A").code)
+        }
+    }
+
     @Test
     fun statusPrintsMembers() {
         val m = FakeManager().apply {
