@@ -233,7 +233,7 @@ object CommandClassifier {
     data class PinVarWrite(val name: String, val value: String?, val dynamic: Boolean, val append: Boolean = false)
 
     private val pinVarName =
-        Regex("""(?<![A-Za-z0-9_])(ANDROID_SERIAL|CDM_IOS_UDID|CDM_IOS_PAIR_UDID|CDM_(?:ANDROID|IOS)\d+_(?:SERIAL|UDID|PAIR_UDID))(?![A-Za-z0-9_])""")
+        Regex("""(?:(?<![A-Za-z0-9_])|(?<=-v))(ANDROID_SERIAL|CDM_IOS_UDID|CDM_IOS_PAIR_UDID|CDM_(?:ANDROID|IOS)\d+_(?:SERIAL|UDID|PAIR_UDID))(?![A-Za-z0-9_])""")
 
     /** `${NAME=…}` / `${NAME:=…}`: these expansions assign wherever they appear, even in a printed argument. */
     private val pinVarExpansion =
@@ -268,15 +268,118 @@ object CommandClassifier {
         return Flat(sb.toString(), quoted.toBooleanArray(), literal.toBooleanArray(), from.toIntArray())
     }
 
+    /** Builtins and keywords that can write a variable named by a plain word argument (`read NAME`, `for NAME in`, …). */
+    private val varWriters = setOf(
+        "read", "printf", "declare", "typeset", "local", "export", "readonly", "unset", "mapfile", "readarray",
+        "getopts", "for", "select", "let", "wait", "coproc",
+    )
+
+    /** Words that come before a command without being it (`while read X`, `if ! read X`, `command read X`). */
+    private val beforeCommand = setOf("while", "until", "if", "elif", "then", "do", "else", "!", "time", "builtin", "command")
+
     /**
-     * Every write to a pin variable in [command], in order (see [PinVarWrite]). Fails closed: print/search arguments
-     * ([exemptRanges]) are skipped, then quotes and escapes are flattened away and every remaining mention of a pin
-     * variable name that isn't a `$NAME`, `${NAME}` or `${NAME:-…}` read counts. A `NAME=` / `${NAME:=…}` gives its
-     * value (checked like today's assignments); anything else gives a null value (deny it).
+     * The body ranges of heredocs whose delimiter is quoted (`<<'EOF'`, `<<"EOF"`, `<<\EOF`): their text is passed
+     * as is, with no expansion. A `<<` counts outside quotes, or inside `$(…)` (Claude Code's
+     * `git commit -m "$(cat <<'EOF' … EOF)"`). Heredocs with a bare delimiter expand `$(…)`, so they aren't listed.
+     */
+    private fun quotedHeredocBodies(c: String): List<IntRange> {
+        val nested = nestedPositions(c)
+        val out = mutableListOf<IntRange>()
+        val pending = mutableListOf<Pair<String, Boolean>>() // delimiter, strip leading tabs
+        var q = 0.toChar()
+        var i = 0
+        while (i < c.length) {
+            val ch = c[i]
+            when {
+                ch == '\n' && pending.isNotEmpty() -> {
+                    var line = i + 1
+                    for ((delim, tabs) in pending) {
+                        val start = line
+                        var end = -1
+                        while (line < c.length) {
+                            val nl = c.indexOf('\n', line).let { if (it < 0) c.length else it }
+                            val text = c.substring(line, nl).let { if (tabs) it.trimStart('\t') else it }
+                            if (text == delim) { end = line; line = minOf(nl + 1, c.length); break }
+                            line = nl + 1
+                        }
+                        if (end < 0) end = c.length
+                        if (end > start) out += start until end
+                    }
+                    pending.clear()
+                    i = line
+                    continue
+                }
+                q == '\'' -> if (ch == '\'') q = 0.toChar()
+                ch == '\\' -> i++
+                q == '"' && !nested[i] -> if (ch == '"') q = 0.toChar()
+                q == 0.toChar() && (ch == '\'' || ch == '"') -> q = ch
+                ch == '<' && c.startsWith("<<", i) && !c.startsWith("<<<", i) -> {
+                    var j = i + 2
+                    val tabs = c.getOrNull(j) == '-'
+                    if (tabs) j++
+                    j = skipWs(c, j)
+                    val e = tokenEnd(c, j)
+                    val word = c.substring(j, e)
+                    if (word.any { it == '\'' || it == '"' || it == '\\' }) pending += unquote(word) to tabs
+                    i = maxOf(e, i + 2)
+                    continue
+                }
+            }
+            i++
+        }
+        return out
+    }
+
+    /** True when some segment of [command] runs shell text ([runsShellText], `find -exec`). */
+    private fun runsShell(command: String): Boolean = ranges(command).any { (s, e) ->
+        val seg = command.substring(s, e)
+        val p = prefixLength(seg)
+        val w = words(seg.substring(minOf(p, seg.length)))
+        val word = w.firstOrNull()?.substringAfterLast('/')
+        word in runsShellText || (word == "find" && w.any { it == "-exec" || it == "-execdir" || it == "-ok" || it == "-okdir" })
+    }
+
+    /**
+     * True when a mention at [a] until [b] of the flattened text [f] is a plain word argument of a command that can
+     * write a variable it names (`read NAME`, `for NAME in`, `unset NAME`, `printf -v NAME`), a `-vNAME` / `r=NAME`
+     * word, or sits in an arithmetic `((…))`. A mention inside a longer word or a quoted string is text.
+     */
+    private fun namedForWrite(f: Flat, a: Int, b: Int): Boolean {
+        val t = f.text
+        fun sep(i: Int) = i < 0 || i >= t.length || (!f.quoted[i] && (t[i].isWhitespace() || t[i] in ";&|()<>"))
+        if (!sep(b)) return false
+        // `-vNAME` (printf/read) and `r=NAME` (declare -n): word-bounded.
+        if (a >= 2 && t.startsWith("-v", a - 2) && sep(a - 3)) return true
+        if (a >= 1 && t[a - 1] == '=') {
+            var k = a - 2
+            while (k >= 0 && (t[k].isLetterOrDigit() || t[k] == '_')) k--
+            return k < a - 2 && sep(k)
+        }
+        if (!sep(a - 1)) return false
+        // The command this word belongs to: back to the nearest unquoted command boundary.
+        var k = a - 1
+        fun boundary(i: Int) = !f.quoted[i] && (t[i] in ";&|()`\n" || (t[i] == '{' && t.getOrNull(i - 1) != '$'))
+        while (k >= 0 && !boundary(k)) k--
+        if (k >= 1 && t[k] == '(' && t[k - 1] == '(') return true // arithmetic can assign
+        val words = t.substring(k + 1, a).trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val cmd = words.dropWhile { it in beforeCommand || assignment.matches(it) }.firstOrNull()?.substringAfterLast('/')
+        return cmd in varWriters
+    }
+
+    /**
+     * Every write to a pin variable in [command], in order (see [PinVarWrite]). Fails closed for real writes:
+     * print/search arguments ([exemptRanges]) and quoted-delimiter heredoc bodies (unless the command runs shell
+     * text) are skipped, then quotes and escapes are flattened away. A mention followed by `=` / `+=`, or a
+     * `${NAME:=…}` expansion, gives its value (checked like today's assignments). A mention that is a plain word
+     * argument of a variable-writing builtin ([namedForWrite]) gives a null value (deny it). `$NAME` and `${NAME…}`
+     * expansions other than `=` / `:=` are reads; any other mention is text.
      */
     fun pinVarWrites(command: String): List<PinVarWrite> {
-        val blanked = StringBuilder(command)
-        for (r in exemptRanges(command)) for (i in r) if (command[i] != '\'' && command[i] != '"' && command[i] != '\\') blanked.setCharAt(i, ' ')
+        val noBodies = StringBuilder(command)
+        for (r in quotedHeredocBodies(command)) for (i in r) if (command[i] != '\n') noBodies.setCharAt(i, ' ')
+        val base = if (runsShell(noBodies.toString())) command else noBodies.toString()
+        val blanked = StringBuilder(base)
+        for (r in exemptRanges(base)) for (i in r) if (base[i] != '\'' && base[i] != '"' && base[i] != '\\') blanked.setCharAt(i, ' ')
         val f = flatten(blanked.toString())
         val t = f.text
         val out = mutableListOf<Pair<Int, PinVarWrite>>()
@@ -286,18 +389,16 @@ object CommandClassifier {
             val name = m.value
             val before = t.getOrNull(a - 1)
             if (before == '$') continue
-            if (before == '{' && t.getOrNull(a - 2) == '$') {
-                val rest = t.substring(b)
-                // Reads, and `${NAME=…}` / `${NAME:=…}` (counted on the raw text below).
-                if (rest.startsWith("}") || rest.startsWith(":-") || rest.startsWith("-") ||
-                    rest.startsWith(":=") || rest.startsWith("=")
-                ) continue
-                out += f.from[a] to PinVarWrite(name, null, false)
-                continue
+            // `${NAME…}`, `${#NAME}`, `${!NAME}`: reads, except `${NAME=…}` / `${NAME:=…}` (counted on the raw text below).
+            val brace = when {
+                before == '{' && t.getOrNull(a - 2) == '$' -> true
+                (before == '#' || before == '!') && t.getOrNull(a - 2) == '{' && t.getOrNull(a - 3) == '$' -> true
+                else -> false
             }
+            if (brace) continue
             val append = t.startsWith("+=", b)
             if (t.getOrNull(b) != '=' && !append) {
-                out += f.from[a] to PinVarWrite(name, null, false)
+                if (namedForWrite(f, a, b)) out += f.from[a] to PinVarWrite(name, null, false)
                 continue
             }
             val vs = b + if (append) 2 else 1

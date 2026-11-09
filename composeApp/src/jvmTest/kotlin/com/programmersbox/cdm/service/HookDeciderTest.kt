@@ -252,6 +252,35 @@ class HookDeciderTest {
         assertEquals(pinVarWrite, bash("for ANDROID_SERIAL in a b; do adb install x.apk; done", h2).reason())
     }
 
+
+    /** Commands that mention a pin variable as text, or only read it: no write. */
+    private val pinVarTextOnly = listOf(
+        "git commit -m \"\$(cat <<'EOF'\nfix: honor ANDROID_SERIAL\nEOF\n)\"",
+        "gh pr create --title \"ANDROID_SERIAL support\" --body \"\$(cat <<'EOF'\nread ANDROID_SERIAL; unset ANDROID_SERIAL\nEOF\n)\"",
+        "gh pr create --title \"ANDROID_SERIAL support\"",
+        "adb -s \${ANDROID_SERIAL%%,*} shell ls",
+        "for s in \${ANDROID_SERIAL//,/ }; do echo \$s; done",
+        "x=\${ANDROID_SERIAL:+a}; n=\${#ANDROID_SERIAL}; : \${ANDROID_SERIAL:?not set}; y=\${!ANDROID_SERIAL}",
+        "z=\${ANDROID_SERIAL#p}\${ANDROID_SERIAL##p}\${ANDROID_SERIAL%x}\${ANDROID_SERIAL^^}\${ANDROID_SERIAL,,}\${ANDROID_SERIAL:0:2}\${ANDROID_SERIAL@Q}\${ANDROID_SERIAL+x}\${ANDROID_SERIAL?x}",
+        "sed -i 's/ANDROID_SERIAL/X/' build.gradle",
+        "awk '/ANDROID_SERIAL/' f",
+        "jq '.env.ANDROID_SERIAL' f.json",
+        "python3 -c \"import os; print(os.environ['ANDROID_SERIAL'])\"",
+        "node -e \"console.log(process.env.ANDROID_SERIAL)\"",
+        "find . -name '*.kts' | xargs grep ANDROID_SERIAL",
+        "diff <(grep ANDROID_SERIAL a) <(grep ANDROID_SERIAL b)",
+        "cat > notes.md <<'X'\nread ANDROID_SERIAL; don't for ANDROID_SERIAL in x\nX",
+        "less ANDROID_SERIAL",
+        "less CDM_IOS_UDID",
+    )
+
+    @Test fun pinVariableTextAndReadsAllowedForEverySession() = runTest {
+        // (`adb -s ${ANDROID_SERIAL%%,*}` is still checked as a serial, as before: only the write rule must not fire.)
+        for (c in pinVarTextOnly) assertTrue((bash(c, h2) as? HookReply.Deny)?.reason != pinVarWrite, c) // holds nothing
+        bash("adb shell ls") // holds W
+        for (c in pinVarTextOnly) assertTrue((bash(c) as? HookReply.Deny)?.reason != pinVarWrite, c)
+    }
+
     @Test fun pinVariableReadsAndLiteralOwnAssignmentsAllowed() = runTest {
         bash("adb shell ls") // holds W
         assertEquals(pinPrefix("w-usb") + "echo \$ANDROID_SERIAL", bash("echo \$ANDROID_SERIAL").cmd())
