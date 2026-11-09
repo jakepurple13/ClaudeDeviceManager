@@ -92,6 +92,24 @@ class PermissionMirrorTest {
         assertEquals(Decision.ASK, decide("cdm acquire", RewriteKind.PIN))
     }
 
+    /** Review Focus 5: an allow rule for `cdm` never auto-allows what runs inside `cdm run`. */
+    @Test fun cdmRunInnerCommandJudgedNotCdmRule() {
+        settings(home, allow = listOf("Bash(cdm:*)"))
+        for (kind in RewriteKind.entries) {
+            assertEquals(Decision.ASK, decide("cdm run android1 -- rm -rf build", kind), kind.name)
+            assertEquals(Decision.ASK, decide("cdm run android1 -- adb shell ls && cdm run ios1 -- rm x", kind), kind.name)
+        }
+        // The inner command gets the answer it would get on its own.
+        settings(home, allow = listOf("Bash(cdm:*)", "Bash(adb:*)"))
+        assertEquals(Decision.ALLOW, decide("cdm run android1 -- adb shell ls"))
+        assertEquals(Decision.ALLOW, decide("cdm run android1 -- adb shell ls && cdm run android2 -- ls", RewriteKind.CDM))
+        settings(home, allow = listOf("Bash(cdm:*)"), deny = listOf("Bash(rm:*)"))
+        assertEquals(Decision.ASK, decide("cdm run android1 -- rm x", mode = "bypassPermissions"))
+        // A deny rule written against the `cdm run` form still applies.
+        settings(home, allow = listOf("Bash(adb:*)"), deny = listOf("Bash(cdm run android1:*)"))
+        assertEquals(Decision.ASK, decide("cdm run android1 -- adb shell ls"))
+    }
+
     @Test fun envWrapperDoesNotLaunderCommands() {
         assertEquals(Decision.ASK, decide("env adb shell ls"))
         assertEquals(Decision.ASK, decide("FOO=1 adb shell ls"))

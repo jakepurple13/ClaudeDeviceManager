@@ -270,6 +270,178 @@ class CdmServerTest {
         com.programmersbox.cdm.core.model.DeviceKey(key), kotlin.time.Instant.fromEpochMilliseconds(0), kotlin.time.Instant.fromEpochMilliseconds(0), false, p,
     )
 
+    private val pixel = com.programmersbox.cdm.core.allocator.AllocDevice(
+        com.programmersbox.cdm.core.model.DeviceKey("A"), "Pixel 8", Category.PHONE, false, listOf("SER-A"),
+    )
+    private val iphone = com.programmersbox.cdm.core.allocator.AllocDevice(
+        com.programmersbox.cdm.core.model.DeviceKey("I"), "iPhone 16 Pro", Category.PHONE, false, listOf("I"), Platform.IOS, virtual = true,
+    )
+
+    @Test
+    fun acquireMembersParsesCountsAndCategories() {
+        val m = FakeManager()
+        app(m) {
+            client.post("/cdm/acquire?holder=s:main&cwd=/x&member=android:2:phone&member=ios:1").bodyAsText()
+            assertEquals(
+                com.programmersbox.cdm.core.allocator.SetRequest(
+                    listOf(
+                        Wants(setOf(Category.PHONE), Platform.ANDROID),
+                        Wants(setOf(Category.PHONE), Platform.ANDROID),
+                        Wants(emptySet(), Platform.IOS),
+                    ),
+                ),
+                m.lastSet,
+            )
+            // --category fills members without their own; --real applies to every member; a comma list keeps either kind.
+            client.post("/cdm/acquire?holder=s:main&cwd=/x&category=tablet&virtual=false&member=android:&member=ios:phone,watch").bodyAsText()
+            assertEquals(
+                listOf(
+                    Wants(setOf(Category.TABLET), Platform.ANDROID, virtual = false),
+                    Wants(setOf(Category.PHONE, Category.WATCH), Platform.IOS, virtual = false),
+                ),
+                m.lastSet!!.members,
+            )
+            for (bad in listOf("android:0", "android:-1", "android:x:y:z", "windows:1", "android:2:", "android::phone", "android:0:phone", "android:65")) {
+                val r = client.post("/cdm/acquire?holder=s:main&cwd=/x&member=$bad&member=ios:1")
+                assertEquals(HttpStatusCode.BadRequest, r.status, bad)
+            }
+        }
+    }
+
+    @Test
+    fun memberSpecParsing() {
+        val none = emptySet<Category>()
+        assertEquals(listOf(Wants(none, Platform.ANDROID)), memberWants("android:", none, null).getOrThrow())
+        assertEquals(listOf(Wants(none, Platform.IOS)), memberWants("ios", none, null).getOrThrow())
+        assertEquals(List(3) { Wants(none, Platform.IOS) }, memberWants("ios:3", none, null).getOrThrow())
+        assertEquals(listOf(Wants(setOf(Category.WATCH), Platform.ANDROID)), memberWants("android:watch", none, null).getOrThrow())
+        assertEquals(
+            List(2) { Wants(setOf(Category.PHONE, Category.WATCH), Platform.ANDROID, virtual = true) },
+            memberWants("android:2:phone,watch", setOf(Category.TABLET), true).getOrThrow(),
+        )
+        assertEquals(List(2) { Wants(setOf(Category.TABLET), Platform.ANDROID) }, memberWants("android:2", setOf(Category.TABLET), null).getOrThrow())
+        for (bad in listOf("android:0", "android:-1", "android:x:y:z", "windows:1", ":1", "android:2:", "android::phone", "android:phone,", "android:99999999999", "android:65", "ios:65:phone")) {
+            assertTrue(memberWants(bad, none, null).isFailure, bad)
+        }
+        assertEquals(64, memberWants("android:64", none, null).getOrThrow().size)
+        assertEquals("bad member \"android:65\": count must be 1..64", memberWants("android:65", none, null).exceptionOrNull()?.message)
+    }
+
+    @Test
+    fun acquireSetStreamsMemberLinesThenDone() {
+        val m = FakeManager().apply {
+            acquireSetImpl = { _, _, _, _, onPos ->
+                onPos(1)
+                AcquireResult.GrantedSet(
+                    listOf(
+                        com.programmersbox.cdm.service.GrantedMember("android1", Platform.ANDROID, "SER-A", "Pixel 8", null),
+                        com.programmersbox.cdm.service.GrantedMember("ios1", Platform.IOS, "UDID-1", "iPhone 16 Pro", "W-UDID"),
+                    ),
+                )
+            }
+        }
+        app(m) {
+            assertEquals(
+                "QUEUED 1\nMEMBER android1 android SER-A Pixel 8\nMEMBER ios1 ios UDID-1 iPhone 16 Pro pair=W-UDID\nDONE\n",
+                client.post("/cdm/acquire?holder=s:main&cwd=/x&member=android:1&member=ios:1").bodyAsText(),
+            )
+            m.acquireSetImpl = { _, _, _, _, _ -> AcquireResult.Refused("You already hold devices. Run `cdm release` first.") }
+            val r = client.post("/cdm/acquire?holder=s:main&cwd=/x&member=android:2")
+            assertEquals(HttpStatusCode.BadRequest, r.status)
+            assertEquals("You already hold devices. Run `cdm release` first.\n", r.bodyAsText())
+            // A refused single acquire (the holder holds a set) answers 400 too.
+            m.acquireImpl = { _, _, _, _, _ -> AcquireResult.Refused("nope") }
+            val single = client.post("/cdm/acquire?holder=s:main&cwd=/x")
+            assertEquals(HttpStatusCode.BadRequest, single.status)
+            assertEquals("nope\n", single.bodyAsText())
+        }
+    }
+
+    /** An immediate refusal answers 400 even when the acquire finishes on another thread. */
+    @Test
+    fun immediateRefusalFromAnotherThreadIs400() {
+        val m = FakeManager().apply {
+            acquireSetImpl = { _, _, _, _, _ ->
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { AcquireResult.Refused("no") }
+            }
+            acquireImpl = { _, _, _, _, _ ->
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { AcquireResult.Refused("no") }
+            }
+        }
+        // The real CIO engine, whose dispatcher is multi-threaded.
+        val pf = java.nio.file.Files.createTempDirectory("cdm-race").resolve("port")
+        val server = CdmServer(m, port = 0, portFile = pf)
+        val port = kotlinx.coroutines.runBlocking { server.start() }
+        try {
+            val http = java.net.http.HttpClient.newHttpClient()
+            repeat(25) { i ->
+                val q = if (i % 2 == 0) "&member=android:2" else ""
+                val req = java.net.http.HttpRequest.newBuilder(java.net.URI("http://127.0.0.1:$port/cdm/acquire?holder=s:main&cwd=/x$q"))
+                    .POST(java.net.http.HttpRequest.BodyPublishers.noBody()).build()
+                val r = http.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+                assertEquals(400, r.statusCode(), "attempt $i")
+                assertEquals("no\n", r.body(), "attempt $i")
+            }
+        } finally {
+            server.stop()
+        }
+    }
+
+    @Test
+    fun acquireDevicesFormASet() {
+        val m = FakeManager().apply { snapshotFlow.value = snapshotFlow.value.copy(devices = listOf(pixel, iphone)) }
+        app(m) {
+            client.post("/cdm/acquire?holder=s:main&cwd=/x&device=SER-A&device=iPhone%2016%20Pro").bodyAsText()
+            assertEquals(
+                listOf(
+                    Wants(setOf(Category.ANY), Platform.ANDROID, device = pixel.key),
+                    Wants(setOf(Category.ANY), Platform.IOS, device = iphone.key),
+                ),
+                m.lastSet!!.members,
+            )
+            client.post("/cdm/acquire?holder=s:main&cwd=/x&device=SER-A&member=ios:1").bodyAsText()
+            assertEquals(listOf(Platform.IOS, Platform.ANDROID), m.lastSet!!.members.map { it.platform })
+        }
+    }
+
+    @Test
+    fun statusListsMembers() {
+        val m = FakeManager().apply { snapshotFlow.value = snapshotFlow.value.copy(devices = listOf(pixel, iphone)) }
+        val t = kotlin.time.Instant.fromEpochMilliseconds(0)
+        val set = com.programmersbox.cdm.core.allocator.HeldSet(
+            listOf(
+                com.programmersbox.cdm.core.allocator.SetMember("android1", Platform.ANDROID, pixel.key),
+                com.programmersbox.cdm.core.allocator.SetMember("ios1", Platform.IOS, iphone.key),
+            ),
+            t, t, false,
+        )
+        m.statusImpl = { com.programmersbox.cdm.core.allocator.HolderStatus.HoldingSet(set) }
+        app(m) {
+            assertEquals("MEMBER android1 android SER-A Pixel 8\nMEMBER ios1 ios I iPhone 16 Pro\n", client.get("/cdm/status?holder=s:main").bodyAsText())
+            // Release answers RELEASED for a held set, and for the platform of one of its members only.
+            assertEquals("RELEASED", client.post("/cdm/release?holder=s:main").bodyAsText().trim())
+            assertEquals("RELEASED", client.post("/cdm/release?holder=s:main&platform=ios").bodyAsText().trim())
+            m.statusImpl = { com.programmersbox.cdm.core.allocator.HolderStatus.HoldingSet(set.copy(members = set.members.take(1))) }
+            assertEquals("NONE", client.post("/cdm/release?holder=s:main&platform=ios").bodyAsText().trim())
+            // A queued set is released by any release.
+            val req = com.programmersbox.cdm.core.allocator.SetRequest(List(2) { Wants(emptySet(), Platform.ANDROID) })
+            m.statusImpl = { com.programmersbox.cdm.core.allocator.HolderStatus.Queued(1, Wants(emptySet()), req) }
+            assertEquals("RELEASED", client.post("/cdm/release?holder=s:main&platform=ios").bodyAsText().trim())
+        }
+    }
+
+    @Test
+    fun oneMemberUsesLegacyPath() {
+        val m = FakeManager().apply { acquireImpl = { _, _, _, _, _ -> AcquireResult.Granted("UDID-1", "iPhone 16 Pro", Platform.IOS) } }
+        app(m) {
+            assertEquals("GRANTED ios UDID-1 iPhone 16 Pro\n", client.post("/cdm/acquire?holder=s:main&cwd=/x&member=ios:1").bodyAsText())
+            assertEquals(Wants(emptySet(), Platform.IOS), m.lastWants)
+            client.post("/cdm/acquire?holder=s:main&cwd=/x&member=android:watch&virtual=true").bodyAsText()
+            assertEquals(Wants(setOf(Category.WATCH), Platform.ANDROID, virtual = true), m.lastWants)
+        }
+        assertEquals(null, m.lastSet)
+    }
+
     @Test
     fun pingAnswersCdmOk() = app(FakeManager()) {
         assertEquals("cdm-ok", client.get("/cdm/ping").bodyAsText().trim())

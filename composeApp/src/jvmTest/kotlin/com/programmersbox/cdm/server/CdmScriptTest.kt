@@ -175,7 +175,8 @@ class CdmScriptTest {
             assertEquals(Wants(emptySet(), Platform.ANDROID, virtual = true), m.lastWants)
             run(pf, "acquire", *base, "--category", "phone")
             assertEquals(Wants(setOf(Category.PHONE)), m.lastWants)
-            val both = run(pf, "acquire", *base, "--ios", "--android")
+            // --ios with --android is now a two-device set; the one-platform check stays for release.
+            val both = run(pf, "release", *base, "--ios", "--android")
             assertEquals(2, both.code, both.out)
             assertEquals(2, run(pf, "acquire", *base, "--real", "--virtual").code)
 
@@ -297,6 +298,342 @@ class CdmScriptTest {
             proc.destroyForcibly()
             s1.stop()
             s2?.stop()
+        }
+    }
+
+    private val base = arrayOf("--holder", "s:main", "--cwd", "/x")
+
+    @Test
+    fun setAcquirePrintsMembers() {
+        val m = FakeManager().apply {
+            acquireSetImpl = { _, _, _, _, onPos ->
+                onPos(1)
+                AcquireResult.GrantedSet(
+                    listOf(
+                        com.programmersbox.cdm.service.GrantedMember("android1", Platform.ANDROID, "SER1", "Pixel 8", null),
+                        com.programmersbox.cdm.service.GrantedMember("android2", Platform.ANDROID, "SER2", "Galaxy S23", null),
+                        com.programmersbox.cdm.service.GrantedMember("ios1", Platform.IOS, "UDID-1", "iPhone 15", "W-UDID"),
+                    ),
+                )
+            }
+        }
+        withServer(m) { pf ->
+            val r = run(pf, "acquire", *base, "--android", "2", "--ios")
+            assertEquals(0, r.code, r.out)
+            assertEquals(
+                "Waiting for your devices\u2026 position 1\n" +
+                    "Got your devices:\n" +
+                    "  android1  Pixel 8 (SER1)\n" +
+                    "  android2  Galaxy S23 (SER2)\n" +
+                    "  ios1      iPhone 15 (UDID-1) + watch (W-UDID)\n" +
+                    "Run commands on one device with `cdm run <name> -- <command>`, for example `cdm run android2 -- adb shell input tap 100 200`.\n" +
+                    "For iOS, still pass \$CDM_IOS_UDID: `cdm run ios1 -- xcrun simctl launch \$CDM_IOS_UDID com.example.app`.\n",
+                r.out,
+            )
+        }
+    }
+
+    @Test
+    fun androidOnlySetPrintsNoIosHint() {
+        val m = FakeManager().apply {
+            acquireSetImpl = { _, _, _, _, _ ->
+                AcquireResult.GrantedSet(
+                    listOf(
+                        com.programmersbox.cdm.service.GrantedMember("android1", Platform.ANDROID, "SER1", "Pixel 8", null),
+                        com.programmersbox.cdm.service.GrantedMember("android2", Platform.ANDROID, "SER2", "Galaxy S23", null),
+                    ),
+                )
+            }
+        }
+        withServer(m) { pf ->
+            val r = run(pf, "acquire", *base, "--android", "2")
+            assertEquals(0, r.code, r.out)
+            assertEquals(
+                "Got your devices:\n" +
+                    "  android1  Pixel 8 (SER1)\n" +
+                    "  android2  Galaxy S23 (SER2)\n" +
+                    "Run commands on one device with `cdm run <name> -- <command>`, for example `cdm run android2 -- adb shell input tap 100 200`.\n",
+                r.out,
+            )
+        }
+    }
+
+    @Test
+    fun setAcquireSendsMemberParams() {
+        val m = FakeManager().apply { acquireSetImpl = { _, _, _, _, _ -> AcquireResult.TimedOut(1) } }
+        withServer(m) { pf ->
+            run(pf, "acquire", *base, "--android", "2:watch", "--ios", "--real")
+            assertEquals(
+                listOf(
+                    Wants(setOf(Category.WATCH), Platform.ANDROID, virtual = false),
+                    Wants(setOf(Category.WATCH), Platform.ANDROID, virtual = false),
+                    Wants(emptySet(), Platform.IOS, virtual = false),
+                ),
+                m.lastSet?.members,
+            )
+            run(pf, "acquire", *base, "--android", "--android")
+            assertEquals(listOf(Platform.ANDROID, Platform.ANDROID), m.lastSet?.members?.map { it.platform })
+        }
+    }
+
+    @Test
+    fun setTimeoutSaysRunTheSameCommand() {
+        val m = FakeManager().apply { acquireSetImpl = { _, _, _, _, _ -> AcquireResult.TimedOut(2) } }
+        withServer(m) { pf ->
+            assertEquals(
+                "Still queued at position 2. Run the same `cdm acquire …` command again to keep waiting.\n",
+                run(pf, "acquire", *base, "--android", "2").out,
+            )
+        }
+    }
+
+    @Test
+    fun setRefusalExits2() {
+        val m = FakeManager().apply { acquireSetImpl = { _, _, _, _, _ -> AcquireResult.Refused("only 1 android connected") } }
+        withServer(m) { pf ->
+            val r = run(pf, "acquire", *base, "--android", "2")
+            assertEquals(2, r.code, r.out)
+            assertTrue("Device Manager refused the request: only 1 android connected" in r.out, r.out)
+        }
+    }
+
+    @Test
+    fun legacyCountOneWithValueStaysSingle() {
+        val m = FakeManager().apply { acquireImpl = { _, _, _, _, _ -> AcquireResult.TimedOut(1) } }
+        withServer(m) { pf ->
+            run(pf, "acquire", *base, "--android", "1:watch")
+            assertEquals(Wants(setOf(Category.WATCH), Platform.ANDROID), m.lastWants)
+        }
+    }
+
+    @Test
+    fun runWithoutHookExecsCommand() {
+        val pb = ProcessBuilder(listOf(script.toString(), "run", "android1", "--", "echo", "hi"))
+        pb.environment()["CDM_PORT_FILE"] = dir.resolve("nope").toString()
+        val q = pb.start()
+        val out = q.inputStream.bufferedReader().readText()
+        val err = q.errorStream.bufferedReader().readText()
+        assertTrue(q.waitFor(60, TimeUnit.SECONDS))
+        assertEquals(0, q.exitValue(), err)
+        assertEquals("hi\n", out)
+        assertEquals("Device Manager not running; running without a device lock.\n", err)
+    }
+
+    private class Split(val code: Int, val out: String, val err: String)
+
+    /** Runs the script with [env] added (as a set holder's command gets them from the hook) and no app listening. */
+    private fun runWithEnv(env: Map<String, String>, vararg args: String, portFile: Path = dir.resolve("nope")): Split {
+        val pb = ProcessBuilder(listOf(script.toString()) + args)
+        pb.environment()["CDM_PORT_FILE"] = portFile.toString()
+        pb.environment()["CDM_RETRY_SECONDS"] = "5"
+        listOf("ANDROID_SERIAL", "CDM_IOS_UDID", "CDM_IOS_PAIR_UDID").forEach { pb.environment().remove(it) }
+        pb.environment().keys.filter { it.matches(Regex("CDM_(ANDROID|IOS)\\d+_.*")) }.forEach { pb.environment().remove(it) }
+        pb.environment().putAll(env)
+        val q = pb.start()
+        val out = q.inputStream.bufferedReader().readText()
+        val err = q.errorStream.bufferedReader().readText()
+        assertTrue(q.waitFor(60, TimeUnit.SECONDS))
+        return Split(q.exitValue(), out, err)
+    }
+
+    private val setEnv = mapOf(
+        "ANDROID_SERIAL" to "use-cdm-run",
+        "CDM_IOS_UDID" to "use-cdm-run",
+        "CDM_ANDROID1_SERIAL" to "SER1",
+        "CDM_ANDROID2_SERIAL" to "SER2",
+        "CDM_IOS1_UDID" to "UDID-1",
+        "CDM_IOS1_PAIR_UDID" to "WATCH-1",
+        "CDM_IOS2_UDID" to "UDID-2",
+    )
+
+    /** A `cdm run` inside a script never reaches the hook: it resolves the member from the exported variables. */
+    @Test
+    fun runInsideScriptUsesMemberVariables() {
+        val echo = arrayOf("sh", "-c", "echo \$ANDROID_SERIAL \${CDM_IOS_UDID:-none} \${CDM_IOS_PAIR_UDID:-none}")
+        val a2 = runWithEnv(setEnv, "run", "android2", "--", *echo)
+        assertEquals(0, a2.code, a2.err)
+        assertEquals("SER2 use-cdm-run none\n", a2.out)
+        assertEquals("", a2.err)
+        assertEquals("use-cdm-run UDID-1 WATCH-1\n", runWithEnv(setEnv, "run", "ios1", "--", *echo).out)
+        assertEquals("use-cdm-run UDID-2 none\n", runWithEnv(setEnv + ("CDM_IOS_PAIR_UDID" to "X"), "run", "ios2", "--", *echo).out)
+        assertEquals("SER1,SER2 none none\n", runWithEnv(setEnv, "run", "all", "--", *echo).out)
+        val ten = runWithEnv(setEnv + ("CDM_ANDROID10_SERIAL" to "SER10"), "run", "all", "--", *echo)
+        assertEquals("SER1,SER2,SER10 none none\n", ten.out)
+        // macOS's bash 3.2 too.
+        val sys = java.io.File("/bin/bash")
+        if (sys.exists()) {
+            val pb = ProcessBuilder(listOf(sys.path, script.toString(), "run", "all", "--", *echo))
+            pb.environment()["CDM_PORT_FILE"] = dir.resolve("nope").toString()
+            listOf("ANDROID_SERIAL", "CDM_IOS_UDID", "CDM_IOS_PAIR_UDID").forEach { pb.environment().remove(it) }
+            pb.environment().putAll(setEnv)
+            val p = pb.redirectErrorStream(true).start()
+            val out = p.inputStream.bufferedReader().readText()
+            assertTrue(p.waitFor(60, TimeUnit.SECONDS))
+            assertEquals("SER1,SER2 none none\n", out)
+        }
+    }
+
+    @Test
+    fun runInsideScriptUnknownNameExits2() {
+        val r = runWithEnv(setEnv, "run", "android3", "--", "echo", "hi")
+        assertEquals(2, r.code)
+        assertEquals("", r.out)
+        assertEquals("Unknown device name android3.\n", r.err)
+    }
+
+    @Test
+    fun runWithoutVariablesOrAppKeepsOldMessage() {
+        val r = runWithEnv(mapOf("ANDROID_SERIAL" to "SER1"), "run", "android1", "--", "sh", "-c", "echo \$ANDROID_SERIAL")
+        assertEquals(0, r.code, r.err)
+        assertEquals("SER1\n", r.out)
+        assertEquals("Device Manager not running; running without a device lock.\n", r.err)
+    }
+
+    @Test
+    fun runSingleHolderWithAppRunningKeepsPin() {
+        withServer(FakeManager()) { pf ->
+            val r = runWithEnv(mapOf("ANDROID_SERIAL" to "SER1"), "run", "android1", "--", "sh", "-c", "echo \$ANDROID_SERIAL", portFile = pf)
+            assertEquals("SER1\n", r.out)
+            assertEquals("", r.err)
+            val bad = runWithEnv(mapOf("ANDROID_SERIAL" to "SER1"), "run", "android2", "--", "echo", "hi", portFile = pf)
+            assertEquals(2, bad.code)
+            assertEquals("Unknown device name android2.\n", bad.err)
+        }
+    }
+
+    @Test
+    fun runRejectsUppercaseNames() {
+        val r = runWithEnv(setEnv, "run", "Android1", "--", "echo", "hi")
+        assertEquals(2, r.code)
+        assertEquals("Unknown device name Android1.\n", r.err)
+        withServer(FakeManager()) { pf ->
+            val s = runWithEnv(mapOf("ANDROID_SERIAL" to "SER1"), "run", "ANDROID1", "--", "echo", "hi", portFile = pf)
+            assertEquals(2, s.code)
+            assertEquals("Unknown device name ANDROID1.\n", s.err)
+        }
+    }
+
+    @Test
+    fun runWithAppButNoPinSaysHoldNothing() {
+        withServer(FakeManager()) { pf ->
+            for (name in listOf("android1", "ios1", "all")) {
+                val r = runWithEnv(emptyMap(), "run", name, "--", "echo", "hi", portFile = pf)
+                assertEquals(2, r.code, name)
+                assertEquals("", r.out)
+                assertEquals("You hold no devices. Run `cdm acquire` first.\n", r.err)
+            }
+            val ios = runWithEnv(mapOf("CDM_IOS_UDID" to "U1"), "run", "ios1", "--", "sh", "-c", "echo \$CDM_IOS_UDID", portFile = pf)
+            assertEquals("U1\n", ios.out)
+        }
+    }
+
+    /** An app that answers the ping but ends every acquire stream without a verdict. */
+    private fun silentApp(f: (Path) -> Unit) {
+        val http = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        http.createContext("/cdm/ping") { ex -> val b = "cdm-ok".toByteArray(); ex.sendResponseHeaders(200, b.size.toLong()); ex.responseBody.use { it.write(b) } }
+        http.createContext("/cdm/acquire") { ex -> ex.sendResponseHeaders(200, -1); ex.close() }
+        http.start()
+        try {
+            val pf = dir.resolve("silent-port").also { Files.writeString(it, http.address.port.toString()) }
+            f(pf)
+        } finally {
+            http.stop(0)
+        }
+    }
+
+    @Test
+    fun noAnswerSaysRunTheSameCommandForSets() {
+        silentApp { pf ->
+            fun acquire(vararg extra: String): String {
+                val pb = ProcessBuilder(listOf(script.toString(), "acquire", *base, *extra)).redirectErrorStream(true)
+                pb.environment()["CDM_PORT_FILE"] = pf.toString()
+                pb.environment()["CDM_ACQUIRE_TIMEOUT"] = "1"
+                val p = pb.start()
+                val out = p.inputStream.bufferedReader().readText()
+                assertTrue(p.waitFor(60, TimeUnit.SECONDS))
+                return out
+            }
+            assertEquals("Device Manager didn't answer. Run the same `cdm acquire …` command again.\n", acquire("--android", "2"))
+            assertEquals("Device Manager didn't answer. Run `cdm acquire` again.\n", acquire())
+        }
+    }
+
+    @Test
+    fun runMissingDashDashExits2() {
+        val r = run(dir.resolve("nope"), "run", "android1", "echo", "hi")
+        assertEquals(2, r.code, r.out)
+        assertTrue("cdm run <name|all> -- <command>" in r.out, r.out)
+        assertEquals(2, run(dir.resolve("nope"), "run", "android1", "--").code)
+    }
+
+    /** No arguments at all (an empty array under `set -u`, bash 3.2 included) is a usage error, not "unbound variable". */
+    @Test
+    fun runWithNoArgsPrintsUsage() {
+        val r = run(dir.resolve("nope"), "run")
+        assertEquals(2, r.code, r.out)
+        assertTrue("cdm run <name|all> -- <command>" in r.out && "unbound" !in r.out, r.out)
+        val sys = java.io.File("/bin/bash")
+        if (sys.exists()) {
+            for (args in listOf(listOf("run"), listOf("run", "name", "--"))) {
+                val p = ProcessBuilder(listOf(sys.path, script.toString()) + args).redirectErrorStream(true).start()
+                val out = p.inputStream.bufferedReader().readText()
+                assertTrue(p.waitFor(60, TimeUnit.SECONDS))
+                assertEquals(2, p.exitValue(), out)
+                assertTrue("Usage: cdm acquire" in out && "unbound" !in out, out)
+            }
+        }
+    }
+
+    @Test
+    fun platformFlagWithDeviceStaysLegacy() {
+        val pixel = com.programmersbox.cdm.core.allocator.AllocDevice(
+            com.programmersbox.cdm.core.model.DeviceKey("HW"), "Pixel 8", Category.PHONE, false, listOf("SER-A"),
+        )
+        val iphone = com.programmersbox.cdm.core.allocator.AllocDevice(
+            com.programmersbox.cdm.core.model.DeviceKey("UDID-1"), "iPhone", Category.PHONE, false, listOf("UDID-1"), Platform.IOS,
+        )
+        val pixel2 = pixel.copy(key = com.programmersbox.cdm.core.model.DeviceKey("HW2"), name = "Pixel 9", connectedSerials = listOf("SER-B"))
+        val m = object : FakeManager() {
+            override val snapshot = kotlinx.coroutines.flow.MutableStateFlow(
+                com.programmersbox.cdm.core.allocator.AllocatorSnapshot(listOf(pixel, iphone, pixel2), emptyMap(), emptyList(), emptyMap()),
+            )
+        }
+        m.acquireImpl = { _, _, _, _, onPos -> onPos(1); AcquireResult.TimedOut(1) }
+        m.acquireSetImpl = { _, _, _, _, _ -> AcquireResult.TimedOut(1) }
+        withServer(m) { pf ->
+            val r = run(pf, "acquire", *base, "--android", "--device", "SER-A")
+            assertEquals(Wants(setOf(Category.ANY), Platform.ANDROID, null, pixel.key), m.lastWants)
+            assertTrue("Waiting for SER-A (Android)… position 1" in r.out, r.out)
+            m.lastWants = null
+            run(pf, "acquire", *base, "--ios", "--device", "UDID-1")
+            assertEquals(Wants(setOf(Category.ANY), Platform.IOS, null, iphone.key), m.lastWants)
+            m.lastWants = null
+            run(pf, "acquire", *base, "--android", "--device", "SER-A", "--device", "SER-B")
+            assertEquals(null, m.lastWants)
+            assertEquals(listOf(pixel.key, pixel2.key), m.lastSet?.members?.map { it.device })
+            // Two different bare flags beside one --device are the legacy conflict.
+            assertEquals(2, run(pf, "acquire", *base, "--ios", "--android", "--device", "SER-A").code)
+        }
+    }
+
+    @Test
+    fun statusPrintsMembers() {
+        val m = FakeManager().apply {
+            val t = kotlin.time.Instant.fromEpochMilliseconds(0)
+            statusImpl = {
+                HolderStatus.HoldingSet(
+                    com.programmersbox.cdm.core.allocator.HeldSet(
+                        listOf(
+                            com.programmersbox.cdm.core.allocator.SetMember("android1", Platform.ANDROID, com.programmersbox.cdm.core.model.DeviceKey("SER1")),
+                            com.programmersbox.cdm.core.allocator.SetMember("ios1", Platform.IOS, com.programmersbox.cdm.core.model.DeviceKey("UDID-1")),
+                        ),
+                        t, t, false,
+                    ),
+                )
+            }
+        }
+        withServer(m) { pf ->
+            assertEquals("Holding android1: SER1 (SER1).\nHolding ios1: UDID-1 (UDID-1, iOS).\n", run(pf, "status", *base).out)
         }
     }
 }

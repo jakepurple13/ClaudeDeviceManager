@@ -103,6 +103,15 @@ class InstallerTest {
     }
 
     @Test
+    fun claudeMdMentionsSets() {
+        val text = Installer(tmpHome()).claudeMdSnippet
+        val sentence = "To hold several devices at once, run for example `cdm acquire --android 2` " +
+            "(or `--android phone --android watch`), then run each command with " +
+            "`cdm run <name> -- <command>`, or `cdm run all -- <command>` for one command that uses them all."
+        assertTrue(sentence in text, "missing set sentence in:\n$text")
+    }
+
+    @Test
     fun appendSnippetIdempotent() {
         val home = tmpHome()
         home.resolve(".claude").createDirectories()

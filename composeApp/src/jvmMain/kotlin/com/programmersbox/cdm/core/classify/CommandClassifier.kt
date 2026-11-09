@@ -26,13 +26,17 @@ sealed interface CommandKind {
     data class IosGlobalDangerous(val what: String) : CommandKind
 }
 
+/**
+ * One `cdm run <name> -- <command>` segment. [start]/[end] index the raw command (as [CommandClassifier] ranges do).
+ * [target] is the device name or `all` (empty if missing); [rest] is the raw text after `--`, trimmed (empty if missing).
+ */
+data class CdmRunSegment(val start: Int, val end: Int, val target: String, val rest: String)
+
 object CommandClassifier {
     private val gradleDeviceTask = Regex("""^(:?[\w-]+:)*(install|uninstall|connected)\w*$""")
     /** `NAME=value` or `NAME+=value` (bash appends): both are assignment words before the command. */
     private val assignment = Regex("""^[A-Za-z_][A-Za-z0-9_]*\+?=.*""", RegexOption.DOT_MATCHES_ALL)
     private const val SERIAL_VAR = "ANDROID_SERIAL="
-    private val serialAssignment =
-        Regex("""(?<![A-Za-z0-9_])ANDROID_SERIAL=("(?:[^"\\]|\\.)*"|'[^']*'|[^\s;&|()<>]*)""")
 
     /** Each command segment, trimmed, with leading `(`/`{`, VAR=value and exec wrappers (sudo, timeout, env, …) stripped. */
     fun segments(command: String): List<String> =
@@ -76,12 +80,6 @@ object CommandClassifier {
     /** One `CDM_IOS_UDID=` / `CDM_IOS_PAIR_UDID=` assignment. [value] is null when it isn't a literal (`$x`, `$(…)`, backticks). */
     data class IosAssignment(val pair: Boolean, val value: String?)
 
-    private val iosUdidAssignment =
-        Regex("""(?<![A-Za-z0-9_])CDM_IOS_(PAIR_)?UDID(\+?)=("(?:[^"\\]|\\.)*"|'[^']*'|[^\s;&|()<>]*)""")
-
-    /** `${CDM_IOS_UDID=…}` / `${CDM_IOS_UDID:=…}` (and PAIR): these expansions assign wherever they appear. */
-    private val iosUdidExpansion = Regex("""\$\{CDM_IOS_(PAIR_)?UDID:?=([^}]*)}""")
-
     /**
      * Commands that only print or search their arguments and can't assign. A match in one of their arguments is
      * exempt, unless it sits inside `$(…)` or backticks (that runs as its own command).
@@ -114,33 +112,20 @@ object CommandClassifier {
     }
 
     /**
-     * Every `CDM_IOS_UDID=<value>` and `CDM_IOS_PAIR_UDID=<value>` in the raw text, plus every `${CDM_IOS_UDID=…}` /
-     * `${CDM_IOS_UDID:=…}` expansion. Fails closed: like [serialAssignments] it over-matches (a later assignment
-     * would override the hook's exported UDID; `bash -c '…'`, `eval`, `$(…)` and heredocs fed to a shell all count).
-     * The one exemption is text in an argument of a print/search command ([printOrSearch]: `echo "CDM_IOS_UDID=$x"`,
-     * `grep CDM_IOS_UDID= f`) that isn't nested in `$(…)` or backticks.
+     * Every `CDM_IOS_UDID=<value>` and `CDM_IOS_PAIR_UDID=<value>`, plus every `${CDM_IOS_UDID=…}` /
+     * `${CDM_IOS_UDID:=…}` expansion, as [pinVarWrites] finds them (split names included). Fails closed: it
+     * over-matches (`bash -c '…'`, `eval`, `$(…)` and heredocs fed to a shell all count). A `+=` gives a null value.
+     * Other writes (`read`, `unset`, ...) aren't listed here; [writesPinVarOtherwise] reports them.
      */
-    fun iosUdidAssignments(command: String): List<IosAssignment> {
-        val exempt = exemptRanges(command)
-        val words = iosUdidAssignment.findAll(command).filter { m ->
-            val at = m.range.first
-            // `${CDM_IOS_UDID=…}` is counted once, as an expansion below.
-            val inExpansion = at >= 2 && command[at - 1] == '{' && command[at - 2] == '$'
-            !inExpansion && exempt.none { at in it }
-        }.map { m ->
-            val raw = m.groupValues[3]
-            // `+=` appends to the current value; an unquoted or double-quoted `$` / backtick expands at run time.
-            val dynamic = m.groupValues[2].isNotEmpty() || (!raw.startsWith("'") && ('$' in raw || '`' in raw))
-            m.range.first to IosAssignment(m.groupValues[1].isNotEmpty(), if (dynamic) null else unquote(raw))
-        }
-        // These assign even inside an argument (`echo ${CDM_IOS_UDID:=x}`), so they are never exempt.
-        val expansions = iosUdidExpansion.findAll(command).map { m ->
-            val raw = m.groupValues[2]
-            val dynamic = '$' in raw || '`' in raw
-            m.range.first to IosAssignment(m.groupValues[1].isNotEmpty(), if (dynamic) null else unquote(raw))
-        }
-        return (words + expansions).sortedBy { it.first }.map { it.second }.toList()
-    }
+    fun iosUdidAssignments(command: String): List<IosAssignment> =
+        pinVarWrites(command).filter { (it.name == "CDM_IOS_UDID" || it.name == "CDM_IOS_PAIR_UDID") && it.value != null }
+            .map { IosAssignment(it.name == "CDM_IOS_PAIR_UDID", if (it.dynamic || it.append) null else it.value) }
+
+    /** True when [command] writes ANDROID_SERIAL, CDM_IOS_UDID or CDM_IOS_PAIR_UDID other than as a literal `NAME=value`. */
+    fun writesPinVarOtherwise(command: String): Boolean =
+        pinVarWrites(command).any { it.name in SINGLE_PIN_VARS && (it.value == null || (it.append && it.name == "ANDROID_SERIAL")) }
+
+    private val SINGLE_PIN_VARS = setOf("ANDROID_SERIAL", "CDM_IOS_UDID", "CDM_IOS_PAIR_UDID")
 
     /**
      * The argument spans (offsets in [command]) of top-level segments whose command word is in [printOrSearch],
@@ -163,6 +148,8 @@ object CommandClassifier {
             }
             if (word !in printOrSearch) continue
             if (word == "git" && !gitExempt(w)) continue
+            // `printf -v NAME` assigns its output to NAME.
+            if (word == "printf" && w.drop(1).any { it.startsWith("-v") }) continue
             val wordEnd = tokenEnd(seg, p)
             var start = -1
             for (i in s + wordEnd until e) {
@@ -230,11 +217,204 @@ object CommandClassifier {
     }
 
     /**
-     * Every `ANDROID_SERIAL=<value>` in the raw text, wherever it appears (inline, `export`, `env`, inside a subshell).
-     * A textual scan on purpose: it over-matches (`echo ANDROID_SERIAL=x`) rather than miss a re-targeting.
+     * Every `ANDROID_SERIAL=<value>`, wherever it appears (inline, `export`, `env`, inside a subshell, split as
+     * `ANDROID_"SERIAL"=`), as [pinVarWrites] finds them. Print/search arguments are exempt; anything else over-matches.
      */
     fun serialAssignments(command: String): List<String> =
-        serialAssignment.findAll(command).map { unquote(it.groupValues[1]) }.toList()
+        pinVarWrites(command).filter { it.name == "ANDROID_SERIAL" && !it.append }.mapNotNull { it.value }
+
+    /**
+     * One write to a pin variable (ANDROID_SERIAL, CDM_IOS_UDID, CDM_IOS_PAIR_UDID, or a set's per-member
+     * CDM_ANDROID<N>_SERIAL / CDM_IOS<N>_UDID / CDM_IOS<N>_PAIR_UDID). [value] is the assigned text for a `NAME=value`
+     * (or `${NAME:=value}`); null for any other mention that isn't a plain read (`read NAME`, `printf -v NAME`,
+     * `for NAME in`, `declare -n r=NAME`, `unset NAME`, ...). [dynamic]: the value expands at run time.
+     * [append]: `NAME+=value`, which adds to the current value (so [value] isn't what the variable ends up holding).
+     */
+    data class PinVarWrite(val name: String, val value: String?, val dynamic: Boolean, val append: Boolean = false)
+
+    private val pinVarName =
+        Regex("""(?:(?<![A-Za-z0-9_])|(?<=-v))(ANDROID_SERIAL|CDM_IOS_UDID|CDM_IOS_PAIR_UDID|CDM_(?:ANDROID|IOS)\d+_(?:SERIAL|UDID|PAIR_UDID))(?![A-Za-z0-9_])""")
+
+    /** `${NAME=…}` / `${NAME:=…}`: these expansions assign wherever they appear, even in a printed argument. */
+    private val pinVarExpansion =
+        Regex("""\$\{(ANDROID_SERIAL|CDM_IOS_UDID|CDM_IOS_PAIR_UDID|CDM_(?:ANDROID|IOS)\d+_(?:SERIAL|UDID|PAIR_UDID)):?=([^}]*)}""")
+
+    /**
+     * [text] with quotes dropped and `\x` turned into `x`, so a split name (`ANDROID_"SERIAL"`, `ANDROID_\SERIAL`)
+     * reads as the name the shell sees. [quoted]: the char was inside quotes or escaped (so whitespace in it doesn't
+     * end a word); [literal]: single-quoted or escaped (a `$` there never expands). [from]: the original offset.
+     */
+    private class Flat(val text: String, val quoted: BooleanArray, val literal: BooleanArray, val from: IntArray)
+
+    private fun flatten(s: String): Flat {
+        val sb = StringBuilder()
+        val quoted = ArrayList<Boolean>()
+        val literal = ArrayList<Boolean>()
+        val from = ArrayList<Int>()
+        fun add(c: Char, q: Boolean, l: Boolean, at: Int) { sb.append(c); quoted += q; literal += l; from += at }
+        var q = 0.toChar()
+        var i = 0
+        while (i < s.length) {
+            val ch = s[i]
+            when {
+                ch == '\\' && i + 1 < s.length -> { add(s[i + 1], true, true, i + 1); i++ }
+                q == '\'' -> if (ch == '\'') q = 0.toChar() else add(ch, true, true, i)
+                q == '"' -> if (ch == '"') q = 0.toChar() else add(ch, true, false, i)
+                ch == '\'' || ch == '"' -> q = ch
+                else -> add(ch, false, false, i)
+            }
+            i++
+        }
+        return Flat(sb.toString(), quoted.toBooleanArray(), literal.toBooleanArray(), from.toIntArray())
+    }
+
+    /** Builtins and keywords that can write a variable named by a plain word argument (`read NAME`, `for NAME in`, …). */
+    private val varWriters = setOf(
+        "read", "printf", "declare", "typeset", "local", "export", "readonly", "unset", "mapfile", "readarray",
+        "getopts", "for", "select", "let", "wait", "coproc",
+    )
+
+    /** Words that come before a command without being it (`while read X`, `if ! read X`, `command read X`). */
+    private val beforeCommand = setOf("while", "until", "if", "elif", "then", "do", "else", "!", "time", "builtin", "command")
+
+    /**
+     * The body ranges of heredocs whose delimiter is quoted (`<<'EOF'`, `<<"EOF"`, `<<\EOF`): their text is passed
+     * as is, with no expansion. A `<<` counts outside quotes, or inside `$(…)` (Claude Code's
+     * `git commit -m "$(cat <<'EOF' … EOF)"`). Heredocs with a bare delimiter expand `$(…)`, so they aren't listed.
+     */
+    private fun quotedHeredocBodies(c: String): List<IntRange> {
+        val nested = nestedPositions(c)
+        val out = mutableListOf<IntRange>()
+        val pending = mutableListOf<Pair<String, Boolean>>() // delimiter, strip leading tabs
+        var q = 0.toChar()
+        var i = 0
+        while (i < c.length) {
+            val ch = c[i]
+            when {
+                ch == '\n' && pending.isNotEmpty() -> {
+                    var line = i + 1
+                    for ((delim, tabs) in pending) {
+                        val start = line
+                        var end = -1
+                        while (line < c.length) {
+                            val nl = c.indexOf('\n', line).let { if (it < 0) c.length else it }
+                            val text = c.substring(line, nl).let { if (tabs) it.trimStart('\t') else it }
+                            if (text == delim) { end = line; line = minOf(nl + 1, c.length); break }
+                            line = nl + 1
+                        }
+                        if (end < 0) end = c.length
+                        if (end > start) out += start until end
+                    }
+                    pending.clear()
+                    i = line
+                    continue
+                }
+                q == '\'' -> if (ch == '\'') q = 0.toChar()
+                ch == '\\' -> i++
+                q == '"' && !nested[i] -> if (ch == '"') q = 0.toChar()
+                q == 0.toChar() && (ch == '\'' || ch == '"') -> q = ch
+                ch == '<' && c.startsWith("<<", i) && !c.startsWith("<<<", i) -> {
+                    var j = i + 2
+                    val tabs = c.getOrNull(j) == '-'
+                    if (tabs) j++
+                    j = skipWs(c, j)
+                    val e = tokenEnd(c, j)
+                    val word = c.substring(j, e)
+                    if (word.any { it == '\'' || it == '"' || it == '\\' }) pending += unquote(word) to tabs
+                    i = maxOf(e, i + 2)
+                    continue
+                }
+            }
+            i++
+        }
+        return out
+    }
+
+    /** True when some segment of [command] runs shell text ([runsShellText], `find -exec`). */
+    private fun runsShell(command: String): Boolean = ranges(command).any { (s, e) ->
+        val seg = command.substring(s, e)
+        val p = prefixLength(seg)
+        val w = words(seg.substring(minOf(p, seg.length)))
+        val word = w.firstOrNull()?.substringAfterLast('/')
+        word in runsShellText || (word == "find" && w.any { it == "-exec" || it == "-execdir" || it == "-ok" || it == "-okdir" })
+    }
+
+    /**
+     * True when a mention at [a] until [b] of the flattened text [f] is a plain word argument of a command that can
+     * write a variable it names (`read NAME`, `for NAME in`, `unset NAME`, `printf -v NAME`), a `-vNAME` / `r=NAME`
+     * word, or sits in an arithmetic `((…))`. A mention inside a longer word or a quoted string is text.
+     */
+    private fun namedForWrite(f: Flat, a: Int, b: Int): Boolean {
+        val t = f.text
+        fun sep(i: Int) = i < 0 || i >= t.length || (!f.quoted[i] && (t[i].isWhitespace() || t[i] in ";&|()<>"))
+        if (!sep(b)) return false
+        // `-vNAME` (printf/read) and `r=NAME` (declare -n): word-bounded.
+        if (a >= 2 && t.startsWith("-v", a - 2) && sep(a - 3)) return true
+        if (a >= 1 && t[a - 1] == '=') {
+            var k = a - 2
+            while (k >= 0 && (t[k].isLetterOrDigit() || t[k] == '_')) k--
+            return k < a - 2 && sep(k)
+        }
+        if (!sep(a - 1)) return false
+        // The command this word belongs to: back to the nearest unquoted command boundary.
+        var k = a - 1
+        fun boundary(i: Int) = !f.quoted[i] && (t[i] in ";&|()`\n" || (t[i] == '{' && t.getOrNull(i - 1) != '$'))
+        while (k >= 0 && !boundary(k)) k--
+        if (k >= 1 && t[k] == '(' && t[k - 1] == '(') return true // arithmetic can assign
+        val words = t.substring(k + 1, a).trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val cmd = words.dropWhile { it in beforeCommand || assignment.matches(it) }.firstOrNull()?.substringAfterLast('/')
+        return cmd in varWriters
+    }
+
+    /**
+     * Every write to a pin variable in [command], in order (see [PinVarWrite]). Fails closed for real writes:
+     * print/search arguments ([exemptRanges]) and quoted-delimiter heredoc bodies (unless the command runs shell
+     * text) are skipped, then quotes and escapes are flattened away. A mention followed by `=` / `+=`, or a
+     * `${NAME:=…}` expansion, gives its value (checked like today's assignments). A mention that is a plain word
+     * argument of a variable-writing builtin ([namedForWrite]) gives a null value (deny it). `$NAME` and `${NAME…}`
+     * expansions other than `=` / `:=` are reads; any other mention is text.
+     */
+    fun pinVarWrites(command: String): List<PinVarWrite> {
+        val noBodies = StringBuilder(command)
+        for (r in quotedHeredocBodies(command)) for (i in r) if (command[i] != '\n') noBodies.setCharAt(i, ' ')
+        val base = if (runsShell(noBodies.toString())) command else noBodies.toString()
+        val blanked = StringBuilder(base)
+        for (r in exemptRanges(base)) for (i in r) if (base[i] != '\'' && base[i] != '"' && base[i] != '\\') blanked.setCharAt(i, ' ')
+        val f = flatten(blanked.toString())
+        val t = f.text
+        val out = mutableListOf<Pair<Int, PinVarWrite>>()
+        for (m in pinVarName.findAll(t)) {
+            val a = m.range.first
+            val b = m.range.last + 1
+            val name = m.value
+            val before = t.getOrNull(a - 1)
+            if (before == '$') continue
+            // `${NAME…}`, `${#NAME}`, `${!NAME}`: reads, except `${NAME=…}` / `${NAME:=…}` (counted on the raw text below).
+            val brace = when {
+                before == '{' && t.getOrNull(a - 2) == '$' -> true
+                (before == '#' || before == '!') && t.getOrNull(a - 2) == '{' && t.getOrNull(a - 3) == '$' -> true
+                else -> false
+            }
+            if (brace) continue
+            val append = t.startsWith("+=", b)
+            if (t.getOrNull(b) != '=' && !append) {
+                if (namedForWrite(f, a, b)) out += f.from[a] to PinVarWrite(name, null, false)
+                continue
+            }
+            val vs = b + if (append) 2 else 1
+            var e = vs
+            while (e < t.length && (f.quoted[e] || (!t[e].isWhitespace() && t[e] !in ";&|()<>"))) e++
+            val value = t.substring(vs, e)
+            val dynamic = (vs until e).any { (t[it] == '$' || t[it] == '`') && !f.literal[it] }
+            out += f.from[a] to PinVarWrite(name, value, dynamic, append)
+        }
+        for (m in pinVarExpansion.findAll(command)) {
+            val raw = m.groupValues[2]
+            val dynamic = '$' in raw || '`' in raw
+            out += m.range.first to PinVarWrite(m.groupValues[1], unquote(raw), dynamic)
+        }
+        return out.sortedBy { it.first }.map { it.second }
+    }
 
     fun classify(command: String): CommandKind =
         classifyAll(command).fold(CommandKind.Other as CommandKind, ::merge)
@@ -324,6 +504,59 @@ object CommandClassifier {
             if (subStart < seg.length && seg[subStart] != '-') at = tokenEnd(seg, subStart)
             sb.append(command, last, s + at).append(insert)
             last = s + at
+        }
+        sb.append(command, last, command.length)
+        return sb.toString()
+    }
+
+    private class CdmRunParse(
+        val start: Int,
+        val end: Int,
+        val prefixEnd: Int,
+        val restStart: Int?,
+        val target: String,
+        val rest: String,
+    )
+
+    private fun parseCdmRuns(command: String): List<CdmRunParse> {
+        val out = mutableListOf<CdmRunParse>()
+        for ((s, e) in ranges(command)) {
+            val seg = command.substring(s, e)
+            val start = prefixLength(seg)
+            val cdmEnd = tokenEnd(seg, start)
+            // `cdm`, or any path to it (`/usr/local/bin/cdm`), like the identity rewrite.
+            if (unquote(seg.substring(start, cdmEnd)).substringAfterLast('/') != "cdm") continue
+            val runStart = skipWs(seg, cdmEnd)
+            val runEnd = tokenEnd(seg, runStart)
+            if (unquote(seg.substring(runStart, runEnd)) != "run") continue
+            val nameStart = skipWs(seg, runEnd)
+            val nameEnd = tokenEnd(seg, nameStart)
+            val name = unquote(seg.substring(nameStart, nameEnd))
+            val target = if (name == "--") "" else name
+            val dashStart = if (name == "--") nameStart else skipWs(seg, nameEnd)
+            val dashEnd = tokenEnd(seg, dashStart)
+            if (dashStart >= seg.length || seg.substring(dashStart, dashEnd) != "--") {
+                out += CdmRunParse(s, e, s + start, null, target, "")
+                continue
+            }
+            val restStart = skipWs(seg, dashEnd)
+            out += CdmRunParse(s, e, s + start, s + restStart, target, seg.substring(restStart).trim())
+        }
+        return out
+    }
+
+    /** One entry per `cdm run` segment; a missing name or `--` yields an empty [CdmRunSegment.target] or [CdmRunSegment.rest]. */
+    fun cdmRuns(command: String): List<CdmRunSegment> =
+        parseCdmRuns(command).map { CdmRunSegment(it.start, it.end, it.target, it.rest) }
+
+    /** Removes each well-formed `cdm run <name> -- ` prefix; every other byte stays. */
+    fun withoutCdmRun(command: String): String {
+        val sb = StringBuilder()
+        var last = 0
+        for (r in parseCdmRuns(command)) {
+            val rs = r.restStart ?: continue
+            sb.append(command, last, r.prefixEnd)
+            last = rs
         }
         sb.append(command, last, command.length)
         return sb.toString()

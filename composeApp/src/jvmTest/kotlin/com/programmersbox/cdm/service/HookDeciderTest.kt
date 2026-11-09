@@ -221,6 +221,78 @@ class HookDeciderTest {
         assertTrue("s2:main" in bash("export ANDROID_SERIAL=p-usb; scrcpy").reason())
     }
 
+    // ---- pin variables written by split names or indirect writes ----
+
+    private val pinVarWrite = "Set ANDROID_SERIAL/CDM_IOS_UDID only as a literal NAME=<your device>."
+
+    @Test fun splitOrIndirectSerialWritesDeniedOrChecked() = runTest {
+        bash("adb shell ls") // holds W
+        // Split names are assignments: their value goes through the own-serial check.
+        for (c in listOf(
+            "export ANDROID_\"SERIAL\"=p-usb; adb shell ls",
+            "env ANDROID_\\SERIAL=p-usb adb shell ls",
+            "export 'ANDROID_SERIAL'=p-usb; ./t.sh",
+        )) {
+            assertTrue("you hold" in bash(c).reason(), c)
+        }
+        // Writes that aren't a literal NAME=value are denied outright.
+        for (c in listOf(
+            "read ANDROID_SERIAL <<< p-usb; adb shell ls",
+            "printf -v ANDROID_SERIAL %s p-usb; adb shell ls",
+            "declare -n r=ANDROID_SERIAL; r=p-usb; adb shell ls",
+            "for ANDROID_SERIAL in \$(adb devices | tail -n +2 | cut -f1); do adb install x.apk; done",
+            "unset ANDROID_SERIAL; adb shell ls",
+            "export -n ANDROID_SERIAL; ./t.sh",
+            "export ANDROID_SERIAL+=x; ./t.sh",
+            "mapfile -t ANDROID_SERIAL < f; adb shell ls",
+        )) {
+            assertEquals(pinVarWrite, bash(c).reason(), c)
+        }
+        // From a session that holds nothing, too.
+        assertEquals(pinVarWrite, bash("for ANDROID_SERIAL in a b; do adb install x.apk; done", h2).reason())
+    }
+
+
+    /** Commands that mention a pin variable as text, or only read it: no write. */
+    private val pinVarTextOnly = listOf(
+        "git commit -m \"\$(cat <<'EOF'\nfix: honor ANDROID_SERIAL\nEOF\n)\"",
+        "gh pr create --title \"ANDROID_SERIAL support\" --body \"\$(cat <<'EOF'\nread ANDROID_SERIAL; unset ANDROID_SERIAL\nEOF\n)\"",
+        "gh pr create --title \"ANDROID_SERIAL support\"",
+        "adb -s \${ANDROID_SERIAL%%,*} shell ls",
+        "for s in \${ANDROID_SERIAL//,/ }; do echo \$s; done",
+        "x=\${ANDROID_SERIAL:+a}; n=\${#ANDROID_SERIAL}; : \${ANDROID_SERIAL:?not set}; y=\${!ANDROID_SERIAL}",
+        "z=\${ANDROID_SERIAL#p}\${ANDROID_SERIAL##p}\${ANDROID_SERIAL%x}\${ANDROID_SERIAL^^}\${ANDROID_SERIAL,,}\${ANDROID_SERIAL:0:2}\${ANDROID_SERIAL@Q}\${ANDROID_SERIAL+x}\${ANDROID_SERIAL?x}",
+        "sed -i 's/ANDROID_SERIAL/X/' build.gradle",
+        "awk '/ANDROID_SERIAL/' f",
+        "jq '.env.ANDROID_SERIAL' f.json",
+        "python3 -c \"import os; print(os.environ['ANDROID_SERIAL'])\"",
+        "node -e \"console.log(process.env.ANDROID_SERIAL)\"",
+        "find . -name '*.kts' | xargs grep ANDROID_SERIAL",
+        "diff <(grep ANDROID_SERIAL a) <(grep ANDROID_SERIAL b)",
+        "cat > notes.md <<'X'\nread ANDROID_SERIAL; don't for ANDROID_SERIAL in x\nX",
+        "less ANDROID_SERIAL",
+        "less CDM_IOS_UDID",
+    )
+
+    @Test fun pinVariableTextAndReadsAllowedForEverySession() = runTest {
+        // (`adb -s ${ANDROID_SERIAL%%,*}` is still checked as a serial, as before: only the write rule must not fire.)
+        for (c in pinVarTextOnly) assertTrue((bash(c, h2) as? HookReply.Deny)?.reason != pinVarWrite, c) // holds nothing
+        bash("adb shell ls") // holds W
+        for (c in pinVarTextOnly) assertTrue((bash(c) as? HookReply.Deny)?.reason != pinVarWrite, c)
+    }
+
+    @Test fun pinVariableReadsAndLiteralOwnAssignmentsAllowed() = runTest {
+        bash("adb shell ls") // holds W
+        assertEquals(pinPrefix("w-usb") + "echo \$ANDROID_SERIAL", bash("echo \$ANDROID_SERIAL").cmd())
+        assertEquals(pinPrefix("w-usb") + "grep ANDROID_SERIAL f", bash("grep ANDROID_SERIAL f").cmd())
+        assertEquals(
+            pinPrefix("w-usb") + "ANDROID_SERIAL=w-usb ./gradlew connectedCheck",
+            bash("ANDROID_SERIAL=w-usb ./gradlew connectedCheck").cmd(),
+        )
+        assertIs<HookReply.Rewrite>(bash("echo \${ANDROID_SERIAL:-none}"))
+        assertIs<HookReply.Rewrite>(bash("sh -c 'echo \$ANDROID_SERIAL'"))
+    }
+
     // ---- final review #2: wrappers and -t ----
 
     @Test fun wrappedWrongSerialWhileHoldingDenied() = runTest {

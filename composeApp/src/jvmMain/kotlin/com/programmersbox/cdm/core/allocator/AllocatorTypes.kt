@@ -46,6 +46,28 @@ data class Wants(
     }
 }
 
+/** A request for several devices at once: one [Wants] per member, each with a platform. */
+data class SetRequest(val members: List<Wants>) {
+    init {
+        require(members.size >= 2) { "a set needs at least two members" }
+        require(members.all { it.platform != null }) { "every set member needs a platform" }
+    }
+}
+
+/** One device of a held set, under its [name] (`android1`, `ios1`, ...). [partner] is the paired device held with it. */
+data class SetMember(val name: String, val platform: Platform, val device: DeviceKey, val partner: DeviceKey? = null)
+
+data class HeldSet(val members: List<SetMember>, val since: Instant, val lastActivity: Instant, val editing: Boolean)
+
+data class ReleasedSet(val reason: ReleaseReason, val members: List<SetMember>)
+
+sealed interface GrabSetResult {
+    data class Granted(val set: HeldSet) : GrabSetResult
+    data object NoneFree : GrabSetResult
+    data object Blocked : GrabSetResult
+    data object Impossible : GrabSetResult
+}
+
 enum class ReleaseReason {
     IDLE_TIMEOUT, EDIT_TIMEOUT, SELF_RELEASE, USER_RELEASE, USER_HANDOFF, DONT_USE, SUBAGENT_STOP, SESSION_END,
 }
@@ -60,7 +82,8 @@ sealed interface HolderStatus {
     ) : HolderStatus
 
     /** [position] is 1-based. */
-    data class Queued(val position: Int, val wants: Wants) : HolderStatus
+    data class Queued(val position: Int, val wants: Wants, val set: SetRequest? = null) : HolderStatus
+    data class HoldingSet(val set: HeldSet) : HolderStatus
     data class Released(val reason: ReleaseReason, val lastDevice: DeviceKey) : HolderStatus
     data object Blocked : HolderStatus
 }
@@ -78,7 +101,8 @@ sealed interface AllocatorEvent {
 
     data class Granted(override val at: Instant, val holder: HolderId, val device: DeviceKey) : AllocatorEvent
     data class Released(override val at: Instant, val holder: HolderId, val device: DeviceKey, val reason: ReleaseReason) : AllocatorEvent
-    data class Queued(override val at: Instant, val holder: HolderId, val wants: Wants) : AllocatorEvent
+    /** [set] is the set request when the holder queued for a set ([wants] is then empty). */
+    data class Queued(override val at: Instant, val holder: HolderId, val wants: Wants, val set: SetRequest? = null) : AllocatorEvent
     data class LeftQueue(override val at: Instant, val holder: HolderId) : AllocatorEvent
     data class Blocked(override val at: Instant, val holder: HolderId) : AllocatorEvent
     data class Unblocked(override val at: Instant, val holder: HolderId) : AllocatorEvent
@@ -92,4 +116,6 @@ data class AllocatorSnapshot(
     val statuses: Map<HolderId, HolderStatus>,
     /** Every hold, at most one per platform per holder. Holders with no hold are absent. */
     val holdings: Map<HolderId, List<HolderStatus.Holding>> = emptyMap(),
+    val sets: Map<HolderId, HeldSet> = emptyMap(),
+    val reserved: Map<DeviceKey, HolderId> = emptyMap(),
 )

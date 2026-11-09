@@ -3,7 +3,9 @@ package com.programmersbox.cdm.ui
 import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
+import com.programmersbox.cdm.core.allocator.HeldSet
 import com.programmersbox.cdm.core.allocator.HolderStatus
+import com.programmersbox.cdm.core.allocator.SetRequest
 import com.programmersbox.cdm.core.allocator.Timers
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
@@ -28,7 +30,8 @@ data class World(
     val now: Instant,
 )
 
-enum class DeviceState { FREE, IN_USE, OFFLINE_HELD, DONT_USE, OFFLINE }
+/** [RESERVED]: set aside for a queued device set that is still collecting its members. */
+enum class DeviceState { FREE, IN_USE, OFFLINE_HELD, RESERVED, DONT_USE, OFFLINE }
 
 data class DeviceRow(
     val key: DeviceKey,
@@ -49,6 +52,10 @@ data class DeviceRow(
     val osVersion: String = "",
     /** The name of the device it is paired with (watch and phone), when it has a partner. */
     val pairedWith: String? = null,
+    /** The label of the queued holder this device is reserved for; null unless [state] is [DeviceState.RESERVED]. */
+    val reservedFor: String? = null,
+    /** The device's name in the set that holds it (`android2`); null when it isn't part of a set. */
+    val memberName: String? = null,
 )
 
 data class QueueRow(
@@ -59,7 +66,15 @@ data class QueueRow(
     val waited: Duration,
     /** The name of the one device [Wants.device] asks for; null when it asks for none. */
     val deviceName: String? = null,
+    /** "2 × Android phone, 1 × iOS phone" when the holder waits for a device set; null for a single device. */
+    val setSummary: String? = null,
+    /** Devices already reserved for the set, and how many it needs. Zero when it isn't a set. */
+    val reservedCount: Int = 0,
+    val memberCount: Int = 0,
 ) {
+    /** "1 of 3 reserved"; null when the holder isn't waiting for a set. */
+    val reservedText: String? get() = if (setSummary == null) null else "$reservedCount of $memberCount reserved"
+
     /** The chips the queue card shows, in order: categories, then platform, then real/virtual only, then the device. */
     val chips: List<WantChip> get() = wants.chips(deviceName)
 
@@ -92,7 +107,38 @@ fun virtualWord(platform: Platform): String = kindLabel(platform, virtual = true
 /** One device a queued holder could use, and why it can't have it yet. */
 data class WaitReason(val device: String, val reason: String)
 
-data class DeviceRef(val key: DeviceKey, val name: String)
+/** A device "Hand it ... now" can offer; [partOfSet] devices belong to a held set and can't be handed off. */
+data class DeviceRef(val key: DeviceKey, val name: String, val partOfSet: Boolean = false)
+
+const val SET_MEMBER_HAND_OFF_HINT = "Part of a device set; release the set instead."
+
+/** The hold a set gives its member [device] (or that member's partner): the set's shared times, as a single hold. */
+private fun World.setHold(h: HolderId, device: DeviceKey): HolderStatus.Holding? {
+    val set = snapshot.sets[h] ?: return null
+    val m = set.members.firstOrNull { it.device == device || it.partner == device } ?: return null
+    return HolderStatus.Holding(m.device, set.since, set.lastActivity, set.editing, m.platform, m.partner)
+}
+
+/** Time left before a held set's shared auto-release timer fires. */
+fun World.releasesIn(set: HeldSet): Duration =
+    ((if (set.editing) timers.editing else timers.idle) - (now - set.lastActivity)).coerceAtLeast(Duration.ZERO)
+
+/** The shared timer of a held set, worded like a single hold's. */
+fun World.timerLabel(set: HeldSet): String =
+    if (set.editing) "editing · releases in ${minutesCeil(releasesIn(set))}" else "idle ${short(now - set.lastActivity)}"
+
+/** "2 × Android phone, 1 × iOS phone": equal members grouped, in order of first appearance. */
+fun setSummary(req: SetRequest): String = req.members.groupingBy { it }.eachCount().entries.joinToString(", ") { (w, n) ->
+    val kind = when (w.virtual) {
+        true -> " (virtual)"
+        false -> " (real)"
+        null -> ""
+    }
+    val what = (w.categories - Category.ANY).joinToString("/") { it.id }.ifEmpty { "device" }
+    val platform = w.platform?.let { if (it == Platform.IOS) "iOS " else "Android " }.orEmpty()
+    val only = w.device?.let { " (${it.hardwareSerial})" }.orEmpty()
+    "$n × $platform$what$kind$only"
+}
 
 data class ActivityRow(val id: Long, val at: Instant, val text: String)
 
@@ -122,6 +168,7 @@ fun World.holding(h: HolderId): HolderStatus.Holding? = snapshot.statuses[h] as?
  */
 fun World.holdingOf(h: HolderId, device: DeviceKey): HolderStatus.Holding? {
     fun HolderStatus.Holding.covers() = this.device == device || partner == device
+    setHold(h, device)?.let { return it }
     val all = snapshot.holdings[h]
     return if (all != null) all.firstOrNull { it.covers() } else holding(h)?.takeIf { it.covers() }
 }
@@ -144,9 +191,12 @@ fun deviceRows(w: World): List<DeviceRow> {
         val holder = w.snapshot.holds[d.key]
         val st = holder?.let { w.holdingOf(it, d.key) }
         val online = d.key in trackedKeys && d.connectedSerials.isNotEmpty()
+        val reservedBy = if (holder == null) w.snapshot.reserved[d.key] else null
+        val member = holder?.let { w.snapshot.sets[it] }?.members?.firstOrNull { it.device == d.key || it.partner == d.key }
         val state = when {
             holder != null && !online -> DeviceState.OFFLINE_HELD
             holder != null -> DeviceState.IN_USE
+            reservedBy != null -> DeviceState.RESERVED
             d.dontUse -> DeviceState.DONT_USE
             !online -> DeviceState.OFFLINE
             else -> DeviceState.FREE
@@ -165,6 +215,8 @@ fun deviceRows(w: World): List<DeviceRow> {
             virtual = d.virtual,
             osVersion = trackedByKey[d.key]?.osVersion.orEmpty(),
             pairedWith = d.partner?.let { w.deviceName(it) },
+            reservedFor = reservedBy?.let { w.labelOf(it) },
+            memberName = member?.name,
         )
     }.sortedBy { it.platform } // stable: Android first, then iOS, each in device order
 }
@@ -180,11 +232,23 @@ fun overviewCounts(rows: List<DeviceRow>, waiting: Int) = OverviewCounts(
 fun World.queuedAt(h: HolderId): Instant? = activity.firstOrNull { it.kind == "queued" && it.holderKey == h.key }?.at
 
 fun queueRows(w: World): List<QueueRow> = w.snapshot.queue.mapIndexed { i, h ->
-    val wants = (w.snapshot.statuses[h] as? HolderStatus.Queued)?.wants ?: Wants(emptySet())
+    val queued = w.snapshot.statuses[h] as? HolderStatus.Queued
+    val wants = queued?.wants ?: Wants(emptySet())
+    val set = queued?.set
     QueueRow(
         h, w.labelOf(h), i + 1, wants, w.queuedAt(h)?.let { w.now - it }?.coerceAtLeast(Duration.ZERO) ?: Duration.ZERO,
         deviceName = wants.device?.let { k -> w.snapshot.devices.firstOrNull { it.key == k }?.name },
+        setSummary = set?.let(::setSummary),
+        reservedCount = if (set == null) 0 else w.reservedCountOf(h),
+        memberCount = set?.members?.size ?: 0,
     )
+}
+
+/** Devices reserved for [h]; a pair (watch and phone) reserved together counts once. */
+fun World.reservedCountOf(h: HolderId): Int {
+    val mine = snapshot.reserved.filterValues { it == h }.keys
+    val partnerOf = snapshot.devices.associate { it.key to it.partner }
+    return mine.count { k -> partnerOf[k].let { p -> p == null || p !in mine || k.hardwareSerial < p.hardwareSerial } }
 }
 
 private fun World.wantsOf(h: HolderId): Wants = (snapshot.statuses[h] as? HolderStatus.Queued)?.wants ?: Wants(emptySet())
@@ -192,12 +256,17 @@ private fun World.wantsOf(h: HolderId): Wants = (snapshot.statuses[h] as? Holder
 /** Every device [h] could use, in device order, with what keeps it from [h]. */
 fun waitReasons(h: HolderId, w: World): List<WaitReason> {
     val wants = w.wantsOf(h)
-    val fitting = w.snapshot.devices.filter { wants.fits(it) }
-    if (fitting.isEmpty() && wants.limits.isNotEmpty()) return listOf(WaitReason("", noMatchReason(wants)))
+    val set = (w.snapshot.statuses[h] as? HolderStatus.Queued)?.set
+    // A set waits for devices that fit any of its members.
+    val fits: (AllocDevice) -> Boolean = if (set != null) { d -> set.members.any { it.fits(d) } } else wants::fits
+    val fitting = w.snapshot.devices.filter(fits)
+    if (set == null && fitting.isEmpty() && wants.limits.isNotEmpty()) return listOf(WaitReason("", noMatchReason(wants)))
     return fitting.map { d ->
         val holder = w.snapshot.holds[d.key]
         val reason = when {
             d.dontUse -> "marked don't use"
+            holder == null && w.snapshot.reserved[d.key] == h -> "reserved for it"
+            holder == null && w.snapshot.reserved[d.key] != null -> "reserved for ${w.labelOf(w.snapshot.reserved.getValue(d.key))}"
             holder != null -> {
                 val st = w.holdingOf(holder, d.key)
                 val detail = when {
@@ -238,10 +307,12 @@ internal fun noMatchReason(wants: Wants): String {
 
 /** Devices "Hand it <device> now" can give [h]: connected, usable, and of a category it wants. */
 fun handOffTargets(h: HolderId, w: World): List<DeviceRef> {
+    if ((w.snapshot.statuses[h] as? HolderStatus.Queued)?.set != null) return emptyList() // a set can't be handed one device
     val wants = w.wantsOf(h)
+    val inSet = w.snapshot.sets.values.flatMapTo(HashSet()) { s -> s.members.flatMap { listOfNotNull(it.device, it.partner) } }
     return w.snapshot.devices
         .filter { wants.fits(it) && !it.dontUse && it.connectedSerials.isNotEmpty() && w.snapshot.holds[it.key] != h }
-        .map { DeviceRef(it.key, it.name) }
+        .map { DeviceRef(it.key, it.name, partOfSet = it.key in inSet) }
 }
 
 /** The activity feed, rendered with holder labels and device names; unknown kinds fall back to the stored text. */

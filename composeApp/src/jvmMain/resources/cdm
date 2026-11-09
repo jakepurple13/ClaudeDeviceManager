@@ -10,17 +10,85 @@ ACQUIRE_TIMEOUT="${CDM_ACQUIRE_TIMEOUT:-110}"
 cmd="${1:-}"
 [ $# -gt 0 ] && shift
 holder="" cwd="" category="" platform="" virtual="" device=""
-usage="Usage: cdm acquire [--category phone|watch|tablet|phone,watch|any] [--ios|--android] [--real|--virtual] [--device <serial|name>] | cdm release [--ios|--android] | cdm status | cdm devices"
+specs=() devices=()  # --android/--ios occurrences as "<platform>:<value>"; every --device
+usage="Usage: cdm acquire [--category phone|watch|tablet|phone,watch|any] [--ios|--android] [--real|--virtual] [--device <serial|name>] [--android [N][:cat]] [--ios [N][:cat]] … | cdm run <name|all> -- <command> | cdm release [--ios|--android] | cdm status | cdm devices"
+
+# Sets $port and $base, retrying for $1 seconds (default RETRY_SECONDS) while the port file or app is missing.
+# Returns 1 if it never answers.
+connect() {
+  local deadline=$((SECONDS + ${1:-$RETRY_SECONDS}))
+  while :; do
+    port=""
+    [ -f "$PORT_FILE" ] && port="$(tr -d '[:space:]' < "$PORT_FILE")"
+    if [ -n "$port" ] && [ "$(curl -s --max-time 2 "http://127.0.0.1:$port/cdm/ping" 2>/dev/null | tr -d '[:space:]')" = "cdm-ok" ]; then
+      base="http://127.0.0.1:$port/cdm"
+      return 0
+    fi
+    [ "$SECONDS" -ge "$deadline" ] && return 1
+    sleep 1
+  done
+}
+
+# cdm run needs no holder: the hook rewrites it into a pinned command. A `cdm run` the hook never saw (inside a
+# script, or `bash -c`) resolves its device from the CDM_ANDROID<N>_SERIAL / CDM_IOS<N>_UDID variables the hook
+# exports to every command of a set holder. Without those and without the app, run the command as is.
+if [ "$cmd" = "run" ]; then
+  rest=("$@")
+  split=-1
+  for i in "${!rest[@]}"; do [ "${rest[$i]}" = "--" ] && { split=$i; break; }; done
+  if [ "$split" -lt 0 ] || [ "$split" -eq $((${#rest[@]} - 1)) ] || [ "$split" -eq 0 ]; then echo "$usage"; exit 2; fi
+  name="${rest[0]}"
+  member_vars=()
+  while IFS= read -r v; do
+    case "$v" in CDM_ANDROID[0-9]*_SERIAL|CDM_IOS[0-9]*_UDID) member_vars+=("$v") ;; esac
+  done < <(compgen -e)
+  unknown() { echo "Unknown device name $name." >&2; exit 2; }
+  has_var() { local v; for v in ${member_vars[@]+"${member_vars[@]}"}; do [ "$v" = "$1" ] && return 0; done; return 1; }
+  # Names are lowercase (`android2`, `ios1`), as the hook accepts them.
+  # (Character classes, not a-z: ranges can match uppercase in some locales.)
+  case "$name" in *[![:lower:][:digit:]]*) unknown ;; esac
+  if [ ${#member_vars[@]} -gt 0 ]; then
+    upper="$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
+    if [ "$name" = "all" ]; then
+      # Every Android member, in member order, as one comma list; iOS commands must name their member.
+      list=""
+      for v in $(printf '%s\n' ${member_vars[@]+"${member_vars[@]}"} | grep '^CDM_ANDROID' | sed 's/^CDM_ANDROID\([0-9]*\)_SERIAL$/\1 &/' | sort -n | cut -d' ' -f2); do
+        list="${list:+$list,}${!v}"
+      done
+      [ -n "$list" ] && export ANDROID_SERIAL="$list"
+      unset CDM_IOS_UDID CDM_IOS_PAIR_UDID
+    elif has_var "CDM_${upper}_SERIAL"; then
+      v="CDM_${upper}_SERIAL"; export ANDROID_SERIAL="${!v}"
+    elif has_var "CDM_${upper}_UDID"; then
+      v="CDM_${upper}_UDID"; export CDM_IOS_UDID="${!v}"
+      pv="CDM_${upper}_PAIR_UDID"
+      if [ -n "${!pv:-}" ]; then export CDM_IOS_PAIR_UDID="${!pv}"; else unset CDM_IOS_PAIR_UDID; fi
+    else
+      unknown
+    fi
+  elif ! connect 0; then
+    echo "Device Manager not running; running without a device lock." >&2
+  else
+    # A single holder: android1 / ios1 are its pinned devices, already in ANDROID_SERIAL / CDM_IOS_UDID.
+    case "$name" in android1|ios1|all) ;; *) unknown ;; esac
+    # The app is up but nothing is pinned: running unpinned could reach any device.
+    if [ -z "${ANDROID_SERIAL:-}" ] && [ -z "${CDM_IOS_UDID:-}" ]; then
+      echo 'You hold no devices. Run `cdm acquire` first.' >&2; exit 2
+    fi
+  fi
+  exec "${rest[@]:$((split + 1))}"
+fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --holder) holder="${2:-}"; shift 2 || shift ;;
     --cwd) cwd="${2:-}"; shift 2 || shift ;;
     --category) category="${2:-}"; shift 2 || shift ;;
-    --device) device="${2:-}"; shift 2 || shift ;;
+    --device) device="${2:-}"; devices+=("$device"); shift 2 || shift ;;
     --ios|--android)
-      p="${1#--}"
-      if [ -n "$platform" ] && [ "$platform" != "$p" ]; then echo "Pass only one of --ios and --android."; exit 2; fi
-      platform="$p"; shift ;;
+      p="${1#--}"; val=""
+      # An optional value ("2", "watch", "2:watch") unless the next word is another option.
+      if [ $# -gt 1 ] && [ "${2#-}" = "$2" ]; then val="$2"; shift; fi
+      specs+=("$p:$val"); shift ;;
     --real|--virtual)
       v="false"; [ "$1" = "--virtual" ] && v="true"
       if [ -n "$virtual" ] && [ "$virtual" != "$v" ]; then echo "Pass only one of --real and --virtual."; exit 2; fi
@@ -29,6 +97,36 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
+
+# A single plain request keeps today's single-device wire format and output. That is one --device with at most
+# bare platform flags (a platform filter), or no --device and one spec with count 1. The count is the leading
+# digits of the value before ":" (default 1); the server validates the rest.
+legacy=1 legacy_member="" members_out=()
+valued=()
+for sp in ${specs[@]+"${specs[@]}"}; do [ -n "${sp#*:}" ] && valued+=("$sp"); done
+if [ ${#devices[@]} -eq 0 ]; then
+  if [ ${#specs[@]} -eq 1 ]; then
+    val="${specs[0]#*:}"; first="${val%%:*}"
+    case "$first" in [0-9]*) count="${first%%[!0-9]*}" ;; *) count=1 ;; esac
+    if [ "$((10#$count))" != 1 ]; then legacy=0
+    elif [ -n "$val" ]; then legacy_member="${specs[0]}"
+    fi
+  elif [ ${#specs[@]} -gt 1 ]; then legacy=0
+  fi
+  if [ "$legacy" = 0 ]; then members_out=(${specs[@]+"${specs[@]}"}); fi
+elif [ ${#devices[@]} -gt 1 ] || [ ${#valued[@]} -gt 0 ]; then
+  # Set mode: bare platform flags beside --device are ignored, since the devices imply their platform.
+  legacy=0
+  members_out=(${valued[@]+"${valued[@]}"})
+fi
+if [ "$legacy" = 1 ] || [ "$cmd" != "acquire" ]; then
+  for sp in ${specs[@]+"${specs[@]}"}; do
+    p="${sp%%:*}"
+    if [ -n "$platform" ] && [ "$platform" != "$p" ]; then echo "Pass only one of --ios and --android."; exit 2; fi
+    platform="$p"
+  done
+  if [ -n "$legacy_member" ]; then platform=""; fi
+fi
 
 case "$cmd" in
   acquire|release|status|devices) ;;
@@ -44,20 +142,6 @@ not_running() {
   exit 0
 }
 
-# Sets $port and $base, retrying for RETRY_SECONDS while the port file or app is missing. Returns 1 if it never answers.
-connect() {
-  local deadline=$((SECONDS + RETRY_SECONDS))
-  while :; do
-    port=""
-    [ -f "$PORT_FILE" ] && port="$(tr -d '[:space:]' < "$PORT_FILE")"
-    if [ -n "$port" ] && [ "$(curl -s --max-time 2 "http://127.0.0.1:$port/cdm/ping" 2>/dev/null | tr -d '[:space:]')" = "cdm-ok" ]; then
-      base="http://127.0.0.1:$port/cdm"
-      return 0
-    fi
-    [ "$SECONDS" -ge "$deadline" ] && return 1
-    sleep 1
-  done
-}
 connect || not_running
 
 # curl -G turns --data-urlencode pairs into a properly escaped query string.
@@ -88,12 +172,29 @@ case "$cmd" in
     [ -n "$limits" ] && limits=" ($limits)"
     waiting_for="a $label device${limits}"
     [ -n "$device" ] && waiting_for="$device${limits}"
+    [ "$legacy" = 0 ] && waiting_for="your devices"
+    # Set mode sends member=/device= pairs; legacy sends today's single-device params.
+    req=(--data-urlencode "category=$wanted" --data-urlencode "virtual=$virtual")
+    if [ "$legacy" = 1 ]; then
+      req+=(--data-urlencode "platform=$platform" --data-urlencode "device=$device")
+      [ -n "$legacy_member" ] && req+=(--data-urlencode "member=$legacy_member")
+    else
+      for sp in ${members_out[@]+"${members_out[@]}"}; do req+=(--data-urlencode "member=$sp"); done
+      for dv in ${devices[@]+"${devices[@]}"}; do req+=(--data-urlencode "device=$dv"); done
+    fi
+    # A bare `cdm acquire` is a single request, which a queued set holder can't make.
+    again='Run `cdm acquire` again to keep waiting.'
+    again_answer='Run `cdm acquire` again.'
+    if [ "$legacy" = 0 ]; then
+      again='Run the same `cdm acquire …` command again to keep waiting.'
+      again_answer='Run the same `cdm acquire …` command again.'
+    fi
     acquire_end=$((SECONDS + ACQUIRE_TIMEOUT))
     last_pos=""
     while :; do
       left=$((acquire_end - SECONDS))
       [ "$left" -lt 1 ] && left=1
-      body=""
+      body="" members=()
       while IFS= read -r line; do
         case "$line" in
           .) ;; # heartbeat
@@ -106,7 +207,26 @@ case "$cmd" in
             # GRANTED <platform> <serial> <name, may contain spaces>
             rest="${line#GRANTED }"; plat="${rest%% *}"; rest="${rest#* }"
             say_grant "$plat" "${rest%% *}" "${rest#* }"; exit 0 ;;
-          TIMEOUT\ *) echo "Still queued at position ${line#TIMEOUT }. Run \`cdm acquire\` again to keep waiting."; exit 0 ;;
+          MEMBER\ *)
+            # MEMBER <name> <platform> <serial> <device name…> [pair=<udid>]; collected until DONE.
+            members+=("${line#MEMBER }") ;;
+          DONE)
+            echo "Got your devices:"
+            any_ios=0
+            for mem in "${members[@]}"; do
+              mpair=""
+              case "$mem" in *" pair="*) mpair="${mem##* pair=}"; mem="${mem% pair=*}" ;; esac
+              mname="${mem%% *}"; mrest="${mem#* }"; mplat="${mrest%% *}"; mrest="${mrest#* }"; mserial="${mrest%% *}"; mdev="${mrest#* }"
+              [ "$mplat" = "ios" ] && any_ios=1
+              printf '  %-9s %s (%s)%s\n' "$mname" "$mdev" "$mserial" "${mpair:+ + watch ($mpair)}"
+            done
+            echo 'Run commands on one device with `cdm run <name> -- <command>`, for example `cdm run android2 -- adb shell input tap 100 200`.'
+            if [ "$any_ios" = 1 ]; then
+              echo 'For iOS, still pass $CDM_IOS_UDID: `cdm run ios1 -- xcrun simctl launch $CDM_IOS_UDID com.example.app`.'
+            fi
+            exit 0 ;;
+          REFUSED\ *) echo "Device Manager refused the request: ${line#REFUSED }"; exit 2 ;;
+          TIMEOUT\ *) echo "Still queued at position ${line#TIMEOUT }. $again"; exit 0 ;;
           BLOCKED) echo "You're blocked in Claude Device Manager. Ask the user to unblock you."; exit 1 ;;
           REMOVED) echo "The user removed you from the device queue. Ask them before trying again."; exit 1 ;;
           # curl's -w line: a 4xx is a request the app will never accept, so retrying can't help.
@@ -114,15 +234,14 @@ case "$cmd" in
           CDM_HTTP_STATUS\ *) ;;
           *) [ -n "$line" ] && body="${body:+$body }$line" ;;
         esac
-      done < <(curl -sN --no-buffer -w '\nCDM_HTTP_STATUS %{http_code}\n' -X POST "${q[@]}" --data-urlencode "category=$wanted" \
-        --data-urlencode "platform=$platform" --data-urlencode "virtual=$virtual" --data-urlencode "device=$device" \
+      done < <(curl -sN --no-buffer -w '\nCDM_HTTP_STATUS %{http_code}\n' -X POST "${q[@]}" "${req[@]}" \
         --data-urlencode "timeoutSec=$left" "$base/acquire")
       # Stream ended without a verdict: the app went away mid-wait. Its queue grace keeps our spot, so
       # reconnect (retrying for RETRY_SECONDS) and wait again; give up only if it never comes back.
       # Past the wait's end, stop like a server-side timeout would.
       if [ "$SECONDS" -ge "$acquire_end" ]; then
-        if [ -n "$last_pos" ]; then echo "Still queued at position $last_pos. Run \`cdm acquire\` again to keep waiting."; exit 0; fi
-        echo "Device Manager didn't answer. Run \`cdm acquire\` again."; exit 1
+        if [ -n "$last_pos" ]; then echo "Still queued at position $last_pos. $again"; exit 0; fi
+        echo "Device Manager didn't answer. $again_answer"; exit 1
       fi
       sleep 1
       connect || not_running
@@ -148,6 +267,11 @@ case "$cmd" in
         HOLDING\ *)
           rest="${line#HOLDING }"; plat="${rest%% *}"; rest="${rest#* }"
           if [ "$plat" = "ios" ]; then echo "Holding ${rest#* } (${rest%% *}, iOS)."; else echo "Holding ${rest#* } (${rest%% *})."; fi
+          ;;
+        MEMBER\ *)
+          # MEMBER <name> <platform> <serial> <device name…>
+          rest="${line#MEMBER }"; mname="${rest%% *}"; rest="${rest#* }"; plat="${rest%% *}"; rest="${rest#* }"
+          if [ "$plat" = "ios" ]; then echo "Holding $mname: ${rest#* } (${rest%% *}, iOS)."; else echo "Holding $mname: ${rest#* } (${rest%% *})."; fi
           ;;
         QUEUED\ *) echo "Queued at position ${line#QUEUED }." ;;
         BLOCKED*) echo "You're blocked in Claude Device Manager. Ask the user to unblock you." ;;

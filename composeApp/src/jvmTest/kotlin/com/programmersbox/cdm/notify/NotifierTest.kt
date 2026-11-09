@@ -137,6 +137,14 @@ class NotifierTest {
     }
 
     @Test
+    fun queuedSetSummarizesMembers() {
+        val phone = Wants(setOf(Category.PHONE), com.programmersbox.cdm.core.model.Platform.ANDROID)
+        val set = com.programmersbox.cdm.core.allocator.SetRequest(listOf(phone, phone))
+        emit(AllocatorEvent.Queued(t0, app, Wants(emptySet()), set))
+        assertEquals(listOf("Waiting for 2 × Android phone"), sent.map { it.title })
+    }
+
+    @Test
     fun waitText() {
         assertEquals("35 s", Notifier.waitText(35.seconds))
         assertEquals("2 min", Notifier.waitText(120.seconds))

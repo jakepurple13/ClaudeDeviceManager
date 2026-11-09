@@ -138,6 +138,17 @@ class HookDeciderIosTest {
         }
     }
 
+    @Test fun dangerousDeniedWhileOthersHoldIosInASet() = runTest {
+        val req = com.programmersbox.cdm.core.allocator.SetRequest(
+            listOf(Wants(setOf(Category.PHONE), Platform.ANDROID), Wants(setOf(Category.PHONE), Platform.IOS)),
+        )
+        assertIs<com.programmersbox.cdm.core.allocator.GrabSetResult.Granted>(allocator.tryGrabSet(h2, req))
+        for (c in listOf("xcrun simctl shutdown all", "xcrun simctl erase all", "killall Simulator", "xcrun simctl delete unavailable")) {
+            val r = bash(c).reason()
+            assertTrue("affects other sessions' iOS devices" in r, "$c: $r")
+        }
+    }
+
     @Test fun dangerousAllowedWhenNoOtherIosHolds() = runTest {
         allocator.tryGrab(h2, Wants(setOf(Category.PHONE), Platform.ANDROID)) // s2 holds only Android
         allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS)) // s1's own iOS hold doesn't count
@@ -248,6 +259,25 @@ class HookDeciderIosTest {
         )) {
             assertIs<HookReply.Deny>(bash(c), c)
         }
+    }
+
+    @Test fun splitOrIndirectUdidWritesDenied() = runTest {
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS)) // holds u1
+        for (c in listOf(
+            "export CDM_IOS_\"UDID\"=$u2; xcrun simctl launch \$CDM_IOS_UDID x",
+            "CDM_IOS_\\UDID=$u2 ./t.sh",
+            "export CDM_IOS_PAIR_\"UDID\"=$u2; ./t.sh",
+        )) {
+            assertTrue("different device" in bash(c).reason(), c)
+        }
+        for (c in listOf(
+            "read CDM_IOS_UDID <<< $u2; xcrun simctl launch \$CDM_IOS_UDID x",
+            "printf -v CDM_IOS_UDID %s $u2; ./t.sh",
+            "unset CDM_IOS_UDID; ./t.sh",
+        )) {
+            assertEquals("Set ANDROID_SERIAL/CDM_IOS_UDID only as a literal NAME=<your device>.", bash(c).reason(), c)
+        }
+        assertIs<HookReply.Rewrite>(bash("CDM_IOS_UDID=$u1 xcrun simctl launch \$CDM_IOS_UDID x"))
     }
 
     @Test fun udidTextInArgumentsIsNotAnAssignment() = runTest {

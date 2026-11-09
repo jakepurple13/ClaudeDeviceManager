@@ -46,7 +46,13 @@ class HookDecider(
         }
     }
 
+    private val setRules = SetHookRules(allocator, iosPinScript, timers, defaultCategory)
+
     private suspend fun decide(holder: HolderId, cwd: String, command: String): HookReply {
+        // A pin variable written other than as a literal NAME=value (read, printf -v, for … in, unset, …) can't be checked.
+        if (CommandClassifier.writesPinVarOtherwise(command)) return HookReply.Deny(PIN_VAR_WRITE)
+        // `cdm run` commands, and every command from a set holder, follow the set rules.
+        setRules.decide(holder, cwd, command)?.let { return it }
         var kinds = CommandClassifier.classifyAll(command)
         if (kinds.isEmpty()) return HookReply.NoOpinion
         // KMP Gradle iOS tests are pinned by the init script (it reads CDM_IOS_UDID), when it is installed.
@@ -203,8 +209,7 @@ class HookDecider(
         val holder = req.holder
         // 1. A global iOS command while another session holds an iOS device.
         req.kinds.firstNotNullOfOrNull { it as? CommandKind.IosGlobalDangerous }?.let { d ->
-            val othersHoldIos = snap.holdings.any { (other, hs) -> other != holder && hs.any { it.platform == Platform.IOS } }
-            if (othersHoldIos) {
+            if (othersHoldIos(snap, holder)) {
                 return IosCheck.Stop(HookReply.Deny("`${d.what}` affects other sessions' iOS devices. Ask the user to do it."))
             }
         }
@@ -274,6 +279,8 @@ class HookDecider(
         val holder = req.holder
         when (val st = allocator.statusOf(holder, Platform.IOS)) {
             is HolderStatus.Holding -> return null
+            // Set holders are decided by SetHookRules before this point.
+            is HolderStatus.HoldingSet -> return HookReply.Deny(USE_CDM_RUN)
             HolderStatus.Blocked -> return HookReply.Deny(releasedByUser(blocked = true))
             is HolderStatus.Released -> when (st.reason) {
                 ReleaseReason.USER_RELEASE, ReleaseReason.USER_HANDOFF, ReleaseReason.DONT_USE ->
@@ -338,6 +345,8 @@ class HookDecider(
     private suspend fun onDevice(req: Request): Part {
         return when (val st = allocator.statusOf(req.holder, Platform.ANDROID)) {
             is HolderStatus.Holding -> whileHolding(req)
+            // Set holders are decided by SetHookRules before this point.
+            is HolderStatus.HoldingSet -> Part.Stop(HookReply.Deny(USE_CDM_RUN))
             HolderStatus.Blocked -> Part.Stop(HookReply.Deny(releasedByUser(blocked = true)))
             is HolderStatus.Released -> when (st.reason) {
                 ReleaseReason.IDLE_TIMEOUT, ReleaseReason.EDIT_TIMEOUT -> regrab(req, st)
@@ -355,12 +364,7 @@ class HookDecider(
             ?: return Part.Stop(HookReply.Deny(releasedByUser(blocked = false, ios = false)))
         val serials = held.connectedSerials
         if (serials.isEmpty()) {
-            return Part.Stop(
-                HookReply.Deny(
-                    "You hold ${label(held)}, but it is offline. It stays yours; reconnect it " +
-                        "(for example `adb connect <address>`) and try again.",
-                ),
-            )
+            return Part.Stop(HookReply.Deny(heldOffline(held)))
         }
         if (req.conflictsWith(held, snap)) return Part.Stop(HookReply.Deny(differentDevice(held)))
         allocator.recordDeviceActivity(req.holder, Platform.ANDROID)
@@ -375,23 +379,8 @@ class HookDecider(
         }
     }
 
-    /** Why a timed-out hold couldn't be taken back ([g] is the failed regrab). */
-    private suspend fun releasedAfterTimeout(st: HolderStatus.Released, g: GrabResult, cwd: String, ios: Boolean): String {
-        val last = allocator.snapshot().devices.firstOrNull { it.key == st.lastDevice }
-        val name = last?.let(::label) ?: st.lastDevice.hardwareSerial
-        val category = last?.category ?: defaultCategory(cwd)
-        val minutes = if (st.reason == ReleaseReason.EDIT_TIMEOUT) {
-            "${timers().editing.inWholeMinutes} min idle (while editing)"
-        } else "${timers().idle.inWholeMinutes} min idle"
-        val now = when (g) {
-            GrabResult.DontUse -> "is now marked don't use"
-            GrabResult.NoneFree -> "is no longer available"
-            else -> "is now in use"
-        }
-        val flag = if (ios) " --ios" else " --android"
-        return "Your $name was released after $minutes and $now. " +
-            "Run `cdm acquire --category ${category.id}$flag` to wait for a device."
-    }
+    private suspend fun releasedAfterTimeout(st: HolderStatus.Released, g: GrabResult, cwd: String, ios: Boolean): String =
+        releasedAfterTimeout(allocator.snapshot(), timers(), st, g, ios) { defaultCategory(cwd) }
 
     private suspend fun freshGrab(req: Request): Part {
         val snap = allocator.snapshot()
@@ -478,11 +467,6 @@ class HookDecider(
         return snap.devices.firstOrNull { it.key == key }
     }
 
-    /** True if [held] has a serial matching [pred] and no other current Android device does (so -d / -e lands on it). */
-    private fun onlyOneWith(held: AllocDevice, snap: AllocatorSnapshot, pred: (String) -> Boolean) =
-        held.connectedSerials.any(pred) &&
-            snap.devices.none { it.platform == Platform.ANDROID && it.key != held.key && it.connectedSerials.any(pred) }
-
     private fun differentDevice(held: AllocDevice) =
         "This command targets a different device, but you hold ${label(held)}. " +
             "Drop the -s/-d/-e flag or ANDROID_SERIAL so it runs on your device, or run `cdm release --android` first."
@@ -514,8 +498,6 @@ class HookDecider(
             "`cdm acquire --category <other>` to wait for something else, or `cdm release` to leave the queue."
     }
 
-    private fun label(d: AllocDevice) = "${d.name} (${d.connectedSerials.firstOrNull() ?: d.key.hardwareSerial})"
-
     private fun noneFree(category: Category, ios: Boolean): String {
         val flag = if (ios) " --ios" else " --android"
         val kind = if (ios) "iOS device" else "device"
@@ -526,15 +508,6 @@ class HookDecider(
                 "Run `cdm acquire --category ${category.id}$flag` to wait for one."
         }
     }
-
-    /** [ios] picks the platform flag of the rejoin hint; the blocked text gives no command to run. */
-    private fun releasedByUser(blocked: Boolean, ios: Boolean = false) =
-        if (blocked) {
-            "Your device was released from Device Manager and this holder is blocked. " +
-                "`cdm acquire` will refuse until the user unblocks it in Device Manager."
-        } else {
-            "Your device was released from Device Manager. Run `cdm acquire ${if (ios) "--ios" else "--android"}` to rejoin the queue."
-        }
 
     companion object {
         const val AFFECTS_OTHERS = "This affects other sessions' devices. Ask the user to do it."
@@ -549,10 +522,67 @@ class HookDecider(
                 "`maestro --device \$CDM_IOS_UDID …` for your iOS device, or run `cdm acquire --android` first " +
                 "for an Android one."
         const val PASS_IOS_DEVICE = "Pass the device explicitly: -destination id=\$CDM_IOS_UDID / --device \$CDM_IOS_UDID"
+        const val PIN_VAR_WRITE = "Set ANDROID_SERIAL/CDM_IOS_UDID only as a literal NAME=<your device>."
+        const val USE_CDM_RUN = "You hold a set of devices. Run device commands with `cdm run <name> -- <command>`."
         private const val MORE_THAN_ONE =
             "This command names more than one device. A holder can use only one device at a time."
-
-        internal fun isEmulatorSerial(serial: String) = com.programmersbox.cdm.devices.isEmulatorSerial(serial)
-        internal fun isUsbSerial(serial: String) = !isWifiSerial(serial) && !isEmulatorSerial(serial)
     }
+}
+
+// ---- helpers shared with SetHookRules ----
+
+internal fun isEmulatorSerial(serial: String) = com.programmersbox.cdm.devices.isEmulatorSerial(serial)
+internal fun isUsbSerial(serial: String) = !isWifiSerial(serial) && !isEmulatorSerial(serial)
+
+/**
+ * True when a session other than [holder] holds an iOS device: a single hold or a set member (both are in
+ * [AllocatorSnapshot.holds]), so a global iOS command would reach it.
+ */
+internal fun othersHoldIos(snap: AllocatorSnapshot, holder: HolderId) =
+    snap.holds.any { (k, other) -> other != holder && snap.devices.firstOrNull { it.key == k }?.platform == Platform.IOS } ||
+        snap.sets.any { (other, s) -> other != holder && s.members.any { it.platform == Platform.IOS } }
+
+internal fun label(d: AllocDevice) = "${d.name} (${d.connectedSerials.firstOrNull() ?: d.key.hardwareSerial})"
+
+/** True if [held] has a serial matching [pred] and no other current Android device does (so -d / -e lands on it). */
+internal fun onlyOneWith(held: AllocDevice, snap: AllocatorSnapshot, pred: (String) -> Boolean) =
+    held.connectedSerials.any(pred) &&
+        snap.devices.none { it.platform == Platform.ANDROID && it.key != held.key && it.connectedSerials.any(pred) }
+
+internal fun heldOffline(held: AllocDevice) =
+    "You hold ${label(held)}, but it is offline. It stays yours; reconnect it " +
+        "(for example `adb connect <address>`) and try again."
+
+/** [ios] picks the platform flag of the rejoin hint; the blocked text gives no command to run. */
+internal fun releasedByUser(blocked: Boolean, ios: Boolean = false) =
+    if (blocked) {
+        "Your device was released from Device Manager and this holder is blocked. " +
+            "`cdm acquire` will refuse until the user unblocks it in Device Manager."
+    } else {
+        "Your device was released from Device Manager. Run `cdm acquire ${if (ios) "--ios" else "--android"}` to rejoin the queue."
+    }
+
+/** Why a timed-out hold couldn't be taken back ([g] is the failed regrab). [fallback] is used when the device is gone. */
+internal suspend fun releasedAfterTimeout(
+    snap: AllocatorSnapshot,
+    timers: Timers,
+    st: HolderStatus.Released,
+    g: GrabResult,
+    ios: Boolean,
+    fallback: suspend () -> Category,
+): String {
+    val last = snap.devices.firstOrNull { it.key == st.lastDevice }
+    val name = last?.let(::label) ?: st.lastDevice.hardwareSerial
+    val category = last?.category ?: fallback()
+    val minutes = if (st.reason == ReleaseReason.EDIT_TIMEOUT) {
+        "${timers.editing.inWholeMinutes} min idle (while editing)"
+    } else "${timers.idle.inWholeMinutes} min idle"
+    val now = when (g) {
+        GrabResult.DontUse -> "is now marked don't use"
+        GrabResult.NoneFree -> "is no longer available"
+        else -> "is now in use"
+    }
+    val flag = if (ios) " --ios" else " --android"
+    return "Your $name was released after $minutes and $now. " +
+        "Run `cdm acquire --category ${category.id}$flag` to wait for a device."
 }

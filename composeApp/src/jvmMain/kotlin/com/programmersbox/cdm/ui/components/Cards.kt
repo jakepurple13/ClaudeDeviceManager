@@ -4,6 +4,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -18,9 +20,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -113,6 +117,7 @@ fun DeviceState.dot(): DotStatus = when (this) {
     DeviceState.FREE -> DotStatus.Free
     DeviceState.IN_USE -> DotStatus.InUse
     DeviceState.OFFLINE_HELD -> DotStatus.Offline
+    DeviceState.RESERVED -> DotStatus.Reserved
     DeviceState.DONT_USE, DeviceState.OFFLINE -> DotStatus.DontUse
 }
 
@@ -144,6 +149,12 @@ fun DeviceCard(row: DeviceRow, detailed: Boolean, selected: Boolean, onClick: ()
                 DeviceState.OFFLINE -> Chip("offline", ChipStyle.Offline)
                 else -> CategoryChip(row.category)
             }
+            AnimatedVisibility(row.memberName != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) {
+                row.memberName?.let { Chip(it, ChipStyle.Neutral) }
+            }
+            AnimatedVisibility(row.state == DeviceState.RESERVED, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) {
+                Chip("reserved", ChipStyle.Reserved)
+            }
             AnimatedVisibility(row.virtual, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { VirtualChip(row.platform) }
             AnimatedVisibility(row.dontUsePending, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) {
                 Chip(DONT_USE_PENDING, ChipStyle.DontUse)
@@ -151,6 +162,7 @@ fun DeviceCard(row: DeviceRow, detailed: Boolean, selected: Boolean, onClick: ()
         }
         val line = when {
             row.holderLabel == null && row.state == DeviceState.FREE -> "free"
+            row.state == DeviceState.RESERVED -> "reserved for ${row.reservedFor}"
             row.holderLabel == null -> null
             detailed -> listOfNotNull(row.holderLabel, row.heldFor?.let(::short), row.timerLabel).joinToString(" · ")
             else -> row.holderLabel
@@ -186,7 +198,8 @@ fun QueueCard(
             leading()
             AnimatedCount(row.position, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
             Text(row.label, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-            val chips = row.chips
+            val chips = if (row.setSummary != null) emptyList() else row.chips
+            AnimatedVisibility(row.setSummary != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { Chip("set", ChipStyle.Reserved) }
             chips.filter { it.kind == WantChipKind.CATEGORY }.forEach { c -> c.category?.let { CategoryChip(it) } }
             val platform = chips.firstOrNull { it.kind == WantChipKind.PLATFORM }?.platform
             AnimatedVisibility(platform != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { platform?.let { PlatformChip(it) } }
@@ -196,6 +209,16 @@ fun QueueCard(
             AnimatedVisibility(device != null, enter = fadeIn(tween(200)), exit = fadeOut(tween(150))) { device?.let { Chip(it, ChipStyle.Neutral) } }
         }
         Muted("waiting ${short(row.waited)}", Modifier.padding(top = 2.dp))
+        AnimatedVisibility(row.setSummary != null, enter = fadeIn(tween(200)) + expandVertically(tween(200)), exit = fadeOut(tween(150)) + shrinkVertically(tween(150))) {
+            Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Muted(row.setSummary.orEmpty(), Modifier.weight(1f, fill = false), maxLines = 1)
+                // The count ticks up as devices free up and get reserved.
+                CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) {
+                    AnimatedCount(row.reservedCount, style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp))
+                }
+                Muted("of ${row.memberCount} reserved", maxLines = 1)
+            }
+        }
     }
 }
 

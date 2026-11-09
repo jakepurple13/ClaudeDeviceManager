@@ -105,6 +105,7 @@ private fun HolderSection(holder: HolderCard?, onRelease: (block: Boolean) -> Un
                 }
                 Muted(listOf(card.cwd.ifBlank { null }, card.timing.ifBlank { null }).filterNotNull().joinToString(" · "), maxLines = 3)
                 AnimatedValue(card.lastCommand) { Muted("last: $it", maxLines = 1) }
+                AnimatedValue(card.memberName) { Muted("$it in a device set; release the set, not one device.", maxLines = 2) }
                 Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     SmallButton("Release", onClick = { onRelease(false) })
                     SmallButton("Release + block", onClick = { onRelease(true) }, danger = true)

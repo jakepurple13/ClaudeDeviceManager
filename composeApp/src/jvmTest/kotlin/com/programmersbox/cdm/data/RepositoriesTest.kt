@@ -81,6 +81,17 @@ class RepositoriesTest {
     }
 
     @Test
+    fun queuedSetActivitySummarizesMembers() = runTest {
+        val db = inMemoryDatabase()
+        val a = ActivityRepository(db.activityDao())
+        val phone = com.programmersbox.cdm.core.allocator.Wants(setOf(Category.PHONE), com.programmersbox.cdm.core.model.Platform.ANDROID)
+        val set = com.programmersbox.cdm.core.allocator.SetRequest(listOf(phone, phone))
+        a.record(AllocatorEvent.Queued(now, HolderId("s1"), com.programmersbox.cdm.core.allocator.Wants(emptySet()), set))
+        assertEquals(listOf("queued s1:main wants 2 × Android phone"), a.recent().first().map { it.text })
+        db.close()
+    }
+
+    @Test
     fun activityAndBlocked() = runTest {
         val db = inMemoryDatabase()
         val a = ActivityRepository(db.activityDao())

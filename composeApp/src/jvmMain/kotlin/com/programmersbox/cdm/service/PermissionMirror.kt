@@ -69,11 +69,25 @@ class PermissionMirror(
         return generateSequence(start) { it.parent }.takeWhile { it != h }.toList()
     }
 
+    /**
+     * A command with a `cdm run <name> -- ` segment is judged with those prefixes removed, so an allow rule for `cdm`
+     * never auto-allows what runs inside, and cdm's own ALLOW never applies to it: the inner command gets the answer it
+     * would get on its own.
+     */
     fun decide(original: String, kind: RewriteKind, cwd: String, permissionMode: String?): Decision {
+        if (CommandClassifier.cdmRuns(original).isNotEmpty()) {
+            return judge(CommandClassifier.withoutCdmRun(original), original, cdmOnlyAllowed = false, cwd, permissionMode)
+        }
+        return judge(original, original, cdmOnlyAllowed = kind == RewriteKind.CDM, cwd, permissionMode)
+    }
+
+    /** Judges [original]; deny and ask rules also see [asWritten] (the command before `cdm run` prefixes were removed). */
+    private fun judge(original: String, asWritten: String, cdmOnlyAllowed: Boolean, cwd: String, permissionMode: String?): Decision {
         val rules = rulesFor(cwd)
         val raw = CommandClassifier.rawSegments(original)
         // Every form a deny/ask rule might be written against: as written, wrappers stripped, quotes removed.
-        val forms = (raw + CommandClassifier.segments(original)).flatMap {
+        val written = if (asWritten == original) emptyList() else CommandClassifier.rawSegments(asWritten)
+        val forms = (raw + written + CommandClassifier.segments(original)).flatMap {
             listOf(it, CommandClassifier.unquotedWords(it).joinToString(" "))
         }.flatMap { listOf(it, withBasenameFirstWord(it)) }.distinct()
         if (forms.any { f -> rules.deny.any { it.matches(f) } }) return Decision.ASK
@@ -81,7 +95,7 @@ class PermissionMirror(
         // A substitution runs code no segment rule has judged.
         if (SUBSTITUTION.containsMatchIn(original)) return Decision.ASK
         if (raw.any { hasRedirect(it) }) return Decision.ASK
-        if (kind == RewriteKind.CDM && raw.isNotEmpty() && raw.all { rawFirstWord(it) == "cdm" }) return Decision.ALLOW
+        if (cdmOnlyAllowed && raw.isNotEmpty() && raw.all { rawFirstWord(it) == "cdm" }) return Decision.ALLOW
         if (forms.any { f -> rules.ask.any { it.matches(f) } }) return Decision.ASK
         val start = runCatching { Path.of(cwd).toAbsolutePath().normalize() }.getOrNull() ?: return Decision.ASK
         // In a pipeline a `cd` runs in a subshell, so later segments may still be in the old directory.

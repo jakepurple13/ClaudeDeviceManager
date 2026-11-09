@@ -1,6 +1,11 @@
 package com.programmersbox.cdm.ui.queue
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.TooltipArea
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.fadeIn
@@ -25,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.programmersbox.cdm.core.model.HolderId
+import com.programmersbox.cdm.ui.SET_MEMBER_HAND_OFF_HINT
 import com.programmersbox.cdm.ui.WaitReason
 import com.programmersbox.cdm.ui.components.AnimatedLine
 import com.programmersbox.cdm.ui.components.AnimatedRows
@@ -64,7 +70,7 @@ fun QueueDetailScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
 private fun Waiting(state: QueueDetailState, vm: QueueDetailViewModel, onClose: () -> Unit) {
     Column {
@@ -73,6 +79,7 @@ private fun Waiting(state: QueueDetailState, vm: QueueDetailViewModel, onClose: 
                 state.cwd.ifBlank { null },
                 "wants: ${state.wantsText}",
                 state.queuedAt?.let { "queued ${clockTime(it)}" },
+                state.reservedText,
             ).joinToString(" · "),
         )
         CardBox(Modifier.padding(top = 8.dp, bottom = 6.dp)) {
@@ -82,7 +89,25 @@ private fun Waiting(state: QueueDetailState, vm: QueueDetailViewModel, onClose: 
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             SmallButton("Move to top", onClick = vm::onMoveToTop, enabled = state.position > 1)
-            state.handOff.forEach { d -> SmallButton("Hand it ${d.name} now", onClick = { vm.onHandOff(d.key) }) }
+            state.handOff.forEach { d ->
+                if (!d.partOfSet) {
+                    SmallButton("Hand it ${d.name} now", onClick = { vm.onHandOff(d.key) })
+                } else {
+                    // A device of a held set can't be handed off: the set goes as a whole.
+                    TooltipArea(
+                        tooltip = {
+                            Text(
+                                SET_MEMBER_HAND_OFF_HINT,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(4.dp)).padding(6.dp),
+                            )
+                        },
+                        modifier = Modifier.animateContentSize(tween(200)),
+                    ) {
+                        SmallButton("Hand it ${d.name} now", onClick = {}, enabled = false)
+                    }
+                }
+            }
             SmallButton("Remove from queue", danger = true, onClick = {
                 vm.onRemove() // runs on the app scope, so closing the pane right away can't cancel it
                 onClose()

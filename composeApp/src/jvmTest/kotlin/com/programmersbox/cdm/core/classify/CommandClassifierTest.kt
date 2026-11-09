@@ -138,4 +138,70 @@ class CommandClassifierTest {
         assertEquals(listOf("B"), CommandClassifier.serialAssignments("env ANDROID_SERIAL=\"B\" scrcpy"))
         assertEquals(emptyList(), CommandClassifier.serialAssignments("MY_ANDROID_SERIAL=B x; echo \$ANDROID_SERIAL"))
     }
+
+
+    /** Commands that mention a pin variable as text, or only read it: no write. */
+    private val pinVarTextOnly = listOf(
+        "git commit -m \"\$(cat <<'EOF'\nfix: honor ANDROID_SERIAL\nEOF\n)\"",
+        "gh pr create --title \"ANDROID_SERIAL support\" --body \"\$(cat <<'EOF'\nread ANDROID_SERIAL; unset ANDROID_SERIAL\nEOF\n)\"",
+        "gh pr create --title \"ANDROID_SERIAL support\"",
+        "adb -s \${ANDROID_SERIAL%%,*} shell ls",
+        "for s in \${ANDROID_SERIAL//,/ }; do echo \$s; done",
+        "x=\${ANDROID_SERIAL:+a}; n=\${#ANDROID_SERIAL}; : \${ANDROID_SERIAL:?not set}; y=\${!ANDROID_SERIAL}",
+        "z=\${ANDROID_SERIAL#p}\${ANDROID_SERIAL##p}\${ANDROID_SERIAL%x}\${ANDROID_SERIAL^^}\${ANDROID_SERIAL,,}\${ANDROID_SERIAL:0:2}\${ANDROID_SERIAL@Q}\${ANDROID_SERIAL+x}\${ANDROID_SERIAL?x}",
+        "sed -i 's/ANDROID_SERIAL/X/' build.gradle",
+        "awk '/ANDROID_SERIAL/' f",
+        "jq '.env.ANDROID_SERIAL' f.json",
+        "python3 -c \"import os; print(os.environ['ANDROID_SERIAL'])\"",
+        "node -e \"console.log(process.env.ANDROID_SERIAL)\"",
+        "find . -name '*.kts' | xargs grep ANDROID_SERIAL",
+        "diff <(grep ANDROID_SERIAL a) <(grep ANDROID_SERIAL b)",
+        "cat > notes.md <<'X'\nread ANDROID_SERIAL; don't for ANDROID_SERIAL in x\nX",
+        "less ANDROID_SERIAL",
+        "less CDM_IOS_UDID",
+    )
+
+    @Test
+    fun pinVarWritesIgnoresTextAndReads() {
+        for (c in pinVarTextOnly) assertEquals(emptyList(), CommandClassifier.pinVarWrites(c), c)
+    }
+
+    @Test
+    fun pinVarWritesStillSeesRealWrites() {
+        val writes = listOf(
+            "read ANDROID_SERIAL", "read \"ANDROID_SERIAL\"", "while read -r ANDROID_SERIAL; do adb install x; done < f",
+            "for ANDROID_SERIAL in a b; do adb install x; done", "printf -v ANDROID_SERIAL %s p3", "printf -vANDROID_SERIAL %s p3",
+            "declare -n r=ANDROID_SERIAL; r=p3", "mapfile -t ANDROID_SERIAL < f", "unset ANDROID_SERIAL", "export -n ANDROID_SERIAL",
+            "{ read ANDROID_SERIAL; }", "x=\$(read ANDROID_SERIAL)", "bash <<'EOF'\nread ANDROID_SERIAL\nEOF",
+            "cat <<'EOF' | sh\nread ANDROID_SERIAL\nEOF", "cat > f.sh <<'EOF'\nread ANDROID_SERIAL\nEOF\nbash f.sh",
+        )
+        for (c in writes) {
+            assertEquals(listOf(CommandClassifier.PinVarWrite("ANDROID_SERIAL", null, dynamic = false)), CommandClassifier.pinVarWrites(c), c)
+        }
+        // A heredoc with a bare delimiter expands \$(…), so its body is still scanned.
+        assertEquals(listOf("p3"), CommandClassifier.serialAssignments("cat <<EOF\n\$(ANDROID_SERIAL=p3 adb shell ls)\nEOF"))
+    }
+
+    @Test
+    fun pinVarWritesFlattensSplitNames() {
+        val w = CommandClassifier.pinVarWrites("export ANDROID_\"SERIAL\"=p3; CDM_ANDROID\"1\"_SERIAL=x ./s.sh; read CDM_IOS_UDID")
+        assertEquals(
+            listOf(
+                CommandClassifier.PinVarWrite("ANDROID_SERIAL", "p3", dynamic = false),
+                CommandClassifier.PinVarWrite("CDM_ANDROID1_SERIAL", "x", dynamic = false),
+                CommandClassifier.PinVarWrite("CDM_IOS_UDID", null, dynamic = false),
+            ),
+            w,
+        )
+        assertEquals(emptyList(), CommandClassifier.pinVarWrites("echo \$ANDROID_SERIAL \${CDM_IOS_UDID} \${ANDROID_SERIAL:-x}; grep ANDROID_SERIAL= f"))
+        assertEquals(listOf("B C"), CommandClassifier.serialAssignments("export ANDROID_\"SERIAL\"='B C'; x"))
+        assertEquals(
+            listOf(CommandClassifier.PinVarWrite("ANDROID_SERIAL", "\$x", dynamic = true)),
+            CommandClassifier.pinVarWrites("ANDROID_SERIAL=\$x ./t.sh"),
+        )
+        assertEquals(
+            listOf(CommandClassifier.PinVarWrite("ANDROID_SERIAL", null, dynamic = false)),
+            CommandClassifier.pinVarWrites("printf -v ANDROID_SERIAL %s p3"),
+        )
+    }
 }

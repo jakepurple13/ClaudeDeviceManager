@@ -495,6 +495,147 @@ class DeviceManagerServiceTest {
         assertEquals(Wants(setOf(Category.PHONE), Platform.IOS, false), assertIs<HolderStatus.Queued>(s.status(h1)).wants)
     }
 
+    private val androidPhone = Wants(setOf(Category.PHONE), Platform.ANDROID)
+    private val iosPhone = Wants(setOf(Category.PHONE), Platform.IOS)
+    private val holdingMsg = "You already hold devices. Run `cdm release` first."
+    private val infeasibleMsg = "No combination of the listed devices fits this request."
+    private val setHolderMsg = "You hold a set of devices. Use `cdm run <name> -- …`, or run `cdm release` first."
+
+    @Test fun acquireSetGrantsAndReturnsMembers() = runTest {
+        val s = startedWithIos()
+        val r = s.acquireSet(h1, "/w", com.programmersbox.cdm.core.allocator.SetRequest(listOf(androidPhone, iosPhone)), 1.minutes) {}
+        assertEquals(
+            AcquireResult.GrantedSet(
+                listOf(
+                    GrantedMember("android1", Platform.ANDROID, "p-usb", "Pixel 8", null),
+                    GrantedMember("ios1", Platform.IOS, iphone.hardwareSerial, "iPhone 16 Pro · iOS 18.2", null),
+                ),
+            ),
+            r,
+        )
+        assertEquals(listOf("android1", "ios1"), assertIs<HolderStatus.HoldingSet>(s.status(h1)).set.members.map { it.name })
+    }
+
+    @Test fun acquireSetUsesProjectDefaultForMembersWithoutCategories() = runTest {
+        projects.setDefault("/w", Category.WATCH)
+        val s = started()
+        val req = com.programmersbox.cdm.core.allocator.SetRequest(listOf(Wants(emptySet(), Platform.ANDROID), androidPhone))
+        val r = assertIs<AcquireResult.GrantedSet>(s.acquireSet(h1, "/w", req, 1.minutes) {})
+        assertEquals(listOf("w-usb", "p-usb"), r.members.map { it.serial })
+    }
+
+    @Test fun acquireSetRefusedWhenHolding() = runTest {
+        val s = startedWithIos()
+        s.acquire(h1, "/w", watch, 1.minutes) {}
+        val req = com.programmersbox.cdm.core.allocator.SetRequest(listOf(androidPhone, iosPhone))
+        assertEquals(AcquireResult.Refused(holdingMsg), s.acquireSet(h1, "/w", req, 1.minutes) {})
+        // Holding a set counts too.
+        assertIs<AcquireResult.GrantedSet>(s.acquireSet(h2, "/w", req, 1.minutes) {})
+        assertEquals(AcquireResult.Refused(holdingMsg), s.acquireSet(h2, "/w", req, 1.minutes) {})
+    }
+
+    @Test fun acquireSetRefusedWhenInfeasible() = runTest {
+        val s = started()
+        val tablets = com.programmersbox.cdm.core.allocator.SetRequest(List(2) { Wants(setOf(Category.TABLET), Platform.ANDROID) })
+        assertEquals(AcquireResult.Refused(infeasibleMsg), s.acquireSet(h1, "/w", tablets, 1.minutes) {})
+        assertEquals(HolderStatus.None, s.status(h1))
+    }
+
+    @Test fun infeasibleSetRequestLeavesTheQueue() = runTest {
+        val s = started()
+        s.acquire(h2, "/w", setOf(Category.PHONE), 1.minutes) {}
+        val req = com.programmersbox.cdm.core.allocator.SetRequest(List(2) { Wants(setOf(Category.ANY), Platform.ANDROID) })
+        assertEquals(AcquireResult.TimedOut(1), s.acquireSet(h1, "/w", req, 1.seconds) {})
+        val tablets = com.programmersbox.cdm.core.allocator.SetRequest(List(2) { Wants(setOf(Category.TABLET), Platform.ANDROID) })
+        assertEquals(AcquireResult.Refused(infeasibleMsg), s.acquireSet(h1, "/w", tablets, 1.minutes) {})
+        assertEquals(HolderStatus.None, s.status(h1))
+        assertTrue(h1 !in s.snapshot.value.queue)
+        assertEquals(null, s.snapshot.value.reserved[DeviceKey("W")])
+    }
+
+    @Test fun acquireSetWaitsThenGrants() = runTest {
+        val s = started()
+        s.acquire(h2, "/w", setOf(Category.PHONE), 1.minutes) {}
+        val positions = mutableListOf<Int>()
+        val req = com.programmersbox.cdm.core.allocator.SetRequest(List(2) { Wants(setOf(Category.ANY), Platform.ANDROID) })
+        val r = async { s.acquireSet(h1, "/w", req, 5.minutes) { positions += it } }
+        s.snapshot.first { h1 in it.queue }
+        // The free watch is reserved for the set, not granted.
+        assertEquals(h1, s.snapshot.value.reserved[DeviceKey("W")])
+        s.release(h2)
+        val g = assertIs<AcquireResult.GrantedSet>(r.await())
+        assertEquals(listOf("android1", "android2"), g.members.map { it.name })
+        assertEquals(setOf("p-usb", "w-usb"), g.members.map { it.serial }.toSet())
+        assertEquals(listOf(1), positions)
+    }
+
+    @Test fun acquireSetTimesOutKeepsSpot() = runTest {
+        val s = started()
+        s.acquire(h2, "/w", setOf(Category.PHONE), 1.minutes) {}
+        val req = com.programmersbox.cdm.core.allocator.SetRequest(List(2) { Wants(setOf(Category.ANY), Platform.ANDROID) })
+        assertEquals(AcquireResult.TimedOut(1), s.acquireSet(h1, "/w", req, 1.seconds) {})
+        assertEquals(req, assertIs<HolderStatus.Queued>(s.status(h1)).set)
+    }
+
+    @Test fun singleAcquireRefusedForSetHolder() = runTest {
+        val s = started()
+        // Queued as a set: a single acquire must not replace the entry or drop its reservation.
+        s.acquire(h2, "/w", setOf(Category.PHONE), 1.minutes) {}
+        val req = com.programmersbox.cdm.core.allocator.SetRequest(List(2) { Wants(setOf(Category.ANY), Platform.ANDROID) })
+        s.acquireSet(h1, "/w", req, 1.seconds) {}
+        assertEquals(
+            AcquireResult.Refused(
+                "You're waiting for a device set. Run the same `cdm acquire …` command again to keep waiting, " +
+                    "or `cdm release` to leave the queue.",
+            ),
+            s.acquire(h1, "/w", watch, 1.minutes) {},
+        )
+        assertEquals(req, assertIs<HolderStatus.Queued>(s.status(h1)).set)
+        assertEquals(h1, s.snapshot.value.reserved[DeviceKey("W")])
+        // Holding the set.
+        s.release(h2)
+        s.snapshot.first { h1 in it.sets }
+        assertEquals(AcquireResult.Refused(setHolderMsg), s.acquire(h1, "/w", watch, 1.minutes) {})
+        assertEquals(2, s.snapshot.value.sets.getValue(h1).members.size)
+    }
+
+    @Test fun releaseAndroidKeepsIosMembers() = runTest {
+        val s = startedWithIos()
+        val req = com.programmersbox.cdm.core.allocator.SetRequest(listOf(androidPhone, Wants(setOf(Category.WATCH), Platform.ANDROID), iosPhone))
+        assertIs<AcquireResult.GrantedSet>(s.acquireSet(h1, "/w", req, 1.minutes) {})
+        s.release(h1, Platform.ANDROID)
+        assertEquals(listOf("ios1"), assertIs<HolderStatus.HoldingSet>(s.status(h1)).set.members.map { it.name })
+        assertEquals(null, s.snapshot.value.holds[DeviceKey("P")])
+        s.release(h1)
+        assertEquals(null, s.snapshot.value.sets[h1])
+    }
+
+    @Test fun renewAndDeviceCommandsResetSetTimer() = runTest {
+        val s = started()
+        val req = com.programmersbox.cdm.core.allocator.SetRequest(List(2) { Wants(setOf(Category.ANY), Platform.ANDROID) })
+        assertIs<AcquireResult.GrantedSet>(s.acquireSet(h1, "/w", req, 1.minutes) {})
+        now = t0 + 1.minutes
+        assertTrue(s.renew(h1))
+        assertEquals(now, s.snapshot.value.sets.getValue(h1).lastActivity)
+        assertEquals(false, s.renew(h1, Platform.IOS))
+        now = t0 + 2.minutes
+        // A command touching a member's platform resets the shared timer and is logged against each touched member.
+        s.preToolUse(bash("./gradlew assembleDebug"))
+        assertEquals(now, s.snapshot.value.sets.getValue(h1).lastActivity)
+        waitFor { activity.recent().first().count { it.kind == "command" && it.text == "./gradlew assembleDebug" } == 2 }
+        // `cdm run` counts too: the command inside it is what touches the device.
+        now = t0 + 3.minutes
+        s.preToolUse(bash("cdm run android1 -- adb shell ls"))
+        assertEquals(now, s.snapshot.value.sets.getValue(h1).lastActivity)
+        // Logged against the named member only (the inserts finish before preToolUse returns).
+        val android1 = s.snapshot.value.sets.getValue(h1).members.single { it.name == "android1" }.device
+        waitFor { activity.recent().first().any { it.kind == "command" && it.text == "cdm run android1 -- adb shell ls" } }
+        assertEquals(
+            listOf(android1.hardwareSerial),
+            activity.recent().first().filter { it.kind == "command" && it.text == "cdm run android1 -- adb shell ls" }.map { it.deviceKey },
+        )
+    }
+
     /** Polls a Room-backed condition; Room answers on real threads. */
     private suspend fun waitFor(cond: suspend () -> Boolean) {
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
