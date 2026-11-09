@@ -227,6 +227,7 @@ class Allocator(
         }
         queue.add(holder)
         queueWants[holder] = wants
+        releasedSets.remove(holder)
         released[holder]?.let { r -> platformsOf(wants).forEach { r.remove(it) } }
         emit(AllocatorEvent.Queued(clock(), holder, wants))
         settleReservation()
@@ -319,7 +320,7 @@ class Allocator(
 
     /**
      * The holder's set as it was when it timed out, or null. Cleared when the holder acquires again ([tryGrabSet],
-     * [enqueueSet]), regrabs it, releases, or ends.
+     * [enqueueSet], any single grant, or a single [enqueue]), regrabs it, releases, or ends.
      */
     fun releasedSetOf(holder: HolderId): ReleasedSet? = releasedSets[holder]
 
@@ -492,6 +493,8 @@ class Allocator(
         holdings.getOrPut(holder) { LinkedHashMap() }[d.platform] =
             HolderStatus.Holding(d.key, now, now, editing = false, platform = d.platform, partner = d.partner)
         released[holder]?.remove(d.platform)
+        // Acquiring again replaces a timed-out set: it can no longer be regrabbed.
+        releasedSets.remove(holder)
         emit(AllocatorEvent.Granted(now, holder, d.key))
         return granted(d, holder)
     }

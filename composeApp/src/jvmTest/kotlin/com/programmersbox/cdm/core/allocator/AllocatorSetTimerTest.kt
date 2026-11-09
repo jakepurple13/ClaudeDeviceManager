@@ -247,4 +247,25 @@ class AllocatorSetTimerTest {
         assertEquals(GrabResult.NoneFree, a.tryRegrab(h1, Platform.IOS))
         assertTrue(a.snapshot().holds.isEmpty())
     }
+
+    @Test fun singleGrantAfterSetTimeoutClearsRecordAndRegrabsAsSingle() {
+        val a = alloc()
+        timedOut(a)
+        val t1 = now
+        assertIs<GrabResult.Granted>(a.tryGrab(h1, androidPhone))
+        assertNull(a.releasedSetOf(h1))
+        now = t1 + 15.minutes + 1.seconds; a.tick()
+        assertEquals(ReleaseReason.IDLE_TIMEOUT, assertIs<HolderStatus.Released>(a.statusOf(h1, Platform.ANDROID)).reason)
+        assertIs<GrabResult.Granted>(a.tryRegrab(h1, Platform.ANDROID))
+        assertNull(a.releasedSetOf(h1))
+        assertEquals(GrabSetResult.NoneFree, a.tryRegrabSet(h1))
+    }
+
+    @Test fun singleEnqueueAfterSetTimeoutClearsRecord() {
+        val a = alloc()
+        timedOut(a)
+        a.tryGrab(h2, iosPhone)
+        assertEquals(1, a.enqueue(h1, iosPhone))
+        assertNull(a.releasedSetOf(h1))
+    }
 }
