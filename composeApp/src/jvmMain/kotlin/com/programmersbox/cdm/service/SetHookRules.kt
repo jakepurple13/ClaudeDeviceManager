@@ -407,10 +407,7 @@ class SetHookRules(
         kinds.firstNotNullOfOrNull(::globalDeny)?.let { return it }
         if (kinds.any { it is CommandKind.AdbDisconnect && it.address !in ownSerials }) return HookReply.Deny(HookDecider.AFFECTS_OTHERS)
         kinds.firstNotNullOfOrNull { it as? CommandKind.IosGlobalDangerous }?.let { d ->
-            val othersHoldIos = snap.holds.any { (k, other) ->
-                other != holder && snap.devices.firstOrNull { it.key == k }?.platform == Platform.IOS
-            }
-            if (othersHoldIos) return HookReply.Deny("`${d.what}` affects other sessions' iOS devices. Ask the user to do it.")
+            if (othersHoldIos(snap, holder)) return HookReply.Deny("`${d.what}` affects other sessions' iOS devices. Ask the user to do it.")
         }
 
         val androids = allowed.filter { it.platform == Platform.ANDROID }

@@ -138,6 +138,17 @@ class HookDeciderIosTest {
         }
     }
 
+    @Test fun dangerousDeniedWhileOthersHoldIosInASet() = runTest {
+        val req = com.programmersbox.cdm.core.allocator.SetRequest(
+            listOf(Wants(setOf(Category.PHONE), Platform.ANDROID), Wants(setOf(Category.PHONE), Platform.IOS)),
+        )
+        assertIs<com.programmersbox.cdm.core.allocator.GrabSetResult.Granted>(allocator.tryGrabSet(h2, req))
+        for (c in listOf("xcrun simctl shutdown all", "xcrun simctl erase all", "killall Simulator", "xcrun simctl delete unavailable")) {
+            val r = bash(c).reason()
+            assertTrue("affects other sessions' iOS devices" in r, "$c: $r")
+        }
+    }
+
     @Test fun dangerousAllowedWhenNoOtherIosHolds() = runTest {
         allocator.tryGrab(h2, Wants(setOf(Category.PHONE), Platform.ANDROID)) // s2 holds only Android
         allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS)) // s1's own iOS hold doesn't count

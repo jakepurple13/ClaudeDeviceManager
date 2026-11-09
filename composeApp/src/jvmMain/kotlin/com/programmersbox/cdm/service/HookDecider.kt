@@ -207,8 +207,7 @@ class HookDecider(
         val holder = req.holder
         // 1. A global iOS command while another session holds an iOS device.
         req.kinds.firstNotNullOfOrNull { it as? CommandKind.IosGlobalDangerous }?.let { d ->
-            val othersHoldIos = snap.holdings.any { (other, hs) -> other != holder && hs.any { it.platform == Platform.IOS } }
-            if (othersHoldIos) {
+            if (othersHoldIos(snap, holder)) {
                 return IosCheck.Stop(HookReply.Deny("`${d.what}` affects other sessions' iOS devices. Ask the user to do it."))
             }
         }
@@ -531,6 +530,14 @@ class HookDecider(
 
 internal fun isEmulatorSerial(serial: String) = com.programmersbox.cdm.devices.isEmulatorSerial(serial)
 internal fun isUsbSerial(serial: String) = !isWifiSerial(serial) && !isEmulatorSerial(serial)
+
+/**
+ * True when a session other than [holder] holds an iOS device: a single hold or a set member (both are in
+ * [AllocatorSnapshot.holds]), so a global iOS command would reach it.
+ */
+internal fun othersHoldIos(snap: AllocatorSnapshot, holder: HolderId) =
+    snap.holds.any { (k, other) -> other != holder && snap.devices.firstOrNull { it.key == k }?.platform == Platform.IOS } ||
+        snap.sets.any { (other, s) -> other != holder && s.members.any { it.platform == Platform.IOS } }
 
 internal fun label(d: AllocDevice) = "${d.name} (${d.connectedSerials.firstOrNull() ?: d.key.hardwareSerial})"
 
