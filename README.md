@@ -9,7 +9,7 @@ When several Claude sessions test on the same phone at once, they fight over the
 ## What it does
 
 - **One session per device.** A session (or any one of its subagents) holds a device until it's done. Every Bash command from that session is pinned to its device with `ANDROID_SERIAL`, including Gradle tasks and wrapper scripts. iOS commands get `CDM_IOS_UDID` (see [iOS](#ios-macos-only)).
-- **One Android and one iOS device per session.** A session can hold at most one device of each platform at the same time. Each hold has its own idle timer.
+- **One Android and one iOS device per session, or a set.** By default a session holds at most one device of each platform. A session can also ask for a set of devices in one go (see [Device sets](#device-sets)). Each hold has its own idle timer.
 - **The right kind of device.** Devices are auto-detected as phone, tablet (iPad) or watch, and you can override that. Android tablets are never auto-detected as tablet; set it by hand. A session asks for `phone`, `watch`, `tablet`, `phone,watch` or `any`, and can limit the platform (`--android`, `--ios`) and the kind (`--real`, `--virtual`).
 - **Emulators and simulators are labelled.** Android emulators show a dashed `emulator` chip and iOS simulators a dashed `simulator` chip, so nobody mistakes them for real hardware.
 - **A queue.** If nothing fits, the session pauses until a device frees up. It doesn't improvise or give up.
@@ -109,6 +109,25 @@ cdm status                               # what this session holds, and its queu
 `--android` / `--ios` pick the platform and `--real` / `--virtual` pick a real device or an emulator/simulator. Without them, any platform and either kind fits. To hold one device of each platform, run `cdm acquire` once with each flag. A session waits in the queue for one platform at a time. `--device` asks for one specific device and waits in the queue for that device only; it takes the serial `cdm devices` prints, a UDID, or an exact device name, and implies its platform and any category. A device that doesn't exist, is marked don't use, or conflicts with the other flags is refused with exit status 2. An unknown flag prints the usage and exits with status 2.
 
 `cdm acquire` waits up to about 110 seconds, which keeps it under Claude Code's default 2-minute Bash timeout. If it's still queued, it says so and Claude runs it again. If the app isn't running, it prints `Device Manager not running; proceeding without a device lock.` and exits 0.
+
+### Device sets
+
+Some tests need several devices at once, such as two phones that message each other. A session asks for the whole set in one `cdm acquire`. Each `--android` / `--ios` flag adds one member, and takes an optional count, category or `<count>:<category>`:
+
+```bash
+cdm acquire --android 2                      # two Android devices
+cdm acquire --android phone --android watch  # an Android phone and an Android watch
+cdm acquire --android 2:phone --ios 1:phone  # two Android phones and an iPhone, granted together
+```
+
+- **All or nothing.** The session waits until every member can be granted at once. It never holds part of the set while it waits. `--real` / `--virtual` apply to every member, and `--device` can be repeated.
+- **Reservations.** The first set in the queue reserves devices as they free up, so smaller requests can't starve it. A reserved device isn't held: no command can run on it and nobody else can take it. The app shows it as "reserved for <session>".
+- **Names.** Members are named `android1`, `android2`, …, `ios1`, `ios2`, … in grant order. A single device is `android1` or `ios1` too.
+- **`cdm run <name> -- <command>`** runs a command on one member. The app sets `ANDROID_SERIAL` (Android) or `CDM_IOS_UDID` (iOS) for that command only, and denies a command that names any other device.
+- **`cdm run all -- <command>`** runs one command that uses every member. It gets `CDM_ANDROID<N>_SERIAL` and `CDM_IOS<N>_UDID` for each member, and `ANDROID_SERIAL` as a comma list of the Android members, for Gradle connected tasks. `CDM_IOS_UDID` isn't set, so an iOS command must name a member, for example `$CDM_IOS2_UDID`.
+- **No automatic pin with several members.** If a session holds more than one device on a platform, a device command for that platform that doesn't use `cdm run` is denied, with the member names. Other commands still run, but with `ANDROID_SERIAL=use-cdm-run`, so a script that calls `adb` or Gradle without `cdm run` fails with "device 'use-cdm-run' not found" instead of reaching another session's device.
+- **Release.** `cdm release` gives back the whole set, and so does the idle or editing timeout, which one set shares. `cdm release --android` gives back only the Android members; the rest stay held under the same names. Releasing one member from the app releases the whole set, and a set member can't be handed off.
+- **Refused with exit status 2.** A set request from a session that already holds a device, or one that could never be met by the devices that exist and aren't marked don't use.
 
 ### Integrations (other apps)
 
