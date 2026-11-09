@@ -135,6 +135,16 @@ class SetHookRulesTest {
         assertTrue("export CDM_IOS_UDID=" !in r, r)
     }
 
+    @Test fun runAllDeniesBareMaestro() = runTest {
+        holdSet()
+        assertEquals(
+            "Name a member: `maestro --device \$CDM_ANDROID<N>_SERIAL` (or `\$CDM_IOS<N>_UDID`).",
+            bash("cdm run all -- maestro test flow.yaml").reason(),
+        )
+        assertTrue(bash("cdm run all -- maestro --device \$CDM_ANDROID2_SERIAL test flow.yaml").cmd().endsWith("maestro --device p2-usb test flow.yaml )"))
+        assertIs<HookReply.Rewrite>(bash("cdm run android1 -- maestro test flow.yaml"))
+    }
+
     @Test fun runIosExportsUdidBeforeArgs() = runTest {
         holdSet(iosPhone)
         val r = bash("cdm run ios1 -- xcrun simctl launch \$CDM_IOS_UDID x").cmd()

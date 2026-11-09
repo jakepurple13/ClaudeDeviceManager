@@ -266,6 +266,8 @@ class SetHookRules(
             }
         }
         if (all && kinds.any { it is CommandKind.IosDevice && (it.udids.isEmpty() || it.usesBooted) }) return stop(ALL_NAME_IOS)
+        // Maestro reads no ANDROID_SERIAL comma list: without --device it would pick a device on its own.
+        if (all && kinds.any { it is CommandKind.Device && it.bareMaestro && it.explicitSerial == null }) return stop(ALL_MAESTRO)
 
         val what = if (all) "your devices (${held.names})" else "${targets.single().name}, ${targets.single().label}"
         check(holder, sub, kinds, targets, targets.flatMap { it.serials }, what, snap)?.let { return Decided.Stop(it) }
@@ -454,6 +456,7 @@ class SetHookRules(
         const val ALL_NAME_IOS =
             "Inside `cdm run all`, name the iOS device: use \$CDM_IOS<N>_UDID (for example `-destination id=\$CDM_IOS1_UDID`), " +
                 "or run it with `cdm run ios<N> -- …`."
+        const val ALL_MAESTRO = "Name a member: `maestro --device \$CDM_ANDROID<N>_SERIAL` (or `\$CDM_IOS<N>_UDID`)."
         const val GROUPED = "Don't wrap `cdm run` in ( ) or { }; run it as its own command."
         const val WRAPPED = "Run `cdm run` directly, not through sudo/env or a VAR= prefix."
         const val MEMBER_VARIABLE =
