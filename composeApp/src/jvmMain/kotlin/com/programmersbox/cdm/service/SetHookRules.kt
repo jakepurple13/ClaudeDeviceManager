@@ -171,7 +171,8 @@ class SetHookRules(
             last = to
         }
         sb.append(command, last, command.length)
-        var body = sb.toString()
+        // The other segments' member references become literal too (the pieces already are).
+        var body = substitute(sb.toString(), held.vars)
         if (others.any { it is CommandKind.Cdm }) body = CommandClassifier.addCdmIdentity(body, holder, cwd)
         // Other segments get what they'd get on their own; each `cdm run` subshell overrides it for its own command.
         val ambient = if (others.any { it !is CommandKind.Cdm }) ambientPrefix(held) else ""
@@ -247,8 +248,9 @@ class SetHookRules(
         snap: AllocatorSnapshot,
     ): Decided {
         fun stop(reason: String) = Decided.Stop(HookReply.Deny(reason))
-        var out = r.rest
-        var sub = substitute(out, held.vars)
+        // The command that runs is the text the checks saw: member references are literal values in both.
+        var out = substitute(r.rest, held.vars)
+        var sub = out
         var kinds = CommandClassifier.classifyAll(sub)
         if (kinds.isEmpty()) return stop(USAGE)
         if (kinds.any { it is CommandKind.Cdm }) return stop(NESTED_CDM)
@@ -299,8 +301,9 @@ class SetHookRules(
         val held = held(holder) ?: return null
         if (raw.any { it == CommandKind.Cdm("acquire") }) return HookReply.Deny(HookDecider.ACQUIRE_ALONE)
 
-        var out = command
-        var sub = substitute(command, held.vars)
+        // The command that runs is the text the checks saw: member references are literal values in both.
+        var out = substitute(command, held.vars)
+        var sub = out
         var kinds = CommandClassifier.classifyAll(sub)
         if (kinds.any { it is CommandKind.IosDevice && !it.pinnable }) {
             iosPinScript()?.let { path ->
@@ -501,17 +504,43 @@ class SetHookRules(
         private val GRADLE = setOf("gradle", "gradlew")
         private val singleName = mapOf("android1" to Platform.ANDROID, "ios1" to Platform.IOS)
 
-        /** `$CDM_ANDROID2_SERIAL` / `${CDM_IOS1_UDID}` / `$CDM_IOS1_PAIR_UDID` references, for the checks only. */
+        /** `$CDM_ANDROID2_SERIAL` / `${CDM_IOS1_UDID}` / `$CDM_IOS1_PAIR_UDID` references. */
         private val memberRef = Regex(
             """\$(?:\{(CDM_(?:ANDROID|IOS)\d+_(?:SERIAL|UDID|PAIR_UDID))}|(CDM_(?:ANDROID|IOS)\d+_(?:SERIAL|UDID|PAIR_UDID))(?![A-Za-z0-9_]))""",
         )
 
-        /** [text] with each per-member variable reference replaced by its value, so the checks see the device it names. */
-        private fun substitute(text: String, vars: Map<String, String>): String =
-            if (vars.isEmpty()) text else memberRef.replace(text) { m ->
+        /**
+         * [text] with each per-member variable reference the shell would expand replaced by its literal value. The checks
+         * and the rewritten command both use it, so rebinding a variable at run time (however its name is spelled)
+         * can't change the device that was checked. References in single quotes or after a backslash stay as written.
+         */
+        private fun substitute(text: String, vars: Map<String, String>): String {
+            if (vars.isEmpty()) return text
+            val expands = expandable(text)
+            return memberRef.replace(text) { m ->
                 val name = m.groupValues[1].ifEmpty { m.groupValues[2] }
-                vars[name] ?: m.value
+                if (expands[m.range.first]) vars[name] ?: m.value else m.value
             }
+        }
+
+        /** For each index of [text], true when a `$` there would be expanded: not in single quotes, not escaped. */
+        private fun expandable(text: String): BooleanArray {
+            val ok = BooleanArray(text.length)
+            var q = 0.toChar()
+            var i = 0
+            while (i < text.length) {
+                val ch = text[i]
+                when {
+                    q == '\'' -> if (ch == '\'') q = 0.toChar()
+                    ch == '\\' -> i++
+                    q == '"' -> if (ch == '"') q = 0.toChar() else ok[i] = true
+                    ch == '\'' || ch == '"' -> q = ch
+                    else -> ok[i] = true
+                }
+                i++
+            }
+            return ok
+        }
 
         /** True when [rest] closes a `(` or `{` it didn't open (the `cdm run` sits inside a group). Quote-aware. */
         private fun unbalancedClose(rest: String): Boolean {

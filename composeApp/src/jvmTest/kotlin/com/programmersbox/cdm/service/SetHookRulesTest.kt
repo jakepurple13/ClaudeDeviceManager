@@ -131,7 +131,7 @@ class SetHookRulesTest {
         bash("cdm run all -- xcrun simctl launch booted x").reason()
         bash("cdm run all -- xcrun simctl launch \$CDM_IOS_UDID x").reason()
         val r = bash("cdm run all -- xcrun simctl launch \$CDM_IOS2_UDID x").cmd()
-        assertTrue(r.endsWith("xcrun simctl launch \$CDM_IOS2_UDID x )"), r)
+        assertTrue(r.endsWith("xcrun simctl launch $u2 x )"), r)
         assertTrue("export CDM_IOS_UDID=" !in r, r)
     }
 
@@ -311,6 +311,54 @@ class SetHookRulesTest {
         assertEquals(memberVarDeny, bash("export CDM_ANDROID2_SERIAL=p3-usb; cdm run all -- adb -s \$CDM_ANDROID2_SERIAL shell ls").reason())
         assertEquals(memberVarDeny, bash("cdm run ios1 -- CDM_IOS1_UDID=$u2 xcrun simctl launch \$CDM_IOS1_UDID x").reason())
         assertEquals(memberVarDeny, bash("cdm run all -- xcrun simctl launch \${CDM_IOS1_UDID:=$u2} x").reason())
+    }
+
+    /** Names the textual scan can't see: the command that runs uses the literal member value, so rebinding is harmless. */
+    @Test fun memberReferencesBecomeLiteralWithoutRun() = runTest {
+        holdSet(iosPhone)
+        val rebinds = listOf(
+            "export CDM_ANDROID1_\"SERIAL\"=p3-usb",
+            "CDM_ANDROID1_\\SERIAL=p3-usb",
+            "declare CDM_ANDROID1_\"SERIAL\"=p3-usb",
+            "typeset CDM_ANDROID1_\"SERIAL\"=p3-usb",
+            "readonly CDM_ANDROID1_\"SERIAL\"=p3-usb",
+            "local CDM_ANDROID1_\"SERIAL\"=p3-usb",
+            "printf -v CDM_ANDROID1_\"SERIAL\" p3-usb",
+            "declare -n r=CDM_ANDROID1_\"SERIAL\"; r=p3-usb",
+            "eval CDM_ANDROID1_\"SERIAL\"=p3-usb",
+            "n=SERIAL; export CDM_ANDROID1_\$n=p3-usb",
+            "source ./f",
+        )
+        for (rebind in rebinds) {
+            val r = bash("$rebind; adb -s \$CDM_ANDROID1_SERIAL shell ls").cmd()
+            assertTrue(r.endsWith("; adb -s p1-usb shell ls"), r)
+            assertTrue(r.startsWith("export ANDROID_SERIAL=p1-usb; "), r)
+            val i = bash("$rebind; export CDM_IOS1_\"UDID\"=$u2; xcrun simctl launch \${CDM_IOS1_UDID} x").cmd()
+            assertTrue(i.endsWith("; xcrun simctl launch $u1 x"), i)
+        }
+    }
+
+    @Test fun memberReferencesBecomeLiteralInRun() = runTest {
+        holdSet(iosPhone)
+        assertEquals(
+            "export ANDROID_SERIAL=use-cdm-run; export CDM_IOS_UDID=$u1; ${vars}export CDM_IOS1_UDID=$u1; " +
+                "export CDM_ANDROID1_\"SERIAL\"=p3-usb; " +
+                "( export ANDROID_SERIAL=p1-usb; ${vars}export CDM_IOS1_UDID=$u1; adb -s p1-usb shell ls )",
+            bash("export CDM_ANDROID1_\"SERIAL\"=p3-usb; cdm run android1 -- adb -s \$CDM_ANDROID1_SERIAL shell ls").cmd(),
+        )
+        val r = bash("source ./f; cdm run ios1 -- xcrun simctl launch \$CDM_IOS1_UDID x").cmd()
+        assertTrue(r.endsWith("xcrun simctl launch $u1 x )"), r)
+        val all = bash("eval CDM_ANDROID2_\"SERIAL\"=p3-usb; cdm run all -- adb -s \"\$CDM_ANDROID2_SERIAL\" shell ls").cmd()
+        assertTrue(all.endsWith("adb -s \"p2-usb\" shell ls )"), all)
+    }
+
+    @Test fun singleQuotedMemberReferenceUnchanged() = runTest {
+        holdSet()
+        assertTrue(bash("cdm run android1 -- adb shell echo '\$CDM_ANDROID1_SERIAL'").cmd().endsWith("adb shell echo '\$CDM_ANDROID1_SERIAL' )"))
+        assertTrue(bash("echo '\$CDM_ANDROID1_SERIAL' x").cmd().endsWith("echo '\$CDM_ANDROID1_SERIAL' x"))
+        // A backslash-escaped name isn't a plain read: the name scan denies it (fails closed).
+        bash("echo \\\$CDM_ANDROID2_SERIAL").reason()
+        assertTrue(bash("echo \"\$CDM_ANDROID1_SERIAL\"").cmd().endsWith("echo \"p1-usb\""))
     }
 
     @Test fun queuedSetHolderDoesNotGrabOnFirstUse() = runTest {
