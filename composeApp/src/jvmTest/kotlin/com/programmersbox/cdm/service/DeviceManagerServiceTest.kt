@@ -583,7 +583,13 @@ class DeviceManagerServiceTest {
         s.acquire(h2, "/w", setOf(Category.PHONE), 1.minutes) {}
         val req = com.programmersbox.cdm.core.allocator.SetRequest(List(2) { Wants(setOf(Category.ANY), Platform.ANDROID) })
         s.acquireSet(h1, "/w", req, 1.seconds) {}
-        assertEquals(AcquireResult.Refused(setHolderMsg), s.acquire(h1, "/w", watch, 1.minutes) {})
+        assertEquals(
+            AcquireResult.Refused(
+                "You're waiting for a device set. Run the same `cdm acquire …` command again to keep waiting, " +
+                    "or `cdm release` to leave the queue.",
+            ),
+            s.acquire(h1, "/w", watch, 1.minutes) {},
+        )
         assertEquals(req, assertIs<HolderStatus.Queued>(s.status(h1)).set)
         assertEquals(h1, s.snapshot.value.reserved[DeviceKey("W")])
         // Holding the set.

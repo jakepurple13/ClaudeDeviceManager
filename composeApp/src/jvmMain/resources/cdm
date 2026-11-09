@@ -176,6 +176,9 @@ case "$cmd" in
       for sp in ${members_out[@]+"${members_out[@]}"}; do req+=(--data-urlencode "member=$sp"); done
       for dv in ${devices[@]+"${devices[@]}"}; do req+=(--data-urlencode "device=$dv"); done
     fi
+    # A bare `cdm acquire` is a single request, which a queued set holder can't make.
+    again='Run `cdm acquire` again to keep waiting.'
+    [ "$legacy" = 0 ] && again='Run the same `cdm acquire …` command again to keep waiting.'
     acquire_end=$((SECONDS + ACQUIRE_TIMEOUT))
     last_pos=""
     while :; do
@@ -207,7 +210,7 @@ case "$cmd" in
             echo 'For iOS, still pass $CDM_IOS_UDID: `cdm run ios1 -- xcrun simctl launch $CDM_IOS_UDID com.example.app`.'
             exit 0 ;;
           REFUSED\ *) echo "Device Manager refused the request: ${line#REFUSED }"; exit 2 ;;
-          TIMEOUT\ *) echo "Still queued at position ${line#TIMEOUT }. Run \`cdm acquire\` again to keep waiting."; exit 0 ;;
+          TIMEOUT\ *) echo "Still queued at position ${line#TIMEOUT }. $again"; exit 0 ;;
           BLOCKED) echo "You're blocked in Claude Device Manager. Ask the user to unblock you."; exit 1 ;;
           REMOVED) echo "The user removed you from the device queue. Ask them before trying again."; exit 1 ;;
           # curl's -w line: a 4xx is a request the app will never accept, so retrying can't help.
@@ -221,7 +224,7 @@ case "$cmd" in
       # reconnect (retrying for RETRY_SECONDS) and wait again; give up only if it never comes back.
       # Past the wait's end, stop like a server-side timeout would.
       if [ "$SECONDS" -ge "$acquire_end" ]; then
-        if [ -n "$last_pos" ]; then echo "Still queued at position $last_pos. Run \`cdm acquire\` again to keep waiting."; exit 0; fi
+        if [ -n "$last_pos" ]; then echo "Still queued at position $last_pos. $again"; exit 0; fi
         echo "Device Manager didn't answer. Run \`cdm acquire\` again."; exit 1
       fi
       sleep 1

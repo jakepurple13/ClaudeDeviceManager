@@ -468,7 +468,7 @@ class SetHookRules(
         const val SENTINEL = "use-cdm-run"
         const val USAGE = "Usage: `cdm run <name> -- <command>`, or `cdm run all -- <command>` for every device you hold."
         const val NO_DEVICES = "You hold no devices. Run `cdm acquire` first."
-        const val SET_TAKEN = "Your devices timed out and one was taken; run `cdm acquire` again."
+        const val SET_TAKEN = "Your devices timed out and one was taken; run the same `cdm acquire …` command again."
         const val OWN_RUN = "Put each device command in its own `cdm run <name> -- …`."
         const val ALL_KMP = "Inside `cdm run all`, KMP iOS tests can't pick a device. Use `cdm run ios<N> -- …`."
         const val ALL_NAME_IOS =
@@ -482,7 +482,7 @@ class SetHookRules(
         const val COMMENT = "Put a # comment at the end of the line, after every command, not inside an earlier `cdm run`."
 
         fun waitingForSet(position: Int) =
-            "You're waiting for a device set (#$position in line). Run `cdm acquire` again to keep waiting, " +
+            "You're waiting for a device set (#$position in line). Run the same `cdm acquire …` command again to keep waiting, " +
                 "or `cdm release` to leave the queue."
 
         /** Any mention of a per-member variable name. */

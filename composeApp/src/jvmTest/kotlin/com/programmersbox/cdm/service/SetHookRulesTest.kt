@@ -218,7 +218,7 @@ class SetHookRulesTest {
         now = t0 + 16.minutes; allocator.tick()
         allocator.tryGrab(h2, Wants(emptySet()), p2.key)
         assertEquals(
-            "Your devices timed out and one was taken; run `cdm acquire` again.",
+            "Your devices timed out and one was taken; run the same `cdm acquire …` command again.",
             bash("cdm run android1 -- adb shell ls").reason(),
         )
         assertNull(allocator.setOf(h))
@@ -430,7 +430,7 @@ class SetHookRulesTest {
         allocator.tryGrab(h2, Wants(emptySet()), p1.key)
         allocator.tryGrab(HolderId("s3"), Wants(emptySet()), p2.key)
         assertEquals(1, allocator.enqueueSet(h, SetRequest(listOf(androidPhone, androidPhone))))
-        val expected = "You're waiting for a device set (#1 in line). Run `cdm acquire` again to keep waiting, " +
+        val expected = "You're waiting for a device set (#1 in line). Run the same `cdm acquire …` command again to keep waiting, " +
             "or `cdm release` to leave the queue."
         assertEquals(expected, bash("adb -s p3-usb shell ls").reason())
         assertEquals(expected, bash("xcrun simctl launch $u1 x").reason())

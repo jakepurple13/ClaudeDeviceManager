@@ -352,6 +352,17 @@ class CdmScriptTest {
     }
 
     @Test
+    fun setTimeoutSaysRunTheSameCommand() {
+        val m = FakeManager().apply { acquireSetImpl = { _, _, _, _, _ -> AcquireResult.TimedOut(2) } }
+        withServer(m) { pf ->
+            assertEquals(
+                "Still queued at position 2. Run the same `cdm acquire …` command again to keep waiting.\n",
+                run(pf, "acquire", *base, "--android", "2").out,
+            )
+        }
+    }
+
+    @Test
     fun setRefusalExits2() {
         val m = FakeManager().apply { acquireSetImpl = { _, _, _, _, _ -> AcquireResult.Refused("only 1 android connected") } }
         withServer(m) { pf ->

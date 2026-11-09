@@ -253,7 +253,8 @@ class DeviceManagerService(
         val w = if (wants.categories.isEmpty()) wants.copy(categories = prefetchDefaultCategory(cwd).members()) else wants
         val first = locked {
             // A single grab or enqueue would drop a queued set's entry and reservation, or can't apply to a held set.
-            if (isSetHolder(holder)) return@locked AcquireResult.Refused(SET_HOLDER)
+            if (allocator.setOf(holder) != null) return@locked AcquireResult.Refused(SET_HOLDER)
+            if ((allocator.statusOf(holder) as? HolderStatus.Queued)?.set != null) return@locked AcquireResult.Refused(SET_QUEUED)
             releaseUnfitting(holder, w)
             when (val g = allocator.tryGrab(holder, w)) {
                 is GrabResult.Granted -> allocator.holdingsOf(holder).firstOrNull { it.platform == g.device.platform }
@@ -271,9 +272,6 @@ class DeviceManagerService(
     }
 
     /** True when [holder] holds a set or is queued for one. */
-    private fun isSetHolder(holder: HolderId): Boolean =
-        allocator.setOf(holder) != null || (allocator.statusOf(holder) as? HolderStatus.Queued)?.set != null
-
     /**
      * Waits (the holder is already queued and its waiter attached) until it leaves the queue or [timeout] passes,
      * reporting each new position, then answers with [result]. The waiter detaches however this ends.
@@ -564,6 +562,9 @@ class DeviceManagerService(
         const val ALREADY_HOLDING = "You already hold devices. Run `cdm release` first."
         const val INFEASIBLE = "No combination of the listed devices fits this request."
         const val SET_HOLDER = "You hold a set of devices. Use `cdm run <name> -- …`, or run `cdm release` first."
+        const val SET_QUEUED =
+            "You're waiting for a device set. Run the same `cdm acquire …` command again to keep waiting, " +
+                "or `cdm release` to leave the queue."
         private val UPSERT_EVERY = 1.minutes
     }
 }
