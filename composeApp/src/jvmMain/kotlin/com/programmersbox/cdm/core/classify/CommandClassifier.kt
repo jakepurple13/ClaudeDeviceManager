@@ -26,6 +26,12 @@ sealed interface CommandKind {
     data class IosGlobalDangerous(val what: String) : CommandKind
 }
 
+/**
+ * One `cdm run <name> -- <command>` segment. [start]/[end] index the raw command (as [CommandClassifier] ranges do).
+ * [target] is the device name or `all` (empty if missing); [rest] is the raw text after `--`, trimmed (empty if missing).
+ */
+data class CdmRunSegment(val start: Int, val end: Int, val target: String, val rest: String)
+
 object CommandClassifier {
     private val gradleDeviceTask = Regex("""^(:?[\w-]+:)*(install|uninstall|connected)\w*$""")
     /** `NAME=value` or `NAME+=value` (bash appends): both are assignment words before the command. */
@@ -324,6 +330,58 @@ object CommandClassifier {
             if (subStart < seg.length && seg[subStart] != '-') at = tokenEnd(seg, subStart)
             sb.append(command, last, s + at).append(insert)
             last = s + at
+        }
+        sb.append(command, last, command.length)
+        return sb.toString()
+    }
+
+    private class CdmRunParse(
+        val start: Int,
+        val end: Int,
+        val prefixEnd: Int,
+        val restStart: Int?,
+        val target: String,
+        val rest: String,
+    )
+
+    private fun parseCdmRuns(command: String): List<CdmRunParse> {
+        val out = mutableListOf<CdmRunParse>()
+        for ((s, e) in ranges(command)) {
+            val seg = command.substring(s, e)
+            val start = prefixLength(seg)
+            val cdmEnd = tokenEnd(seg, start)
+            if (unquote(seg.substring(start, cdmEnd)) != "cdm") continue
+            val runStart = skipWs(seg, cdmEnd)
+            val runEnd = tokenEnd(seg, runStart)
+            if (unquote(seg.substring(runStart, runEnd)) != "run") continue
+            val nameStart = skipWs(seg, runEnd)
+            val nameEnd = tokenEnd(seg, nameStart)
+            val name = unquote(seg.substring(nameStart, nameEnd))
+            val target = if (name == "--") "" else name
+            val dashStart = if (name == "--") nameStart else skipWs(seg, nameEnd)
+            val dashEnd = tokenEnd(seg, dashStart)
+            if (dashStart >= seg.length || seg.substring(dashStart, dashEnd) != "--") {
+                out += CdmRunParse(s, e, s + start, null, target, "")
+                continue
+            }
+            val restStart = skipWs(seg, dashEnd)
+            out += CdmRunParse(s, e, s + start, s + restStart, target, seg.substring(restStart).trim())
+        }
+        return out
+    }
+
+    /** One entry per `cdm run` segment; a missing name or `--` yields an empty [CdmRunSegment.target] or [CdmRunSegment.rest]. */
+    fun cdmRuns(command: String): List<CdmRunSegment> =
+        parseCdmRuns(command).map { CdmRunSegment(it.start, it.end, it.target, it.rest) }
+
+    /** Removes each well-formed `cdm run <name> -- ` prefix; every other byte stays. */
+    fun withoutCdmRun(command: String): String {
+        val sb = StringBuilder()
+        var last = 0
+        for (r in parseCdmRuns(command)) {
+            val rs = r.restStart ?: continue
+            sb.append(command, last, r.prefixEnd)
+            last = rs
         }
         sb.append(command, last, command.length)
         return sb.toString()
