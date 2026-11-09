@@ -38,6 +38,17 @@ class SetHookRules(
         // A `cdm run` the parser didn't take as one (`/usr/local/bin/cdm run …`): the script would run it unpinned.
         val runKinds = CommandClassifier.classifyAll(command).count { it == CommandKind.Cdm("run") }
         if (runKinds != runs.size) return HookReply.Deny(USAGE)
+        val setHolder = allocator.setOf(holder) != null || allocator.releasedSetOf(holder) != null
+        // The per-member variables are only ever read: a command that sets them could point one at another device.
+        if ((runs.isNotEmpty() || setHolder) && setsMemberVariable(command)) return HookReply.Deny(MEMBER_VARIABLE)
+        // A holder waiting for a set never grabs a single device on first use (that would drop its place in line).
+        val queued = allocator.statusOf(holder) as? HolderStatus.Queued
+        if (queued?.set != null && holdsNothing(holder)) {
+            val kinds = CommandClassifier.classifyAll(command)
+            if (runs.isNotEmpty() || kinds.any { it is CommandKind.Device || it is CommandKind.IosDevice }) {
+                return HookReply.Deny(waitingForSet(queued.position))
+            }
+        }
         return if (runs.isEmpty()) withoutRun(holder, cwd, command) else withRuns(holder, cwd, command, runs)
     }
 
@@ -122,6 +133,11 @@ class SetHookRules(
             if (raw.startsWith("(") || raw.startsWith("{") || unbalancedClose(r.rest)) return HookReply.Deny(GROUPED)
             if (CommandClassifier.unquotedWords(raw).firstOrNull() != "cdm") return HookReply.Deny(WRAPPED)
             if (r.target.isEmpty() || r.rest.isEmpty()) return HookReply.Deny(USAGE)
+            // A comment comments out the rest of its line, so the subshell closes on a new line. Text after the segment
+            // on that line was part of the comment, and would run after the rewrite.
+            if (hasComment(r.rest) && command.substring(r.end).substringBefore('\n').isNotBlank()) {
+                return HookReply.Deny(COMMENT)
+            }
         }
 
         val held = when (val e = ensureHeld(holder, cwd, runs)) {
@@ -258,13 +274,16 @@ class SetHookRules(
         android.firstOrNull { it.pin == null && (touchesAndroid || !all) }?.let { m -> return stop(m.device?.let(::heldOffline) ?: offline(m)) }
 
         val exports = StringBuilder()
+        // `cdm run all` never has a CDM_IOS_UDID, even when the surrounding prefix exports one.
+        if (all) exports.append("unset CDM_IOS_UDID CDM_IOS_PAIR_UDID; ")
         val serials = android.mapNotNull { it.pin }
         if (serials.isNotEmpty()) exports.append("export ANDROID_SERIAL=").append(serials.joinToString(",")).append("; ")
         if (!all) ios.singleOrNull()?.let { m ->
             exports.append(pinPrefix(null, m.udid, m.pairUdid))
             if (kinds.any { it is CommandKind.IosDevice && it.usesBooted }) out = CommandClassifier.rewriteBooted(out, m.udid)
         }
-        return Decided.Text("( $exports${held.varsPrefix}$out )")
+        val close = if (hasComment(out)) "\n)" else " )"
+        return Decided.Text("( $exports${held.varsPrefix}$out$close")
     }
 
     // ---- set holders' commands without `cdm run` ----
@@ -437,6 +456,46 @@ class SetHookRules(
                 "or run it with `cdm run ios<N> -- …`."
         const val GROUPED = "Don't wrap `cdm run` in ( ) or { }; run it as its own command."
         const val WRAPPED = "Run `cdm run` directly, not through sudo/env or a VAR= prefix."
+        const val MEMBER_VARIABLE =
+            "Don't set the CDM_ANDROID<N>/CDM_IOS<N> variables; Device Manager exports them for your devices."
+        const val COMMENT = "Put a # comment at the end of the line, after every command, not inside an earlier `cdm run`."
+
+        fun waitingForSet(position: Int) =
+            "You're waiting for a device set (#$position in line). Run `cdm acquire` again to keep waiting, " +
+                "or `cdm release` to leave the queue."
+
+        /** Any mention of a per-member variable name. */
+        private val memberName = Regex("""(?<![A-Za-z0-9_])CDM_(?:ANDROID|IOS)\d+_(?:PAIR_UDID|SERIAL|UDID)(?![A-Za-z0-9_])""")
+
+        /**
+         * True when a per-member variable name appears other than as a plain `$NAME` / `${NAME}` read: `NAME=`, `NAME+=`,
+         * `${NAME:=…}`, `${NAME:-…}`, `export NAME`, `read NAME`, `unset NAME`, … Fails closed (`echo NAME` counts too).
+         */
+        private fun setsMemberVariable(command: String): Boolean = memberName.findAll(command).any { m ->
+            val before = command.substring(0, m.range.first)
+            val after = command.substring(m.range.last + 1)
+            val plain = before.endsWith("$") && !before.endsWith("\\$")
+            val braced = before.endsWith("\${") && after.startsWith("}")
+            !(plain || braced)
+        }
+
+        /** True when [text] has a `#` comment: an unquoted, unescaped `#` that starts a word. */
+        private fun hasComment(text: String): Boolean {
+            var q = 0.toChar()
+            var i = 0
+            while (i < text.length) {
+                val ch = text[i]
+                when {
+                    q != 0.toChar() -> if (ch == '\\' && q == '"') i++ else if (ch == q) q = 0.toChar()
+                    ch == '\\' -> i++
+                    ch == '\'' || ch == '"' -> q = ch
+                    ch == '#' && (i == 0 || text[i - 1].isWhitespace()) -> return true
+                }
+                i++
+            }
+            return false
+        }
+
         const val NESTED_CDM = "Run `cdm` commands on their own, not inside `cdm run`."
 
         private val GRADLE = setOf("gradle", "gradlew")

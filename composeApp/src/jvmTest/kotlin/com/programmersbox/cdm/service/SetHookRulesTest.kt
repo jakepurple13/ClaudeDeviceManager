@@ -110,7 +110,7 @@ class SetHookRulesTest {
     @Test fun runAllExportsCommaList() = runTest {
         holdSet()
         assertEquals(
-            "( export ANDROID_SERIAL=p1-usb,p2-usb; ${vars}./gradlew connectedDebugAndroidTest )",
+            "( unset CDM_IOS_UDID CDM_IOS_PAIR_UDID; export ANDROID_SERIAL=p1-usb,p2-usb; ${vars}./gradlew connectedDebugAndroidTest )",
             bash("cdm run all -- ./gradlew connectedDebugAndroidTest").cmd(),
         )
         bash("cdm run all -- adb -s p3-usb shell ls").reason()
@@ -288,6 +288,66 @@ class SetHookRulesTest {
         assertEquals(HookDecider.AFFECTS_OTHERS, bash("adb disconnect 10.0.0.9:5555 && cdm run android1 -- adb shell ls").reason())
         assertEquals(HookDecider.AFFECTS_OTHERS, bash("adb kill-server; cdm run android1 -- adb shell ls").reason())
         assertTrue("cdm run <name>" in bash("/usr/local/bin/cdm run android1 -- adb shell ls").reason())
+    }
+
+    private val memberVarDeny = "Don't set the CDM_ANDROID<N>/CDM_IOS<N> variables; Device Manager exports them for your devices."
+
+    @Test fun settingMemberVariableDeniedWithoutRun() = runTest {
+        holdSet(iosPhone)
+        assertEquals(memberVarDeny, bash("export CDM_ANDROID1_SERIAL=p3-usb; adb -s \$CDM_ANDROID1_SERIAL shell ls").reason())
+        assertEquals(memberVarDeny, bash("CDM_ANDROID1_SERIAL=p3-usb adb -s \$CDM_ANDROID1_SERIAL shell ls").reason())
+        assertEquals(memberVarDeny, bash("adb -s \${CDM_ANDROID1_SERIAL:-p3-usb} shell ls").reason())
+        assertEquals(memberVarDeny, bash("read CDM_ANDROID1_SERIAL; adb -s \$CDM_ANDROID1_SERIAL shell ls").reason())
+        assertEquals(memberVarDeny, bash("export CDM_IOS1_UDID=$u2; xcrun simctl launch \$CDM_IOS1_UDID x").reason())
+        assertEquals(memberVarDeny, bash("unset CDM_IOS1_UDID").reason())
+        // Plain reads stay allowed.
+        assertIs<HookReply.Rewrite>(bash("adb -s \$CDM_ANDROID1_SERIAL shell ls"))
+        assertIs<HookReply.Rewrite>(bash("xcrun simctl launch \${CDM_IOS1_UDID} x"))
+    }
+
+    @Test fun settingMemberVariableDeniedInRun() = runTest {
+        holdSet(iosPhone)
+        assertEquals(memberVarDeny, bash("cdm run android1 -- CDM_ANDROID1_SERIAL=p3-usb adb -s \$CDM_ANDROID1_SERIAL shell ls").reason())
+        assertEquals(memberVarDeny, bash("export CDM_ANDROID2_SERIAL=p3-usb; cdm run all -- adb -s \$CDM_ANDROID2_SERIAL shell ls").reason())
+        assertEquals(memberVarDeny, bash("cdm run ios1 -- CDM_IOS1_UDID=$u2 xcrun simctl launch \$CDM_IOS1_UDID x").reason())
+        assertEquals(memberVarDeny, bash("cdm run all -- xcrun simctl launch \${CDM_IOS1_UDID:=$u2} x").reason())
+    }
+
+    @Test fun queuedSetHolderDoesNotGrabOnFirstUse() = runTest {
+        allocator.tryGrab(h2, Wants(emptySet()), p1.key)
+        allocator.tryGrab(HolderId("s3"), Wants(emptySet()), p2.key)
+        assertEquals(1, allocator.enqueueSet(h, SetRequest(listOf(androidPhone, androidPhone))))
+        val expected = "You're waiting for a device set (#1 in line). Run `cdm acquire` again to keep waiting, " +
+            "or `cdm release` to leave the queue."
+        assertEquals(expected, bash("adb -s p3-usb shell ls").reason())
+        assertEquals(expected, bash("xcrun simctl launch $u1 x").reason())
+        assertEquals(expected, bash("cdm run android1 -- adb shell ls").reason())
+        assertTrue(allocator.holdingsOf(h).isEmpty())
+        assertNotNull(assertIs<com.programmersbox.cdm.core.allocator.HolderStatus.Queued>(allocator.statusOf(h)).set)
+        assertEquals(HookReply.NoOpinion, bash("ls"))
+    }
+
+    @Test fun runAllUnsetsAmbientIosUdid() = runTest {
+        holdSet(iosPhone)
+        val r = bash("cd app && cdm run all -- ./gradlew connectedCheck").cmd()
+        assertTrue(r.startsWith("export ANDROID_SERIAL=use-cdm-run; export CDM_IOS_UDID=$u1; "), r)
+        assertTrue("&& ( unset CDM_IOS_UDID CDM_IOS_PAIR_UDID; export ANDROID_SERIAL=p1-usb,p2-usb; " in r, r)
+    }
+
+    @Test fun commentInRunClosesSubshellOnNewLine() = runTest {
+        holdSet()
+        assertEquals(
+            "( export ANDROID_SERIAL=p1-usb; ${vars}adb shell ls # note\n)",
+            bash("cdm run android1 -- adb shell ls # note").cmd(),
+        )
+        assertEquals(
+            "( export ANDROID_SERIAL=p1-usb; ${vars}adb shell ls # note\n)\n( export ANDROID_SERIAL=p2-usb; ${vars}adb shell ls )",
+            bash("cdm run android1 -- adb shell ls # note\ncdm run android2 -- adb shell ls").cmd(),
+        )
+        // On one line, the second run was part of the comment: rewriting would make it run.
+        bash("cdm run android1 -- adb shell ls # note && cdm run android2 -- adb reboot").reason()
+        // Not comments: `#` inside quotes or a word.
+        assertTrue(bash("cdm run android1 -- adb shell 'echo #x' a#b").cmd().endsWith("a#b )"))
     }
 
     @Test fun runChainedWithOtherAndCdmSegments() = runTest {
