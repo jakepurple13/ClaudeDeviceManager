@@ -99,11 +99,11 @@ tasks.matching { it.name.startsWith("package") }.configureEach {
 // and the files it needs are kept, plus Google's NOTICE.txt. The app prefers an adb the user already has (see
 // AdbLocator) and only falls back to this copy. Linux platform-tools are x86-64 only, so Linux arm64 builds ship none.
 // Bump: change the version, then copy each zip's sha256 from `shasum -a 256 platform-tools_r<v>-<os>.zip`.
-val platformToolsVersion = "37.0.2"
+val platformToolsVersion = "37.0.1"
 val platformToolsSha256 = mapOf(
-    "darwin" to "de86d62321ad38049d488fb1854c7b9a29f7e1b17e8dfb597c304b038cc37ae7",
-    "linux" to "dfc80a84a6710e5674415d4b55ae599c01aa4961822f53097d747472f410f157",
-    "win" to "6d93a5e63bc1654b70b7b94bec5c6ab46db113df0265beb314055dd253772b58",
+    "darwin" to "ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d",
+    "linux" to "d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1",
+    "win" to "45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99",
 )
 
 abstract class DownloadAdbTask : DefaultTask() {
