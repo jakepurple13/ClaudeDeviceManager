@@ -199,8 +199,15 @@ class DeviceManagerService(
                 ?.let { devicePlatforms(CommandClassifier.withoutCdmRun(it)) }.orEmpty()
             val set = allocator.setOf(holder)
             if (set != null) {
-                // A set shares one timer: activity on any member resets it. The log names every touched member.
-                val members = set.members.filter { it.platform in touched }
+                // A set shares one timer: activity on any member resets it. The log names each `cdm run` target, or,
+                // for `cdm run all`, an empty target or no `cdm run`, every member on a touched platform.
+                val onTouched = set.members.filter { it.platform in touched }
+                val targets = input.command?.let(CommandClassifier::cdmRuns).orEmpty().map { it.target }
+                val members = if (targets.isEmpty() || targets.any { it.isEmpty() || it == "all" }) {
+                    onTouched
+                } else {
+                    onTouched.filter { it.name in targets }
+                }
                 if (members.isNotEmpty()) allocator.recordSetActivity(holder)
                 r to members.map { it.device }
             } else {

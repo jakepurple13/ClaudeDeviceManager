@@ -609,6 +609,13 @@ class DeviceManagerServiceTest {
         now = t0 + 3.minutes
         s.preToolUse(bash("cdm run android1 -- adb shell ls"))
         assertEquals(now, s.snapshot.value.sets.getValue(h1).lastActivity)
+        // Logged against the named member only (the inserts finish before preToolUse returns).
+        val android1 = s.snapshot.value.sets.getValue(h1).members.single { it.name == "android1" }.device
+        waitFor { activity.recent().first().any { it.kind == "command" && it.text == "cdm run android1 -- adb shell ls" } }
+        assertEquals(
+            listOf(android1.hardwareSerial),
+            activity.recent().first().filter { it.kind == "command" && it.text == "cdm run android1 -- adb shell ls" }.map { it.deviceKey },
+        )
     }
 
     /** Polls a Room-backed condition; Room answers on real threads. */

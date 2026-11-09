@@ -301,7 +301,7 @@ class CdmServerTest {
                 ),
                 m.lastSet!!.members,
             )
-            for (bad in listOf("android:0", "android:-1", "android:x:y:z", "windows:1", "android:2:", "android::phone", "android:0:phone")) {
+            for (bad in listOf("android:0", "android:-1", "android:x:y:z", "windows:1", "android:2:", "android::phone", "android:0:phone", "android:65")) {
                 val r = client.post("/cdm/acquire?holder=s:main&cwd=/x&member=$bad&member=ios:1")
                 assertEquals(HttpStatusCode.BadRequest, r.status, bad)
             }
@@ -320,9 +320,11 @@ class CdmServerTest {
             memberWants("android:2:phone,watch", setOf(Category.TABLET), true).getOrThrow(),
         )
         assertEquals(List(2) { Wants(setOf(Category.TABLET), Platform.ANDROID) }, memberWants("android:2", setOf(Category.TABLET), null).getOrThrow())
-        for (bad in listOf("android:0", "android:-1", "android:x:y:z", "windows:1", ":1", "android:2:", "android::phone", "android:phone,", "android:99999999999")) {
+        for (bad in listOf("android:0", "android:-1", "android:x:y:z", "windows:1", ":1", "android:2:", "android::phone", "android:phone,", "android:99999999999", "android:65", "ios:65:phone")) {
             assertTrue(memberWants(bad, none, null).isFailure, bad)
         }
+        assertEquals(64, memberWants("android:64", none, null).getOrThrow().size)
+        assertEquals("bad member \"android:65\": count must be 1..64", memberWants("android:65", none, null).exceptionOrNull()?.message)
     }
 
     @Test
@@ -352,6 +354,36 @@ class CdmServerTest {
             val single = client.post("/cdm/acquire?holder=s:main&cwd=/x")
             assertEquals(HttpStatusCode.BadRequest, single.status)
             assertEquals("nope\n", single.bodyAsText())
+        }
+    }
+
+    /** An immediate refusal answers 400 even when the acquire finishes on another thread. */
+    @Test
+    fun immediateRefusalFromAnotherThreadIs400() {
+        val m = FakeManager().apply {
+            acquireSetImpl = { _, _, _, _, _ ->
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { AcquireResult.Refused("no") }
+            }
+            acquireImpl = { _, _, _, _, _ ->
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { AcquireResult.Refused("no") }
+            }
+        }
+        // The real CIO engine, whose dispatcher is multi-threaded.
+        val pf = java.nio.file.Files.createTempDirectory("cdm-race").resolve("port")
+        val server = CdmServer(m, port = 0, portFile = pf)
+        val port = kotlinx.coroutines.runBlocking { server.start() }
+        try {
+            val http = java.net.http.HttpClient.newHttpClient()
+            repeat(25) { i ->
+                val q = if (i % 2 == 0) "&member=android:2" else ""
+                val req = java.net.http.HttpRequest.newBuilder(java.net.URI("http://127.0.0.1:$port/cdm/acquire?holder=s:main&cwd=/x$q"))
+                    .POST(java.net.http.HttpRequest.BodyPublishers.noBody()).build()
+                val r = http.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+                assertEquals(400, r.statusCode(), "attempt $i")
+                assertEquals("no\n", r.body(), "attempt $i")
+            }
+        } finally {
+            server.stop()
         }
     }
 

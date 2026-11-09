@@ -283,9 +283,10 @@ private suspend fun ApplicationCall.respondAcquire(
             }
         } finally {
             positions.close()
-            firstEvent.complete(Unit)
         }
     }
+    // Only once the Deferred itself is complete, so the check below can't see an immediate answer as still pending.
+    result.invokeOnCompletion { firstEvent.complete(Unit) }
     withTimeoutOrNull(heartbeat) { firstEvent.await() }
     if (result.isCompleted && !queued.get()) {
         when (val r = result.await()) {
@@ -336,6 +337,9 @@ private fun AcquireResult.wireLines(): List<String> = when (this) {
 private val COUNT = Regex("-?[0-9]+")
 private val CATEGORY = Regex("[A-Za-z0-9_-]+")
 
+/** The most devices one `member=` may ask for. */
+private const val MAX_MEMBER_COUNT = 64
+
 /**
  * One `member=<android|ios>:<value>` of `/cdm/acquire`, expanded into one [Wants] per device. The value is empty
  * (one device), `N` (N devices), `cat` (one device of that category) or `N:cat`; `cat` may be a comma list, meaning
@@ -356,7 +360,7 @@ internal fun memberWants(param: String, categories: Set<Category>, virtual: Bool
     }
     val count = if (countText == null) 1 else {
         if (!COUNT.matches(countText)) return fail("count must be a number")
-        countText.toIntOrNull()?.takeIf { it >= 1 } ?: return fail("count must be at least 1")
+        countText.toIntOrNull()?.takeIf { it in 1..MAX_MEMBER_COUNT } ?: return fail("count must be 1..$MAX_MEMBER_COUNT")
     }
     val cats = if (catText == null) categories else {
         val ids = catText.split(',').map { it.trim() }
