@@ -90,18 +90,22 @@ private fun Waiting(state: QueueDetailState, vm: QueueDetailViewModel, onClose: 
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             SmallButton("Move to top", onClick = vm::onMoveToTop, enabled = state.position > 1)
             state.handOff.forEach { d ->
-                // A device of a held set can't be handed off: the set goes as a whole.
-                TooltipArea(
-                    tooltip = {
-                        Text(
-                            SET_MEMBER_HAND_OFF_HINT,
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(4.dp)).padding(6.dp),
-                        )
-                    },
-                    modifier = Modifier.animateContentSize(tween(200)),
-                ) {
-                    SmallButton("Hand it ${d.name} now", onClick = { vm.onHandOff(d.key) }, enabled = !d.partOfSet)
+                if (!d.partOfSet) {
+                    SmallButton("Hand it ${d.name} now", onClick = { vm.onHandOff(d.key) })
+                } else {
+                    // A device of a held set can't be handed off: the set goes as a whole.
+                    TooltipArea(
+                        tooltip = {
+                            Text(
+                                SET_MEMBER_HAND_OFF_HINT,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(4.dp)).padding(6.dp),
+                            )
+                        },
+                        modifier = Modifier.animateContentSize(tween(200)),
+                    ) {
+                        SmallButton("Hand it ${d.name} now", onClick = {}, enabled = false)
+                    }
                 }
             }
             SmallButton("Remove from queue", danger = true, onClick = {
