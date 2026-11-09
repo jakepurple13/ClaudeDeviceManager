@@ -44,9 +44,11 @@ if [ "$cmd" = "run" ]; then
   done < <(compgen -e)
   unknown() { echo "Unknown device name $name." >&2; exit 2; }
   has_var() { local v; for v in ${member_vars[@]+"${member_vars[@]}"}; do [ "$v" = "$1" ] && return 0; done; return 1; }
+  # Names are lowercase (`android2`, `ios1`), as the hook accepts them.
+  # (Character classes, not a-z: ranges can match uppercase in some locales.)
+  case "$name" in *[![:lower:][:digit:]]*) unknown ;; esac
   if [ ${#member_vars[@]} -gt 0 ]; then
     upper="$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
-    case "$upper" in *[!A-Z0-9]*) [ "$name" = "all" ] || unknown ;; esac
     if [ "$name" = "all" ]; then
       # Every Android member, in member order, as one comma list; iOS commands must name their member.
       list=""
@@ -69,6 +71,10 @@ if [ "$cmd" = "run" ]; then
   else
     # A single holder: android1 / ios1 are its pinned devices, already in ANDROID_SERIAL / CDM_IOS_UDID.
     case "$name" in android1|ios1|all) ;; *) unknown ;; esac
+    # The app is up but nothing is pinned: running unpinned could reach any device.
+    if [ -z "${ANDROID_SERIAL:-}" ] && [ -z "${CDM_IOS_UDID:-}" ]; then
+      echo 'You hold no devices. Run `cdm acquire` first.' >&2; exit 2
+    fi
   fi
   exec "${rest[@]:$((split + 1))}"
 fi
@@ -178,7 +184,11 @@ case "$cmd" in
     fi
     # A bare `cdm acquire` is a single request, which a queued set holder can't make.
     again='Run `cdm acquire` again to keep waiting.'
-    [ "$legacy" = 0 ] && again='Run the same `cdm acquire …` command again to keep waiting.'
+    again_answer='Run `cdm acquire` again.'
+    if [ "$legacy" = 0 ]; then
+      again='Run the same `cdm acquire …` command again to keep waiting.'
+      again_answer='Run the same `cdm acquire …` command again.'
+    fi
     acquire_end=$((SECONDS + ACQUIRE_TIMEOUT))
     last_pos=""
     while :; do
@@ -231,7 +241,7 @@ case "$cmd" in
       # Past the wait's end, stop like a server-side timeout would.
       if [ "$SECONDS" -ge "$acquire_end" ]; then
         if [ -n "$last_pos" ]; then echo "Still queued at position $last_pos. $again"; exit 0; fi
-        echo "Device Manager didn't answer. Run \`cdm acquire\` again."; exit 1
+        echo "Device Manager didn't answer. $again_answer"; exit 1
       fi
       sleep 1
       connect || not_running

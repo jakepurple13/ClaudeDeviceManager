@@ -502,6 +502,63 @@ class CdmScriptTest {
     }
 
     @Test
+    fun runRejectsUppercaseNames() {
+        val r = runWithEnv(setEnv, "run", "Android1", "--", "echo", "hi")
+        assertEquals(2, r.code)
+        assertEquals("Unknown device name Android1.\n", r.err)
+        withServer(FakeManager()) { pf ->
+            val s = runWithEnv(mapOf("ANDROID_SERIAL" to "SER1"), "run", "ANDROID1", "--", "echo", "hi", portFile = pf)
+            assertEquals(2, s.code)
+            assertEquals("Unknown device name ANDROID1.\n", s.err)
+        }
+    }
+
+    @Test
+    fun runWithAppButNoPinSaysHoldNothing() {
+        withServer(FakeManager()) { pf ->
+            for (name in listOf("android1", "ios1", "all")) {
+                val r = runWithEnv(emptyMap(), "run", name, "--", "echo", "hi", portFile = pf)
+                assertEquals(2, r.code, name)
+                assertEquals("", r.out)
+                assertEquals("You hold no devices. Run `cdm acquire` first.\n", r.err)
+            }
+            val ios = runWithEnv(mapOf("CDM_IOS_UDID" to "U1"), "run", "ios1", "--", "sh", "-c", "echo \$CDM_IOS_UDID", portFile = pf)
+            assertEquals("U1\n", ios.out)
+        }
+    }
+
+    /** An app that answers the ping but ends every acquire stream without a verdict. */
+    private fun silentApp(f: (Path) -> Unit) {
+        val http = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        http.createContext("/cdm/ping") { ex -> val b = "cdm-ok".toByteArray(); ex.sendResponseHeaders(200, b.size.toLong()); ex.responseBody.use { it.write(b) } }
+        http.createContext("/cdm/acquire") { ex -> ex.sendResponseHeaders(200, -1); ex.close() }
+        http.start()
+        try {
+            val pf = dir.resolve("silent-port").also { Files.writeString(it, http.address.port.toString()) }
+            f(pf)
+        } finally {
+            http.stop(0)
+        }
+    }
+
+    @Test
+    fun noAnswerSaysRunTheSameCommandForSets() {
+        silentApp { pf ->
+            fun acquire(vararg extra: String): String {
+                val pb = ProcessBuilder(listOf(script.toString(), "acquire", *base, *extra)).redirectErrorStream(true)
+                pb.environment()["CDM_PORT_FILE"] = pf.toString()
+                pb.environment()["CDM_ACQUIRE_TIMEOUT"] = "1"
+                val p = pb.start()
+                val out = p.inputStream.bufferedReader().readText()
+                assertTrue(p.waitFor(60, TimeUnit.SECONDS))
+                return out
+            }
+            assertEquals("Device Manager didn't answer. Run the same `cdm acquire …` command again.\n", acquire("--android", "2"))
+            assertEquals("Device Manager didn't answer. Run `cdm acquire` again.\n", acquire())
+        }
+    }
+
+    @Test
     fun runMissingDashDashExits2() {
         val r = run(dir.resolve("nope"), "run", "android1", "echo", "hi")
         assertEquals(2, r.code, r.out)
