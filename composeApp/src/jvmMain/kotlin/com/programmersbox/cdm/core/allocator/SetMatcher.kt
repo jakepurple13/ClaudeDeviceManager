@@ -1,22 +1,34 @@
 package com.programmersbox.cdm.core.allocator
 
 import com.programmersbox.cdm.core.model.Category
+import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.Platform
 
 /**
  * Bipartite matching of set specs to candidate devices (Kuhn's augmenting paths).
  * A candidate with [AllocDevice.partner] stands for its whole pair: it fits a spec when either side fits,
  * and the side that fits is the returned device. The caller passes each pair once, as its primary.
+ * The primary side is returned as passed (partner kept). The partner side is looked up with `partner` (its own
+ * partner set to the primary), falling back to a device synthesized from the primary (other category, no serials,
+ * pointing back at the primary).
  */
 object SetMatcher {
     /** One device per spec, in spec order, or null when the specs cannot all be met. */
-    fun assign(specs: List<Wants>, candidates: List<AllocDevice>): List<AllocDevice>? {
-        val m = match(specs, candidates)
+    fun assign(
+        specs: List<Wants>,
+        candidates: List<AllocDevice>,
+        partner: (DeviceKey) -> AllocDevice? = { null },
+    ): List<AllocDevice>? {
+        val m = match(specs, candidates, partner)
         return if (m.size == specs.size) specs.indices.map { m.getValue(it) } else null
     }
 
     /** Spec index to device for a maximum matching. */
-    fun maxPartial(specs: List<Wants>, candidates: List<AllocDevice>): Map<Int, AllocDevice> = match(specs, candidates)
+    fun maxPartial(
+        specs: List<Wants>,
+        candidates: List<AllocDevice>,
+        partner: (DeviceKey) -> AllocDevice? = { null },
+    ): Map<Int, AllocDevice> = match(specs, candidates, partner)
 
     /** `android1`, `ios1`, `android2`... in spec order. */
     fun names(specs: List<Wants>): List<String> {
@@ -28,24 +40,38 @@ object SetMatcher {
         }
     }
 
-    private fun sides(c: AllocDevice): List<AllocDevice> {
+    private fun sides(c: AllocDevice, lookup: (DeviceKey) -> AllocDevice?): List<AllocDevice> {
         val partner = c.partner ?: return listOf(c)
-        val other = c.copy(
+        // The looked-up partner always points back at the primary, so the pair is held whole even if listed one-sided.
+        val other = lookup(partner)?.copy(partner = c.key) ?: c.copy(
             key = partner,
             name = c.name,
             category = if (c.category == Category.WATCH) Category.PHONE else Category.WATCH,
             connectedSerials = emptyList(),
-            partner = null,
+            partner = c.key,
         )
-        return listOf(c.copy(partner = null), other)
+        return listOf(c, other)
     }
 
-    private fun match(specs: List<Wants>, candidates: List<AllocDevice>): Map<Int, AllocDevice> {
-        val options = candidates.map { sides(it) }
+    private fun match(
+        specs: List<Wants>,
+        candidates: List<AllocDevice>,
+        lookup: (DeviceKey) -> AllocDevice?,
+    ): Map<Int, AllocDevice> {
+        val options = candidates.map { sides(it, lookup) }
         val owner = IntArray(candidates.size) { -1 } // candidate -> spec
         val side = arrayOfNulls<AllocDevice>(candidates.size)
 
         fun augment(spec: Int, seen: BooleanArray): Boolean {
+            // An unowned fit first, so specs take candidates in list order when nothing needs moving.
+            for ((ci, opts) in options.withIndex()) {
+                if (seen[ci] || owner[ci] != -1) continue
+                val fit = opts.firstOrNull { specs[spec].fits(it) } ?: continue
+                seen[ci] = true
+                owner[ci] = spec
+                side[ci] = fit
+                return true
+            }
             for ((ci, opts) in options.withIndex()) {
                 if (seen[ci]) continue
                 val fit = opts.firstOrNull { specs[spec].fits(it) } ?: continue

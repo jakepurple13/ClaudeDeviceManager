@@ -20,6 +20,12 @@ data class Timers(val idle: Duration = 15.minutes, val editing: Duration = 5.min
  * [HolderStatus.Holding.device] is the requested key and [HolderStatus.Holding.partner] the other. Both keys map to
  * the holder in [holds]. A pair is grantable only when the partner is listed, connected, usable and free. Release,
  * hand-off and timeouts act on the pair as a unit.
+ *
+ * A holder may instead hold one **set** ([HeldSet]): several devices granted all at once by [tryGrabSet] or from
+ * the queue ([enqueueSet]), never partially. A holder has either per-platform holds or one set, never both. Every
+ * member's device (and partner) maps to the holder in [holds]. Releasing one member from the app, or marking it
+ * don't-use with release, releases the whole set; [release] with a platform keeps the other members, names unchanged.
+ * Hand-off does not apply to set members.
  */
 class Allocator(
     private val clock: () -> Instant,
@@ -32,6 +38,12 @@ class Allocator(
     private val holds = LinkedHashMap<DeviceKey, HolderId>()
     private val queue = ArrayList<HolderId>()
     private val queueWants = HashMap<HolderId, Wants>()
+
+    /** Queue entries that ask for a set; such a holder has no [queueWants] entry. */
+    private val queueSets = HashMap<HolderId, SetRequest>()
+
+    /** Held sets, in grant order. */
+    private val sets = LinkedHashMap<HolderId, HeldSet>()
     private val blockedHolders = LinkedHashSet(blocked)
 
     /** When a queued holder's waiter detached. Absent means attached (or never detached). */
@@ -45,31 +57,85 @@ class Allocator(
 
     fun snapshot(): AllocatorSnapshot {
         val all = LinkedHashMap<HolderId, HolderStatus>()
-        (holdings.keys + released.keys).forEach { all[it] = statusOf(it) }
+        (holdings.keys + sets.keys + released.keys).forEach { all[it] = statusOf(it) }
         queue.forEach { all[it] = statusOf(it) }
         blockedHolders.forEach { all[it] = HolderStatus.Blocked }
         val held = holdings.filterValues { it.isNotEmpty() }.mapValues { it.value.values.toList() }
-        return AllocatorSnapshot(devices.toList(), holds.toMap(), queue.toList(), all, held)
+        return AllocatorSnapshot(devices.toList(), holds.toMap(), queue.toList(), all, held, sets = sets.toMap())
     }
 
-    /** Blocked, then Queued, then the first live hold, then the most recent release, then None. */
+    /** Blocked, then Queued, then the held set, then the first live hold, then the most recent release, then None. */
     fun statusOf(holder: HolderId): HolderStatus {
         if (holder in blockedHolders) return HolderStatus.Blocked
-        val i = queue.indexOf(holder)
-        if (i >= 0) return HolderStatus.Queued(i + 1, queueWants[holder] ?: Wants(emptySet()))
+        queuedStatus(holder)?.let { return it }
+        sets[holder]?.let { return HolderStatus.HoldingSet(it) }
         holdings[holder]?.values?.firstOrNull()?.let { return it }
         return released[holder]?.values?.lastOrNull() ?: HolderStatus.None
     }
 
     fun holdingsOf(holder: HolderId): List<HolderStatus.Holding> = holdings[holder]?.values?.toList().orEmpty()
 
-    /** The holder's status for one [platform]: Blocked, then its hold there, then Queued, then that platform's last release, then None. */
+    /**
+     * The holder's status for one [platform]: Blocked, then its hold there (or its set, when the set has a member on
+     * [platform]), then Queued, then that platform's last release, then None.
+     */
     fun statusOf(holder: HolderId, platform: Platform): HolderStatus {
         if (holder in blockedHolders) return HolderStatus.Blocked
         holdings[holder]?.get(platform)?.let { return it }
-        val i = queue.indexOf(holder)
-        if (i >= 0) return HolderStatus.Queued(i + 1, queueWants[holder] ?: Wants(emptySet()))
+        sets[holder]?.takeIf { s -> s.members.any { it.platform == platform } }?.let { return HolderStatus.HoldingSet(it) }
+        queuedStatus(holder)?.let { return it }
         return released[holder]?.get(platform) ?: HolderStatus.None
+    }
+
+    /** The holder's set, or null if it holds none. */
+    fun setOf(holder: HolderId): HeldSet? = sets[holder]
+
+    private fun queuedStatus(holder: HolderId): HolderStatus.Queued? {
+        val i = queue.indexOf(holder)
+        if (i < 0) return null
+        return HolderStatus.Queued(i + 1, queueWants[holder] ?: Wants(emptySet()), queueSets[holder])
+    }
+
+    /** True when [holder] holds a set or any single device. */
+    private fun holdsAnything(holder: HolderId): Boolean = holder in sets || holdings[holder]?.isNotEmpty() == true
+
+    /**
+     * True when some assignment of [req]'s members fits the listed devices that are not don't-use, ignoring holds and
+     * connection. A pair counts only when its partner is listed and not don't-use too.
+     */
+    fun feasible(req: SetRequest): Boolean {
+        val usableKeys = devices.filter { !it.dontUse }.map { it.key }.toSet()
+        val candidates = devices.filter { d -> d.key in usableKeys && d.partner?.let { it in usableKeys } != false }
+        return SetMatcher.assign(req.members, onePerPair(candidates), ::listed) != null
+    }
+
+    /**
+     * Grants every member of [req] at once, or nothing. [GrabSetResult.NoneFree] when the holder already holds
+     * anything or the free devices don't cover the request; [GrabSetResult.Impossible] when no listed devices could
+     * (see [feasible]).
+     */
+    fun tryGrabSet(holder: HolderId, req: SetRequest): GrabSetResult {
+        if (holder in blockedHolders) return GrabSetResult.Blocked
+        if (holdsAnything(holder)) return GrabSetResult.NoneFree
+        if (!feasible(req)) return GrabSetResult.Impossible
+        val assigned = SetMatcher.assign(req.members, freeCandidates(), ::listed) ?: return GrabSetResult.NoneFree
+        return GrabSetResult.Granted(grantSet(holder, req, assigned))
+    }
+
+    /**
+     * Queues [holder] for [req] and returns its 1-based position, or 0 if it is blocked or already holds anything.
+     * An already-queued holder keeps its place; its request (set or single) is replaced with [req].
+     */
+    fun enqueueSet(holder: HolderId, req: SetRequest): Int {
+        if (holder in blockedHolders || holdsAnything(holder)) return 0
+        val existing = queue.indexOf(holder)
+        queueWants.remove(holder)
+        queueSets[holder] = req
+        if (existing >= 0) return existing + 1
+        queue.add(holder)
+        released[holder]?.let { r -> req.members.mapNotNull { it.platform }.forEach { r.remove(it) } }
+        emit(AllocatorEvent.Queued(clock(), holder, Wants(emptySet())))
+        return queue.size
     }
 
     fun setDevices(devices: List<AllocDevice>) {
@@ -87,6 +153,7 @@ class Allocator(
      */
     fun tryGrab(holder: HolderId, wants: Wants, specific: DeviceKey? = null): GrabResult {
         if (holder in blockedHolders) return GrabResult.Blocked
+        if (holder in sets) return GrabResult.NoneFree
         if (specific != null) {
             val d = devices.firstOrNull { it.key == specific } ?: return GrabResult.NoneFree
             if (holds[d.key] == holder) return granted(known.getValue(d.key), holder)
@@ -115,7 +182,7 @@ class Allocator(
      * An already-queued holder keeps its place; its wanted categories are replaced with [wants].
      */
     fun enqueue(holder: HolderId, wants: Wants): Int {
-        if (holder in blockedHolders) return 0
+        if (holder in blockedHolders || holder in sets) return 0
         val satisfied = if (wants.platform != null) {
             holds(holder, wants.platform)
         } else {
@@ -124,6 +191,7 @@ class Allocator(
         if (satisfied) return 0
         val existing = queue.indexOf(holder)
         if (existing >= 0) {
+            queueSets.remove(holder)
             queueWants[holder] = wants
             return existing + 1
         }
@@ -134,21 +202,34 @@ class Allocator(
         return queue.size
     }
 
-    /** Releases the holder's hold on [platform], or every hold when [platform] is null. */
+    /**
+     * Releases the holder's hold on [platform], or every hold when [platform] is null. For a set, releases that
+     * platform's members (the rest stay held under their names), or the whole set when [platform] is null.
+     */
     fun release(holder: HolderId, reason: ReleaseReason, platform: Platform? = null) {
         holdingsOf(holder).filter { platform == null || it.platform == platform }.forEach { h ->
             free(h.device, holder, reason)
             passToQueue(h.device, except = holder)
         }
+        freeSet(holder, reason) { platform == null || it.platform == platform }.forEach { passToQueue(it, except = holder) }
     }
 
     /**
      * Releases [device] (with its partner, when it is one of a pair). With [block], the holder's other holds are
-     * released too and the holder is blocked.
+     * released too and the holder is blocked. For a set member, the whole set is released.
      */
     fun releaseDevice(device: DeviceKey, block: Boolean) {
         val holder = holds[device] ?: return
         if (block) removeFromQueueInternal(holder)
+        if (holder in sets) {
+            val freed = freeSet(holder, ReleaseReason.USER_RELEASE) { true }
+            if (block) {
+                blockedHolders.add(holder)
+                emit(AllocatorEvent.Blocked(clock(), holder))
+            }
+            freed.forEach { passToQueue(it, except = holder) }
+            return
+        }
         free(device, holder, ReleaseReason.USER_RELEASE)
         val others = if (block) holdingsOf(holder).map { it.device } else emptyList()
         others.forEach { free(it, holder, ReleaseReason.USER_RELEASE) }
@@ -163,10 +244,11 @@ class Allocator(
     /**
      * No-op if [to] is blocked or already holds a device of this device's platform, or the device is don't-use or
      * offline (no connected serials). [device] may be either key of a pair: the whole pair moves, keeping its
-     * primary, and only when the partner is usable too.
+     * primary, and only when the partner is usable too. A set member never moves, and a set holder never receives one.
      */
     fun handOff(device: DeviceKey, to: HolderId) {
         val old = holds[device] ?: return
+        if (old in sets || to in sets) return
         val primary = holdingOf(old, device)?.device ?: device
         val d = known[primary] ?: return
         if (old == to || to in blockedHolders || holds(to, d.platform)) return
@@ -213,7 +295,7 @@ class Allocator(
     /** Only valid after an idle/edit timeout of the [platform] hold; anything else is [GrabResult.NoneFree]. */
     fun tryRegrab(holder: HolderId, platform: Platform): GrabResult {
         if (holder in blockedHolders) return GrabResult.Blocked
-        if (holds(holder, platform)) return GrabResult.NoneFree
+        if (holder in sets || holds(holder, platform)) return GrabResult.NoneFree
         val st = released[holder]?.get(platform) ?: return GrabResult.NoneFree
         if (st.reason != ReleaseReason.IDLE_TIMEOUT && st.reason != ReleaseReason.EDIT_TIMEOUT) return GrabResult.NoneFree
         val d = devices.firstOrNull { it.key == st.lastDevice } ?: return GrabResult.NoneFree
@@ -223,13 +305,20 @@ class Allocator(
         return grant(holder, d)
     }
 
-    /** With [releaseNow], a held pair is released as a unit whichever of its keys is marked. */
+    /**
+     * With [releaseNow], a held pair is released as a unit whichever of its keys is marked, and a set member releases
+     * the whole set (its other devices go through the queue).
+     */
     fun setDontUse(device: DeviceKey, dontUse: Boolean, releaseNow: Boolean) {
         known[device]?.let { known[device] = it.copy(dontUse = dontUse) }
         devices = devices.map { if (it.key == device) it.copy(dontUse = dontUse) else it }
         if (dontUse) {
             val holder = holds[device]
-            if (holder != null && releaseNow) free(device, holder, ReleaseReason.DONT_USE)
+            if (holder != null && releaseNow && holder in sets) {
+                freeSet(holder, ReleaseReason.DONT_USE) { true }.forEach { passToQueue(it, except = holder) }
+            } else if (holder != null && releaseNow) {
+                free(device, holder, ReleaseReason.DONT_USE)
+            }
         } else {
             passToQueue(device)
         }
@@ -250,11 +339,12 @@ class Allocator(
         removeFromQueueInternal(holder)
         release(holder, reason)
         holdings.remove(holder)
+        sets.remove(holder)
         released.remove(holder)
     }
 
     fun endSession(sessionId: String) {
-        val all = (holds.values + queue + holdings.keys + released.keys).filter { it.sessionId == sessionId }.toSet()
+        val all = (holds.values + queue + holdings.keys + sets.keys + released.keys).filter { it.sessionId == sessionId }.toSet()
         all.forEach { endHolder(it, ReleaseReason.SESSION_END) }
     }
 
@@ -328,6 +418,7 @@ class Allocator(
         detachedAt.remove(holder)
         if (queue.remove(holder)) {
             queueWants.remove(holder)
+            queueSets.remove(holder)
             if (emitEvent) emit(AllocatorEvent.LeftQueue(clock(), holder))
         }
     }
@@ -337,19 +428,94 @@ class Allocator(
      * [except] is the holder that just gave the device up: it may still be queued for its other platform.
      * For one of a pair, both sides are offered at once: the first queued holder (in queue order) that fits either
      * side gets the pair, with the side it fits as primary. A side is offered only when its partner is usable and free.
+     *
+     * A queued set, met in queue order, is granted whole when the free devices cover every member. If that leaves
+     * [device] free, the walk goes on.
      */
     private fun passToQueue(device: DeviceKey, except: HolderId? = null) {
-        val sides = listOfNotNull(device, known[device]?.partner).distinct()
+        fun sides() = listOfNotNull(device, known[device]?.partner).distinct()
             .mapNotNull { k -> devices.firstOrNull { it.key == k } }
             .filter { it.key !in holds && !it.dontUse && it.connectedSerials.isNotEmpty() && partnerFree(it) }
-        if (sides.isEmpty()) return
-        for (holder in queue) {
-            if (holder == except || holder in blockedHolders) continue
+        if (sides().isEmpty()) return
+        for (holder in queue.toList()) {
+            if (holder == except || holder in blockedHolders || holder !in queue) continue
+            val req = queueSets[holder]
+            if (req != null) {
+                if (holdsAnything(holder)) continue
+                val assigned = SetMatcher.assign(req.members, freeCandidates(), ::listed) ?: continue
+                grantSet(holder, req, assigned)
+                if (sides().isEmpty()) return
+                continue
+            }
             val wants = queueWants[holder] ?: continue
-            val side = sides.firstOrNull { wants.fits(it) && !holds(holder, it.platform) } ?: continue
+            val side = sides().firstOrNull { wants.fits(it) && !holds(holder, it.platform) } ?: continue
             grant(holder, side)
             return
         }
+    }
+
+    /** The listed device with [key], or null. */
+    private fun listed(key: DeviceKey): AllocDevice? = devices.firstOrNull { it.key == key }
+
+    /** Each pair once: a device is dropped when its partner came earlier in [ds]. */
+    private fun onePerPair(ds: List<AllocDevice>): List<AllocDevice> {
+        val seen = HashSet<DeviceKey>()
+        return ds.filter { d ->
+            val keep = d.partner == null || d.partner !in seen
+            seen += d.key
+            keep
+        }
+    }
+
+    /** Free, connected, usable devices whose partner (if any) is free and usable too, each pair once. */
+    private fun freeCandidates(): List<AllocDevice> =
+        onePerPair(devices.filter { it.key !in holds && !it.dontUse && it.connectedSerials.isNotEmpty() && partnerFree(it) })
+
+    /** Grants [assigned] (one device per member of [req], in member order) to [holder] as one set. */
+    private fun grantSet(holder: HolderId, req: SetRequest, assigned: List<AllocDevice>): HeldSet {
+        removeFromQueueInternal(holder, emitEvent = false)
+        val now = clock()
+        val members = SetMatcher.names(req.members).mapIndexed { i, name ->
+            val d = assigned[i]
+            SetMember(name, req.members[i].platform!!, d.key, d.partner)
+        }
+        val set = HeldSet(members, since = now, lastActivity = now, editing = false)
+        sets[holder] = set
+        members.forEach { m ->
+            holds[m.device] = holder
+            m.partner?.let { holds[it] = holder }
+        }
+        released[holder]?.let { r ->
+            members.forEach { r.remove(it.platform) }
+            if (r.isEmpty()) released.remove(holder)
+        }
+        members.forEach { emit(AllocatorEvent.Granted(now, holder, it.device)) }
+        return set
+    }
+
+    /**
+     * Frees the holder's set members matching [which] (device and partner), emitting one Released per member and
+     * recording each platform's last release. The rest stay held under their names. Returns the freed keys.
+     */
+    private fun freeSet(holder: HolderId, reason: ReleaseReason, which: (SetMember) -> Boolean): List<DeviceKey> {
+        val set = sets[holder] ?: return emptyList()
+        val (gone, kept) = set.members.partition(which)
+        if (gone.isEmpty()) return emptyList()
+        if (kept.isEmpty()) sets.remove(holder) else sets[holder] = set.copy(members = kept)
+        val freed = ArrayList<DeviceKey>()
+        val r = released.getOrPut(holder) { LinkedHashMap() }
+        gone.forEach { m ->
+            listOfNotNull(m.device, m.partner).forEach { k ->
+                if (holds[k] == holder) {
+                    holds.remove(k)
+                    freed += k
+                }
+            }
+            r.remove(m.platform) // re-insert so the most recent release is last
+            r[m.platform] = HolderStatus.Released(reason, m.device)
+            emit(AllocatorEvent.Released(clock(), holder, m.device, reason))
+        }
+        return freed
     }
 
     /** Events held back between [deferEvents] and [flushEvents]; null when events go out at once. */

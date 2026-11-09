@@ -33,6 +33,25 @@ class SetMatcherTest {
         assertNull(SetMatcher.assign(listOf(iosPhone, iosWatch), listOf(iPair)))
     }
 
+    @Test fun primarySideKeepsPartner() {
+        val iosPhone = Wants(setOf(Category.PHONE), platform = Platform.IOS)
+        assertEquals(listOf(iPair), SetMatcher.assign(listOf(iosPhone), listOf(iPair)))
+    }
+
+    @Test fun partnerSideReturnsRealPartnerWhenLookedUp() {
+        val iosWatch = Wants(setOf(Category.WATCH), platform = Platform.IOS)
+        val realWatch = AllocDevice(
+            DeviceKey("IW"), "Apple Watch", Category.WATCH, false, listOf("IW"), platform = Platform.IOS, partner = DeviceKey("I"),
+        )
+        val lookup = { k: DeviceKey -> realWatch.takeIf { it.key == k } }
+        assertEquals(listOf(realWatch), SetMatcher.assign(listOf(iosWatch), listOf(iPair), lookup))
+        // Without a lookup the partner side is synthesized from the primary, pointing back at it.
+        val synth = SetMatcher.assign(listOf(iosWatch), listOf(iPair))!!.single()
+        assertEquals(DeviceKey("IW"), synth.key)
+        assertEquals(Category.WATCH, synth.category)
+        assertEquals(DeviceKey("I"), synth.partner)
+    }
+
     @Test fun maxPartialFindsLargest() {
         val p2 = p.copy(key = DeviceKey("P2"))
         assertEquals(2, SetMatcher.maxPartial(List(3) { androidPhone }, listOf(p, p2)).size)
