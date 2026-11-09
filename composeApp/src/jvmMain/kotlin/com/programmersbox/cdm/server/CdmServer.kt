@@ -3,6 +3,7 @@ package com.programmersbox.cdm.server
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
 import com.programmersbox.cdm.core.allocator.HolderStatus
+import com.programmersbox.cdm.core.allocator.SetRequest
 import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.HolderId
@@ -24,13 +25,18 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.io.path.Path
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -123,43 +129,41 @@ fun Application.cdmModule(manager: DeviceManager, heartbeat: Duration = 5.second
                 "false" -> false
                 else -> return@post call.respondText("bad virtual\n", status = HttpStatusCode.BadRequest)
             }
-            val asked = call.request.queryParameters["device"].orEmpty().trim()
-            val wants = if (asked.isEmpty()) {
-                Wants(categories, platform, virtual)
-            } else {
-                deviceWants(asked, manager.snapshot.value.devices, categories, platform, virtual)
-                    .getOrElse { return@post call.respondText("${it.message}\n", status = HttpStatusCode.BadRequest) }
-            }
             val timeout = (call.request.queryParameters["timeoutSec"]?.toLongOrNull() ?: DEFAULT_ACQUIRE_TIMEOUT_SEC).seconds
-            call.respondTextWriter(ContentType.Text.Plain) {
-                val out = Mutex()
-                suspend fun line(s: String) = out.withLock { write(s + "\n"); flush() }
-                coroutineScope {
-                    // Heartbeat: a write to a dead client fails, which cancels this scope and with it the acquire
-                    // (which detaches in its finally). Without it a disconnect goes unnoticed until the next real line.
-                    val beat = launch {
-                        while (true) {
-                            delay(heartbeat)
-                            line(".")
-                        }
-                    }
-                    val r = manager.acquire(holder, cwd, wants, timeout) { line("QUEUED $it") }
-                    beat.cancel()
-                    when (r) {
-                        is AcquireResult.Granted -> line("GRANTED ${r.platform.wire} ${r.serial} ${r.name}")
-                        is AcquireResult.TimedOut -> line("TIMEOUT ${r.position}")
-                        AcquireResult.Blocked -> line("BLOCKED")
-                        AcquireResult.Removed -> line("REMOVED")
-                    }
-                }
+            fun bad(e: Throwable) = "${e.message}\n"
+            // Member specs first, then one member per `device=`, each in the order given.
+            val members = call.request.queryParameters.getAll("member").orEmpty().flatMap { m ->
+                memberWants(m, categories, virtual).getOrElse { return@post call.respondText(bad(it), status = HttpStatusCode.BadRequest) }
             }
+            val asked = call.request.queryParameters.getAll("device").orEmpty().map { it.trim() }.filter { it.isNotEmpty() }
+            val devices = manager.snapshot.value.devices
+            if (members.size + asked.size > 1) {
+                val byDevice = asked.map { a ->
+                    deviceWants(a, devices, categories, null, virtual)
+                        .getOrElse { return@post call.respondText(bad(it), status = HttpStatusCode.BadRequest) }
+                }
+                val req = SetRequest(members + byDevice)
+                return@post call.respondAcquire(heartbeat) { manager.acquireSet(holder, cwd, req, timeout, it) }
+            }
+            // One member: today's single request.
+            val wants = when {
+                members.isNotEmpty() -> members.single()
+                asked.isNotEmpty() -> deviceWants(asked.single(), devices, categories, platform, virtual)
+                    .getOrElse { return@post call.respondText(bad(it), status = HttpStatusCode.BadRequest) }
+                else -> Wants(categories, platform, virtual)
+            }
+            call.respondAcquire(heartbeat) { manager.acquire(holder, cwd, wants, timeout, it) }
         }
         post("/cdm/release") {
             val holder = call.holder() ?: return@post call.respondText("missing holder\n", status = HttpStatusCode.BadRequest)
             val platform = call.platform().getOrElse { return@post call.respondText("bad platform\n", status = HttpStatusCode.BadRequest) }
-            val queuedFor = (manager.status(holder) as? HolderStatus.Queued)?.wants
+            val status = manager.status(holder)
+            val queuedFor = (status as? HolderStatus.Queued)?.wants
+            val set = (status as? HolderStatus.HoldingSet)?.set
+            // A queued set has no platform in its wants, so any release takes it out of the queue.
             val had = manager.holdings(holder).any { platform == null || it.platform == platform } ||
-                (queuedFor != null && (platform == null || queuedFor.platform == null || queuedFor.platform == platform))
+                (queuedFor != null && (platform == null || queuedFor.platform == null || queuedFor.platform == platform)) ||
+                set?.members?.any { platform == null || it.platform == platform } == true
             manager.release(holder, platform)
             call.respondText(if (had) "RELEASED\n" else "NONE\n")
         }
@@ -171,7 +175,13 @@ fun Application.cdmModule(manager: DeviceManager, heartbeat: Duration = 5.second
         get("/cdm/status") {
             val holder = call.holder() ?: return@get call.respondText("missing holder\n", status = HttpStatusCode.BadRequest)
             val status = manager.status(holder)
-            val lines = if (status == HolderStatus.Blocked) listOf("BLOCKED") else {
+            val lines = if (status == HolderStatus.Blocked) listOf("BLOCKED") else if (status is HolderStatus.HoldingSet) {
+                val devices = manager.snapshot.value.devices
+                status.set.members.map { m ->
+                    val d = devices.firstOrNull { it.key == m.device }
+                    "MEMBER ${m.name} ${m.platform.wire} ${d?.connectedSerials?.firstOrNull() ?: m.device.hardwareSerial} ${d?.name ?: m.device.hardwareSerial}"
+                }
+            } else {
                 // One line per hold, then the queue spot: a holder can hold one platform while queued for the other.
                 val devices = manager.snapshot.value.devices
                 manager.holdings(holder).map { h ->
@@ -250,6 +260,110 @@ internal fun deviceListText(snap: AllocatorSnapshot, holder: HolderId?): String 
         }
         "${serial.padEnd(width)}  ${d.name} · $os $kind · ${d.category.id} · $state\n"
     }
+}
+
+/**
+ * Answers `/cdm/acquire`. An answer that comes at once (a grant, a refusal) is sent as a plain response, so a
+ * [AcquireResult.Refused] can answer HTTP 400. Once the holder is queued, or [heartbeat] passes without an answer, the
+ * response streams: `QUEUED <n>` lines, `.` heartbeats, then the result lines.
+ */
+private suspend fun ApplicationCall.respondAcquire(
+    heartbeat: Duration,
+    acquire: suspend (onPosition: suspend (Int) -> Unit) -> AcquireResult,
+) = coroutineScope {
+    val positions = Channel<Int>(Channel.UNLIMITED)
+    val firstEvent = CompletableDeferred<Unit>()
+    val queued = AtomicBoolean(false)
+    val result = async {
+        try {
+            acquire { p ->
+                queued.set(true)
+                positions.send(p)
+                firstEvent.complete(Unit)
+            }
+        } finally {
+            positions.close()
+            firstEvent.complete(Unit)
+        }
+    }
+    withTimeoutOrNull(heartbeat) { firstEvent.await() }
+    if (result.isCompleted && !queued.get()) {
+        when (val r = result.await()) {
+            is AcquireResult.Refused -> respondText("${r.message}\n", status = HttpStatusCode.BadRequest)
+            else -> respondText(r.wireLines().joinToString("") { it + "\n" })
+        }
+        return@coroutineScope
+    }
+    respondTextWriter(ContentType.Text.Plain) {
+        val out = Mutex()
+        suspend fun line(s: String) = out.withLock { write(s + "\n"); flush() }
+        try {
+            coroutineScope {
+                // Heartbeat: a write to a dead client fails, which cancels the acquire (which detaches in its
+                // finally). Without it a disconnect goes unnoticed until the next real line.
+                val beat = launch {
+                    while (true) {
+                        delay(heartbeat)
+                        line(".")
+                    }
+                }
+                for (p in positions) line("QUEUED $p") // ends when the acquire returns
+                val r = result.await()
+                beat.cancel()
+                r.wireLines().forEach { line(it) }
+            }
+        } catch (e: Throwable) {
+            result.cancel()
+            throw e
+        }
+    }
+}
+
+/**
+ * The result lines of the `cdm` wire protocol. A set grant is one `MEMBER <name> <platform> <serial> <device name>`
+ * line per member, then `DONE`. A refusal is normally answered as HTTP 400 before streaming; mid-stream it is
+ * `REFUSED <message>`.
+ */
+private fun AcquireResult.wireLines(): List<String> = when (this) {
+    is AcquireResult.Granted -> listOf("GRANTED ${platform.wire} $serial $name")
+    is AcquireResult.TimedOut -> listOf("TIMEOUT $position")
+    AcquireResult.Blocked -> listOf("BLOCKED")
+    AcquireResult.Removed -> listOf("REMOVED")
+    is AcquireResult.GrantedSet -> members.map { "MEMBER ${it.name} ${it.platform.wire} ${it.serial} ${it.deviceName}" } + "DONE"
+    is AcquireResult.Refused -> listOf("REFUSED $message")
+}
+
+private val COUNT = Regex("-?[0-9]+")
+private val CATEGORY = Regex("[A-Za-z0-9_-]+")
+
+/**
+ * One `member=<android|ios>:<value>` of `/cdm/acquire`, expanded into one [Wants] per device. The value is empty
+ * (one device), `N` (N devices), `cat` (one device of that category) or `N:cat`; `cat` may be a comma list, meaning
+ * any of them. A member without a category takes [categories] (`--category`, empty for the project default).
+ * [virtual] applies to every member. Fails with a short message for anything else, a count below 1 included.
+ */
+internal fun memberWants(param: String, categories: Set<Category>, virtual: Boolean?): Result<List<Wants>> {
+    fun fail(why: String) = Result.failure<List<Wants>>(IllegalArgumentException("bad member \"$param\": $why"))
+    val platformName = param.substringBefore(':')
+    val platform = Platform.entries.firstOrNull { it.wire == platformName } ?: return fail("platform must be android or ios")
+    val value = param.substringAfter(':', "")
+    val parts = if (value.isEmpty()) emptyList() else value.split(':')
+    val (countText, catText) = when (parts.size) {
+        0 -> null to null
+        1 -> if (COUNT.matches(parts[0])) parts[0] to null else null to parts[0]
+        2 -> parts[0] to parts[1]
+        else -> return fail("expected N, a category, or N:category")
+    }
+    val count = if (countText == null) 1 else {
+        if (!COUNT.matches(countText)) return fail("count must be a number")
+        countText.toIntOrNull()?.takeIf { it >= 1 } ?: return fail("count must be at least 1")
+    }
+    val cats = if (catText == null) categories else {
+        val ids = catText.split(',').map { it.trim() }
+        if (ids.any { !CATEGORY.matches(it) || COUNT.matches(it) }) return fail("bad category")
+        ids.map(::Category).toSet()
+    }
+    return Result.success(List(count) { Wants(cats, platform, virtual) })
 }
 
 /** The platform's name in the `cdm` wire protocol: `android` or `ios`. */

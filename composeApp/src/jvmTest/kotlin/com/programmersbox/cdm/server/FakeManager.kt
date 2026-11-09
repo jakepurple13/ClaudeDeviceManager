@@ -2,6 +2,7 @@ package com.programmersbox.cdm.server
 
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
 import com.programmersbox.cdm.core.allocator.HolderStatus
+import com.programmersbox.cdm.core.allocator.SetRequest
 import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
@@ -29,6 +30,9 @@ open class FakeManager : DeviceManager {
     var statusImpl: (HolderId) -> HolderStatus = { HolderStatus.None }
     var holdingsImpl: (HolderId) -> List<HolderStatus.Holding> = { emptyList() }
     var lastWants: Wants? = null
+    var acquireSetImpl: suspend (HolderId, String, SetRequest, Duration, suspend (Int) -> Unit) -> AcquireResult =
+        { _, _, _, _, _ -> AcquireResult.Blocked }
+    var lastSet: SetRequest? = null
     var lastTimeout: Duration? = null
     val released = mutableListOf<Pair<HolderId, Platform?>>()
 
@@ -45,6 +49,11 @@ open class FakeManager : DeviceManager {
         lastWants = wants
         lastTimeout = timeout
         return acquireImpl(holder, cwd, wants, timeout, onPosition)
+    }
+    override suspend fun acquireSet(holder: HolderId, cwd: String, req: SetRequest, timeout: Duration, onPosition: suspend (Int) -> Unit): AcquireResult {
+        lastSet = req
+        lastTimeout = timeout
+        return acquireSetImpl(holder, cwd, req, timeout, onPosition)
     }
     override suspend fun release(holder: HolderId, platform: Platform?) { released += holder to platform }
     val renewed = mutableListOf<Pair<HolderId, Platform?>>()

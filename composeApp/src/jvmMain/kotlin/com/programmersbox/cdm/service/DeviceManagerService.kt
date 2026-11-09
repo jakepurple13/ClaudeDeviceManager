@@ -6,8 +6,11 @@ import com.programmersbox.cdm.core.allocator.Allocator
 import com.programmersbox.cdm.core.allocator.AllocatorEvent
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
 import com.programmersbox.cdm.core.allocator.GrabResult
+import com.programmersbox.cdm.core.allocator.GrabSetResult
+import com.programmersbox.cdm.core.allocator.HeldSet
 import com.programmersbox.cdm.core.allocator.HolderStatus
 import com.programmersbox.cdm.core.allocator.ReleaseReason
+import com.programmersbox.cdm.core.allocator.SetRequest
 import com.programmersbox.cdm.core.allocator.Timers
 import com.programmersbox.cdm.core.classify.CommandClassifier
 import com.programmersbox.cdm.core.classify.CommandKind
@@ -191,12 +194,21 @@ class DeviceManagerService(
                 in EDIT_TOOLS -> decider.onEdit(holder)
                 else -> HookReply.NoOpinion
             }
+            // `cdm run <name> -- ` prefixes are dropped, so the command inside counts.
             val touched = input.command?.takeIf { input.toolName == "Bash" && r !is HookReply.Deny }
-                ?.let(::devicePlatforms).orEmpty()
-            // Activity resets only the touched platform's hold; the log names that platform's held device.
-            touched.forEach { allocator.recordDeviceActivity(holder, it) }
-            val holds = allocator.holdingsOf(holder)
-            r to touched.mapNotNull { p -> holds.firstOrNull { it.platform == p }?.device }
+                ?.let { devicePlatforms(CommandClassifier.withoutCdmRun(it)) }.orEmpty()
+            val set = allocator.setOf(holder)
+            if (set != null) {
+                // A set shares one timer: activity on any member resets it. The log names every touched member.
+                val members = set.members.filter { it.platform in touched }
+                if (members.isNotEmpty()) allocator.recordSetActivity(holder)
+                r to members.map { it.device }
+            } else {
+                // Activity resets only the touched platform's hold; the log names that platform's held device.
+                touched.forEach { allocator.recordDeviceActivity(holder, it) }
+                val holds = allocator.holdingsOf(holder)
+                r to touched.mapNotNull { p -> holds.firstOrNull { it.platform == p }?.device }
+            }
         }
         val deviceCommand = input.command?.takeIf { devices.isNotEmpty() }
         book.touch(holder, input.cwd, input.agentType, deviceCommand)
@@ -233,6 +245,8 @@ class DeviceManagerService(
         book.touch(holder, cwd, null)
         val w = if (wants.categories.isEmpty()) wants.copy(categories = prefetchDefaultCategory(cwd).members()) else wants
         val first = locked {
+            // A single grab or enqueue would drop a queued set's entry and reservation, or can't apply to a held set.
+            if (isSetHolder(holder)) return@locked AcquireResult.Refused(SET_HOLDER)
             releaseUnfitting(holder, w)
             when (val g = allocator.tryGrab(holder, w)) {
                 is GrabResult.Granted -> allocator.holdingsOf(holder).firstOrNull { it.platform == g.device.platform }
@@ -246,6 +260,23 @@ class DeviceManagerService(
             }
         }
         if (first != null) return first
+        return waitInQueue(holder, timeout, onPosition) { resultFor(holder, w) }
+    }
+
+    /** True when [holder] holds a set or is queued for one. */
+    private fun isSetHolder(holder: HolderId): Boolean =
+        allocator.setOf(holder) != null || (allocator.statusOf(holder) as? HolderStatus.Queued)?.set != null
+
+    /**
+     * Waits (the holder is already queued and its waiter attached) until it leaves the queue or [timeout] passes,
+     * reporting each new position, then answers with [result]. The waiter detaches however this ends.
+     */
+    private suspend fun waitInQueue(
+        holder: HolderId,
+        timeout: Duration,
+        onPosition: suspend (Int) -> Unit,
+        result: () -> AcquireResult,
+    ): AcquireResult {
         try {
             var last = -1
             withTimeoutOrNull(timeout) {
@@ -260,7 +291,7 @@ class DeviceManagerService(
                     } else true
                 }
             }
-            return locked { resultFor(holder, w) }
+            return locked { result() }
         } finally {
             withContext(NonCancellable) { locked { allocator.detachWaiter(holder) } }
         }
@@ -310,6 +341,70 @@ class DeviceManagerService(
         )
     }
 
+    override suspend fun acquireSet(
+        holder: HolderId,
+        cwd: String,
+        req: SetRequest,
+        timeout: Duration,
+        onPosition: suspend (Int) -> Unit,
+    ): AcquireResult {
+        book.touch(holder, cwd, null)
+        val r = if (req.members.any { it.categories.isEmpty() }) {
+            val default = prefetchDefaultCategory(cwd).members()
+            SetRequest(req.members.map { if (it.categories.isEmpty()) it.copy(categories = default) else it })
+        } else {
+            req
+        }
+        val first = locked {
+            when {
+                allocator.statusOf(holder) == HolderStatus.Blocked -> return@locked AcquireResult.Blocked
+                allocator.setOf(holder) != null || allocator.holdingsOf(holder).isNotEmpty() ->
+                    return@locked AcquireResult.Refused(ALREADY_HOLDING)
+                !allocator.feasible(r) -> return@locked AcquireResult.Refused(INFEASIBLE)
+            }
+            when (val g = allocator.tryGrabSet(holder, r)) {
+                is GrabSetResult.Granted -> grantedSet(g.set)
+                GrabSetResult.Blocked -> AcquireResult.Blocked
+                GrabSetResult.Impossible -> AcquireResult.Refused(INFEASIBLE)
+                GrabSetResult.NoneFree -> {
+                    // 0: granted at once from the reservation (or nothing to queue for).
+                    if (allocator.enqueueSet(holder, r) == 0) {
+                        allocator.setOf(holder)?.let(::grantedSet) ?: AcquireResult.Removed
+                    } else {
+                        allocator.attachWaiter(holder)
+                        null
+                    }
+                }
+            }
+        }
+        if (first != null) return first
+        return waitInQueue(holder, timeout, onPosition) { resultForSet(holder) }
+    }
+
+    /** The answer once a set request stops waiting: the held set, or why there is none. */
+    private fun resultForSet(holder: HolderId): AcquireResult = when (val st = allocator.statusOf(holder)) {
+        HolderStatus.Blocked -> AcquireResult.Blocked
+        is HolderStatus.Queued -> AcquireResult.TimedOut(st.position)
+        else -> allocator.setOf(holder)?.let(::grantedSet) ?: AcquireResult.Removed
+    }
+
+    private fun grantedSet(set: HeldSet): AcquireResult.GrantedSet {
+        val devices = allocator.snapshot().devices
+        fun serialOf(k: com.programmersbox.cdm.core.model.DeviceKey) =
+            devices.firstOrNull { it.key == k }?.connectedSerials?.firstOrNull() ?: k.hardwareSerial
+        return AcquireResult.GrantedSet(
+            set.members.map { m ->
+                GrantedMember(
+                    m.name,
+                    m.platform,
+                    serialOf(m.device),
+                    devices.firstOrNull { it.key == m.device }?.name ?: m.device.hardwareSerial,
+                    m.partner?.let(::serialOf),
+                )
+            },
+        )
+    }
+
     override suspend fun release(holder: HolderId, platform: Platform?) {
         locked {
             // A queue entry goes too unless it is pinned to the platform that stays held.
@@ -324,7 +419,9 @@ class DeviceManagerService(
         val renewed = locked {
             val holds = allocator.holdingsOf(holder).filter { platform == null || it.platform == platform }
             holds.forEach { allocator.recordDeviceActivity(holder, it.platform) }
-            holds.isNotEmpty()
+            val set = allocator.setOf(holder)?.takeIf { s -> s.members.any { platform == null || it.platform == platform } }
+            if (set != null) allocator.recordSetActivity(holder)
+            holds.isNotEmpty() || set != null
         }
         if (renewed) book.touch(holder, null, null)
         return renewed
@@ -450,6 +547,9 @@ class DeviceManagerService(
 
     companion object {
         val EDIT_TOOLS = setOf("Edit", "Write", "MultiEdit", "NotebookEdit")
+        const val ALREADY_HOLDING = "You already hold devices. Run `cdm release` first."
+        const val INFEASIBLE = "No combination of the listed devices fits this request."
+        const val SET_HOLDER = "You hold a set of devices. Use `cdm run <name> -- …`, or run `cdm release` first."
         private val UPSERT_EVERY = 1.minutes
     }
 }
