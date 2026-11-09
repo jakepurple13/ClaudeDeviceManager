@@ -49,6 +49,8 @@ class HookDecider(
     private val setRules = SetHookRules(allocator, iosPinScript, timers, defaultCategory)
 
     private suspend fun decide(holder: HolderId, cwd: String, command: String): HookReply {
+        // A pin variable written other than as a literal NAME=value (read, printf -v, for … in, unset, …) can't be checked.
+        if (CommandClassifier.writesPinVarOtherwise(command)) return HookReply.Deny(PIN_VAR_WRITE)
         // `cdm run` commands, and every command from a set holder, follow the set rules.
         setRules.decide(holder, cwd, command)?.let { return it }
         var kinds = CommandClassifier.classifyAll(command)
@@ -520,6 +522,7 @@ class HookDecider(
                 "`maestro --device \$CDM_IOS_UDID …` for your iOS device, or run `cdm acquire --android` first " +
                 "for an Android one."
         const val PASS_IOS_DEVICE = "Pass the device explicitly: -destination id=\$CDM_IOS_UDID / --device \$CDM_IOS_UDID"
+        const val PIN_VAR_WRITE = "Set ANDROID_SERIAL/CDM_IOS_UDID only as a literal NAME=<your device>."
         const val USE_CDM_RUN = "You hold a set of devices. Run device commands with `cdm run <name> -- <command>`."
         private const val MORE_THAN_ONE =
             "This command names more than one device. A holder can use only one device at a time."

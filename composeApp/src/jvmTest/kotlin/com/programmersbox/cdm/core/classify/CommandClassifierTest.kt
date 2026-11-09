@@ -138,4 +138,27 @@ class CommandClassifierTest {
         assertEquals(listOf("B"), CommandClassifier.serialAssignments("env ANDROID_SERIAL=\"B\" scrcpy"))
         assertEquals(emptyList(), CommandClassifier.serialAssignments("MY_ANDROID_SERIAL=B x; echo \$ANDROID_SERIAL"))
     }
+
+    @Test
+    fun pinVarWritesFlattensSplitNames() {
+        val w = CommandClassifier.pinVarWrites("export ANDROID_\"SERIAL\"=p3; CDM_ANDROID\"1\"_SERIAL=x ./s.sh; read CDM_IOS_UDID")
+        assertEquals(
+            listOf(
+                CommandClassifier.PinVarWrite("ANDROID_SERIAL", "p3", dynamic = false),
+                CommandClassifier.PinVarWrite("CDM_ANDROID1_SERIAL", "x", dynamic = false),
+                CommandClassifier.PinVarWrite("CDM_IOS_UDID", null, dynamic = false),
+            ),
+            w,
+        )
+        assertEquals(emptyList(), CommandClassifier.pinVarWrites("echo \$ANDROID_SERIAL \${CDM_IOS_UDID} \${ANDROID_SERIAL:-x}; grep ANDROID_SERIAL= f"))
+        assertEquals(listOf("B C"), CommandClassifier.serialAssignments("export ANDROID_\"SERIAL\"='B C'; x"))
+        assertEquals(
+            listOf(CommandClassifier.PinVarWrite("ANDROID_SERIAL", "\$x", dynamic = true)),
+            CommandClassifier.pinVarWrites("ANDROID_SERIAL=\$x ./t.sh"),
+        )
+        assertEquals(
+            listOf(CommandClassifier.PinVarWrite("ANDROID_SERIAL", null, dynamic = false)),
+            CommandClassifier.pinVarWrites("printf -v ANDROID_SERIAL %s p3"),
+        )
+    }
 }

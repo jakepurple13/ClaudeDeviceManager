@@ -470,6 +470,7 @@ class SetHookRules(
         /**
          * True when a per-member variable name appears other than as a plain `$NAME` / `${NAME}` read: `NAME=`, `NAME+=`,
          * `${NAME:=…}`, `${NAME:-…}`, `export NAME`, `read NAME`, `unset NAME`, … Fails closed (`echo NAME` counts too).
+         * [CommandClassifier.pinVarWrites] adds names split by quotes or escapes (`CDM_ANDROID"1"_SERIAL=`).
          */
         private fun setsMemberVariable(command: String): Boolean = memberName.findAll(command).any { m ->
             val before = command.substring(0, m.range.first)
@@ -477,7 +478,7 @@ class SetHookRules(
             val plain = before.endsWith("$") && !before.endsWith("\\$")
             val braced = before.endsWith("\${") && after.startsWith("}")
             !(plain || braced)
-        }
+        } || CommandClassifier.pinVarWrites(command).any { memberName.matches(it.name) }
 
         /** True when [text] has a `#` comment: an unquoted, unescaped `#` that starts a word. */
         private fun hasComment(text: String): Boolean {

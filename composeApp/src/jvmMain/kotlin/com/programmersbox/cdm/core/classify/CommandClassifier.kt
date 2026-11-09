@@ -37,8 +37,6 @@ object CommandClassifier {
     /** `NAME=value` or `NAME+=value` (bash appends): both are assignment words before the command. */
     private val assignment = Regex("""^[A-Za-z_][A-Za-z0-9_]*\+?=.*""", RegexOption.DOT_MATCHES_ALL)
     private const val SERIAL_VAR = "ANDROID_SERIAL="
-    private val serialAssignment =
-        Regex("""(?<![A-Za-z0-9_])ANDROID_SERIAL=("(?:[^"\\]|\\.)*"|'[^']*'|[^\s;&|()<>]*)""")
 
     /** Each command segment, trimmed, with leading `(`/`{`, VAR=value and exec wrappers (sudo, timeout, env, …) stripped. */
     fun segments(command: String): List<String> =
@@ -82,12 +80,6 @@ object CommandClassifier {
     /** One `CDM_IOS_UDID=` / `CDM_IOS_PAIR_UDID=` assignment. [value] is null when it isn't a literal (`$x`, `$(…)`, backticks). */
     data class IosAssignment(val pair: Boolean, val value: String?)
 
-    private val iosUdidAssignment =
-        Regex("""(?<![A-Za-z0-9_])CDM_IOS_(PAIR_)?UDID(\+?)=("(?:[^"\\]|\\.)*"|'[^']*'|[^\s;&|()<>]*)""")
-
-    /** `${CDM_IOS_UDID=…}` / `${CDM_IOS_UDID:=…}` (and PAIR): these expansions assign wherever they appear. */
-    private val iosUdidExpansion = Regex("""\$\{CDM_IOS_(PAIR_)?UDID:?=([^}]*)}""")
-
     /**
      * Commands that only print or search their arguments and can't assign. A match in one of their arguments is
      * exempt, unless it sits inside `$(…)` or backticks (that runs as its own command).
@@ -120,33 +112,20 @@ object CommandClassifier {
     }
 
     /**
-     * Every `CDM_IOS_UDID=<value>` and `CDM_IOS_PAIR_UDID=<value>` in the raw text, plus every `${CDM_IOS_UDID=…}` /
-     * `${CDM_IOS_UDID:=…}` expansion. Fails closed: like [serialAssignments] it over-matches (a later assignment
-     * would override the hook's exported UDID; `bash -c '…'`, `eval`, `$(…)` and heredocs fed to a shell all count).
-     * The one exemption is text in an argument of a print/search command ([printOrSearch]: `echo "CDM_IOS_UDID=$x"`,
-     * `grep CDM_IOS_UDID= f`) that isn't nested in `$(…)` or backticks.
+     * Every `CDM_IOS_UDID=<value>` and `CDM_IOS_PAIR_UDID=<value>`, plus every `${CDM_IOS_UDID=…}` /
+     * `${CDM_IOS_UDID:=…}` expansion, as [pinVarWrites] finds them (split names included). Fails closed: it
+     * over-matches (`bash -c '…'`, `eval`, `$(…)` and heredocs fed to a shell all count). A `+=` gives a null value.
+     * Other writes (`read`, `unset`, ...) aren't listed here; [writesPinVarOtherwise] reports them.
      */
-    fun iosUdidAssignments(command: String): List<IosAssignment> {
-        val exempt = exemptRanges(command)
-        val words = iosUdidAssignment.findAll(command).filter { m ->
-            val at = m.range.first
-            // `${CDM_IOS_UDID=…}` is counted once, as an expansion below.
-            val inExpansion = at >= 2 && command[at - 1] == '{' && command[at - 2] == '$'
-            !inExpansion && exempt.none { at in it }
-        }.map { m ->
-            val raw = m.groupValues[3]
-            // `+=` appends to the current value; an unquoted or double-quoted `$` / backtick expands at run time.
-            val dynamic = m.groupValues[2].isNotEmpty() || (!raw.startsWith("'") && ('$' in raw || '`' in raw))
-            m.range.first to IosAssignment(m.groupValues[1].isNotEmpty(), if (dynamic) null else unquote(raw))
-        }
-        // These assign even inside an argument (`echo ${CDM_IOS_UDID:=x}`), so they are never exempt.
-        val expansions = iosUdidExpansion.findAll(command).map { m ->
-            val raw = m.groupValues[2]
-            val dynamic = '$' in raw || '`' in raw
-            m.range.first to IosAssignment(m.groupValues[1].isNotEmpty(), if (dynamic) null else unquote(raw))
-        }
-        return (words + expansions).sortedBy { it.first }.map { it.second }.toList()
-    }
+    fun iosUdidAssignments(command: String): List<IosAssignment> =
+        pinVarWrites(command).filter { (it.name == "CDM_IOS_UDID" || it.name == "CDM_IOS_PAIR_UDID") && it.value != null }
+            .map { IosAssignment(it.name == "CDM_IOS_PAIR_UDID", if (it.dynamic || it.append) null else it.value) }
+
+    /** True when [command] writes ANDROID_SERIAL, CDM_IOS_UDID or CDM_IOS_PAIR_UDID other than as a literal `NAME=value`. */
+    fun writesPinVarOtherwise(command: String): Boolean =
+        pinVarWrites(command).any { it.name in SINGLE_PIN_VARS && (it.value == null || (it.append && it.name == "ANDROID_SERIAL")) }
+
+    private val SINGLE_PIN_VARS = setOf("ANDROID_SERIAL", "CDM_IOS_UDID", "CDM_IOS_PAIR_UDID")
 
     /**
      * The argument spans (offsets in [command]) of top-level segments whose command word is in [printOrSearch],
@@ -169,6 +148,8 @@ object CommandClassifier {
             }
             if (word !in printOrSearch) continue
             if (word == "git" && !gitExempt(w)) continue
+            // `printf -v NAME` assigns its output to NAME.
+            if (word == "printf" && w.drop(1).any { it.startsWith("-v") }) continue
             val wordEnd = tokenEnd(seg, p)
             var start = -1
             for (i in s + wordEnd until e) {
@@ -236,11 +217,103 @@ object CommandClassifier {
     }
 
     /**
-     * Every `ANDROID_SERIAL=<value>` in the raw text, wherever it appears (inline, `export`, `env`, inside a subshell).
-     * A textual scan on purpose: it over-matches (`echo ANDROID_SERIAL=x`) rather than miss a re-targeting.
+     * Every `ANDROID_SERIAL=<value>`, wherever it appears (inline, `export`, `env`, inside a subshell, split as
+     * `ANDROID_"SERIAL"=`), as [pinVarWrites] finds them. Print/search arguments are exempt; anything else over-matches.
      */
     fun serialAssignments(command: String): List<String> =
-        serialAssignment.findAll(command).map { unquote(it.groupValues[1]) }.toList()
+        pinVarWrites(command).filter { it.name == "ANDROID_SERIAL" && !it.append }.mapNotNull { it.value }
+
+    /**
+     * One write to a pin variable (ANDROID_SERIAL, CDM_IOS_UDID, CDM_IOS_PAIR_UDID, or a set's per-member
+     * CDM_ANDROID<N>_SERIAL / CDM_IOS<N>_UDID / CDM_IOS<N>_PAIR_UDID). [value] is the assigned text for a `NAME=value`
+     * (or `${NAME:=value}`); null for any other mention that isn't a plain read (`read NAME`, `printf -v NAME`,
+     * `for NAME in`, `declare -n r=NAME`, `unset NAME`, ...). [dynamic]: the value expands at run time.
+     * [append]: `NAME+=value`, which adds to the current value (so [value] isn't what the variable ends up holding).
+     */
+    data class PinVarWrite(val name: String, val value: String?, val dynamic: Boolean, val append: Boolean = false)
+
+    private val pinVarName =
+        Regex("""(?<![A-Za-z0-9_])(ANDROID_SERIAL|CDM_IOS_UDID|CDM_IOS_PAIR_UDID|CDM_(?:ANDROID|IOS)\d+_(?:SERIAL|UDID|PAIR_UDID))(?![A-Za-z0-9_])""")
+
+    /** `${NAME=…}` / `${NAME:=…}`: these expansions assign wherever they appear, even in a printed argument. */
+    private val pinVarExpansion =
+        Regex("""\$\{(ANDROID_SERIAL|CDM_IOS_UDID|CDM_IOS_PAIR_UDID|CDM_(?:ANDROID|IOS)\d+_(?:SERIAL|UDID|PAIR_UDID)):?=([^}]*)}""")
+
+    /**
+     * [text] with quotes dropped and `\x` turned into `x`, so a split name (`ANDROID_"SERIAL"`, `ANDROID_\SERIAL`)
+     * reads as the name the shell sees. [quoted]: the char was inside quotes or escaped (so whitespace in it doesn't
+     * end a word); [literal]: single-quoted or escaped (a `$` there never expands). [from]: the original offset.
+     */
+    private class Flat(val text: String, val quoted: BooleanArray, val literal: BooleanArray, val from: IntArray)
+
+    private fun flatten(s: String): Flat {
+        val sb = StringBuilder()
+        val quoted = ArrayList<Boolean>()
+        val literal = ArrayList<Boolean>()
+        val from = ArrayList<Int>()
+        fun add(c: Char, q: Boolean, l: Boolean, at: Int) { sb.append(c); quoted += q; literal += l; from += at }
+        var q = 0.toChar()
+        var i = 0
+        while (i < s.length) {
+            val ch = s[i]
+            when {
+                ch == '\\' && i + 1 < s.length -> { add(s[i + 1], true, true, i + 1); i++ }
+                q == '\'' -> if (ch == '\'') q = 0.toChar() else add(ch, true, true, i)
+                q == '"' -> if (ch == '"') q = 0.toChar() else add(ch, true, false, i)
+                ch == '\'' || ch == '"' -> q = ch
+                else -> add(ch, false, false, i)
+            }
+            i++
+        }
+        return Flat(sb.toString(), quoted.toBooleanArray(), literal.toBooleanArray(), from.toIntArray())
+    }
+
+    /**
+     * Every write to a pin variable in [command], in order (see [PinVarWrite]). Fails closed: print/search arguments
+     * ([exemptRanges]) are skipped, then quotes and escapes are flattened away and every remaining mention of a pin
+     * variable name that isn't a `$NAME`, `${NAME}` or `${NAME:-…}` read counts. A `NAME=` / `${NAME:=…}` gives its
+     * value (checked like today's assignments); anything else gives a null value (deny it).
+     */
+    fun pinVarWrites(command: String): List<PinVarWrite> {
+        val blanked = StringBuilder(command)
+        for (r in exemptRanges(command)) for (i in r) if (command[i] != '\'' && command[i] != '"' && command[i] != '\\') blanked.setCharAt(i, ' ')
+        val f = flatten(blanked.toString())
+        val t = f.text
+        val out = mutableListOf<Pair<Int, PinVarWrite>>()
+        for (m in pinVarName.findAll(t)) {
+            val a = m.range.first
+            val b = m.range.last + 1
+            val name = m.value
+            val before = t.getOrNull(a - 1)
+            if (before == '$') continue
+            if (before == '{' && t.getOrNull(a - 2) == '$') {
+                val rest = t.substring(b)
+                // Reads, and `${NAME=…}` / `${NAME:=…}` (counted on the raw text below).
+                if (rest.startsWith("}") || rest.startsWith(":-") || rest.startsWith("-") ||
+                    rest.startsWith(":=") || rest.startsWith("=")
+                ) continue
+                out += f.from[a] to PinVarWrite(name, null, false)
+                continue
+            }
+            val append = t.startsWith("+=", b)
+            if (t.getOrNull(b) != '=' && !append) {
+                out += f.from[a] to PinVarWrite(name, null, false)
+                continue
+            }
+            val vs = b + if (append) 2 else 1
+            var e = vs
+            while (e < t.length && (f.quoted[e] || (!t[e].isWhitespace() && t[e] !in ";&|()<>"))) e++
+            val value = t.substring(vs, e)
+            val dynamic = (vs until e).any { (t[it] == '$' || t[it] == '`') && !f.literal[it] }
+            out += f.from[a] to PinVarWrite(name, value, dynamic, append)
+        }
+        for (m in pinVarExpansion.findAll(command)) {
+            val raw = m.groupValues[2]
+            val dynamic = '$' in raw || '`' in raw
+            out += m.range.first to PinVarWrite(m.groupValues[1], unquote(raw), dynamic)
+        }
+        return out.sortedBy { it.first }.map { it.second }
+    }
 
     fun classify(command: String): CommandKind =
         classifyAll(command).fold(CommandKind.Other as CommandKind, ::merge)

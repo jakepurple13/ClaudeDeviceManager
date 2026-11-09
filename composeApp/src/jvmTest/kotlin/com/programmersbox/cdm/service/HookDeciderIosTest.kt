@@ -261,6 +261,25 @@ class HookDeciderIosTest {
         }
     }
 
+    @Test fun splitOrIndirectUdidWritesDenied() = runTest {
+        allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS)) // holds u1
+        for (c in listOf(
+            "export CDM_IOS_\"UDID\"=$u2; xcrun simctl launch \$CDM_IOS_UDID x",
+            "CDM_IOS_\\UDID=$u2 ./t.sh",
+            "export CDM_IOS_PAIR_\"UDID\"=$u2; ./t.sh",
+        )) {
+            assertTrue("different device" in bash(c).reason(), c)
+        }
+        for (c in listOf(
+            "read CDM_IOS_UDID <<< $u2; xcrun simctl launch \$CDM_IOS_UDID x",
+            "printf -v CDM_IOS_UDID %s $u2; ./t.sh",
+            "unset CDM_IOS_UDID; ./t.sh",
+        )) {
+            assertEquals("Set ANDROID_SERIAL/CDM_IOS_UDID only as a literal NAME=<your device>.", bash(c).reason(), c)
+        }
+        assertIs<HookReply.Rewrite>(bash("CDM_IOS_UDID=$u1 xcrun simctl launch \$CDM_IOS_UDID x"))
+    }
+
     @Test fun udidTextInArgumentsIsNotAnAssignment() = runTest {
         allocator.tryGrab(h, Wants(setOf(Category.PHONE), Platform.IOS)) // holds u1
         for (c in listOf(

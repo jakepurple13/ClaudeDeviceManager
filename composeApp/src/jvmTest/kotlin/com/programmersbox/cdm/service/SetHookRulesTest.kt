@@ -313,10 +313,11 @@ class SetHookRulesTest {
         assertEquals(memberVarDeny, bash("cdm run all -- xcrun simctl launch \${CDM_IOS1_UDID:=$u2} x").reason())
     }
 
-    /** Names the textual scan can't see: the command that runs uses the literal member value, so rebinding is harmless. */
-    @Test fun memberReferencesBecomeLiteralWithoutRun() = runTest {
+    /** Split or escaped member names are flattened before the scan, so writing one is denied like the plain name. */
+    @Test fun splitMemberNameWritesDenied() = runTest {
         holdSet(iosPhone)
-        val rebinds = listOf(
+        val writes = listOf(
+            "export CDM_ANDROID\"1\"_SERIAL=x; ./script.sh",
             "export CDM_ANDROID1_\"SERIAL\"=p3-usb",
             "CDM_ANDROID1_\\SERIAL=p3-usb",
             "declare CDM_ANDROID1_\"SERIAL\"=p3-usb",
@@ -326,6 +327,22 @@ class SetHookRulesTest {
             "printf -v CDM_ANDROID1_\"SERIAL\" p3-usb",
             "declare -n r=CDM_ANDROID1_\"SERIAL\"; r=p3-usb",
             "eval CDM_ANDROID1_\"SERIAL\"=p3-usb",
+        )
+        for (w in writes) {
+            assertEquals(memberVarDeny, bash("$w; adb -s \$CDM_ANDROID1_SERIAL shell ls").reason(), w)
+            assertEquals(memberVarDeny, bash("$w; cdm run android1 -- adb shell ls").reason(), w)
+        }
+        assertEquals(
+            "Set ANDROID_SERIAL/CDM_IOS_UDID only as a literal NAME=<your device>.",
+            bash("read ANDROID_SERIAL <<< p3-usb; cdm run android1 -- adb shell ls").reason(),
+        )
+        bash("export ANDROID_\"SERIAL\"=p3-usb; ./t.sh").reason()
+    }
+
+    /** Names no scan can see: the command that runs uses the literal member value, so rebinding is harmless. */
+    @Test fun memberReferencesBecomeLiteralWithoutRun() = runTest {
+        holdSet(iosPhone)
+        val rebinds = listOf(
             "n=SERIAL; export CDM_ANDROID1_\$n=p3-usb",
             "source ./f",
         )
@@ -333,7 +350,7 @@ class SetHookRulesTest {
             val r = bash("$rebind; adb -s \$CDM_ANDROID1_SERIAL shell ls").cmd()
             assertTrue(r.endsWith("; adb -s p1-usb shell ls"), r)
             assertTrue(r.startsWith("export ANDROID_SERIAL=p1-usb; "), r)
-            val i = bash("$rebind; export CDM_IOS1_\"UDID\"=$u2; xcrun simctl launch \${CDM_IOS1_UDID} x").cmd()
+            val i = bash("$rebind; m=UDID; export CDM_IOS1_\$m=$u2; xcrun simctl launch \${CDM_IOS1_UDID} x").cmd()
             assertTrue(i.endsWith("; xcrun simctl launch $u1 x"), i)
         }
     }
@@ -342,13 +359,13 @@ class SetHookRulesTest {
         holdSet(iosPhone)
         assertEquals(
             "export ANDROID_SERIAL=use-cdm-run; export CDM_IOS_UDID=$u1; ${vars}export CDM_IOS1_UDID=$u1; " +
-                "export CDM_ANDROID1_\"SERIAL\"=p3-usb; " +
+                "n=SERIAL; export CDM_ANDROID1_\$n=p3-usb; " +
                 "( export ANDROID_SERIAL=p1-usb; ${vars}export CDM_IOS1_UDID=$u1; adb -s p1-usb shell ls )",
-            bash("export CDM_ANDROID1_\"SERIAL\"=p3-usb; cdm run android1 -- adb -s \$CDM_ANDROID1_SERIAL shell ls").cmd(),
+            bash("n=SERIAL; export CDM_ANDROID1_\$n=p3-usb; cdm run android1 -- adb -s \$CDM_ANDROID1_SERIAL shell ls").cmd(),
         )
         val r = bash("source ./f; cdm run ios1 -- xcrun simctl launch \$CDM_IOS1_UDID x").cmd()
         assertTrue(r.endsWith("xcrun simctl launch $u1 x )"), r)
-        val all = bash("eval CDM_ANDROID2_\"SERIAL\"=p3-usb; cdm run all -- adb -s \"\$CDM_ANDROID2_SERIAL\" shell ls").cmd()
+        val all = bash("source ./g; cdm run all -- adb -s \"\$CDM_ANDROID2_SERIAL\" shell ls").cmd()
         assertTrue(all.endsWith("adb -s \"p2-usb\" shell ls )"), all)
     }
 
