@@ -740,6 +740,33 @@ class Allocator(
         }
     }
 
+    /**
+     * Gives back a timed-out hold [tryRegrab] took back earlier in the same deferred decision, as if it never
+     * happened: [was] (the timed-out status) returns, so the next device command can take it back again.
+     */
+    fun undoRegrab(holder: HolderId, platform: Platform, was: HolderStatus.Released) {
+        if (holdings[holder]?.get(platform) == null) return
+        undoGrab(holder, platform)
+        released.getOrPut(holder) { LinkedHashMap() }[platform] = was
+    }
+
+    /**
+     * Gives back a set [tryRegrabSet] took back earlier in the same deferred decision, as if it never happened: the
+     * timed-out record [was] returns, and the Granted / Released events are dropped.
+     */
+    fun undoRegrabSet(holder: HolderId, was: ReleasedSet) {
+        val set = sets[holder] ?: return
+        val keys = set.members.map { it.device }.toSet()
+        val freed = freeSet(holder, was.reason) { true }
+        releasedSets[holder] = was
+        freed.forEach { passToQueue(it, except = holder) }
+        settleReservation()
+        deferred?.removeAll {
+            (it is AllocatorEvent.Granted && it.holder == holder && it.device in keys) ||
+                (it is AllocatorEvent.Released && it.holder == holder && it.device in keys)
+        }
+    }
+
     private fun emit(e: AllocatorEvent) {
         val d = deferred
         if (d != null) d += e else onEvent(e)

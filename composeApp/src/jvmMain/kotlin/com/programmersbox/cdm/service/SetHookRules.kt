@@ -33,7 +33,19 @@ class SetHookRules(
     private val timers: () -> Timers = { Timers() },
     private val defaultCategory: suspend (cwd: String) -> Category = { Category.ANY },
 ) {
+    /** How to give back what this decision took back after a timeout, newest last; run when it ends in a denial. */
+    private val undos = ArrayList<() -> Unit>()
+
     suspend fun decide(holder: HolderId, cwd: String, command: String): HookReply? {
+        undos.clear()
+        val reply = decideInner(holder, cwd, command)
+        // A denied command doesn't run, so it keeps nothing it took back on the way.
+        if (reply is HookReply.Deny) undos.asReversed().forEach { it() }
+        undos.clear()
+        return reply
+    }
+
+    private suspend fun decideInner(holder: HolderId, cwd: String, command: String): HookReply? {
         val runs = CommandClassifier.cdmRuns(command)
         // A `cdm run` the parser didn't take as one: the script would run it unpinned.
         val runKinds = CommandClassifier.classifyAll(command).count { it == CommandKind.Cdm("run") }
@@ -112,10 +124,16 @@ class SetHookRules(
     private fun holdsNothing(holder: HolderId) = allocator.setOf(holder) == null && allocator.holdingsOf(holder).isEmpty()
 
     /** Takes back a timed-out set (only when the holder holds nothing at all). Null on success, else the denial. */
-    private fun regrabSet(holder: HolderId): HookReply.Deny? = when (allocator.tryRegrabSet(holder)) {
-        is GrabSetResult.Granted -> null
-        GrabSetResult.Blocked -> HookReply.Deny(releasedByUser(blocked = true))
-        else -> HookReply.Deny(SET_TAKEN)
+    private fun regrabSet(holder: HolderId): HookReply.Deny? {
+        val was = allocator.releasedSetOf(holder)
+        return when (allocator.tryRegrabSet(holder)) {
+            is GrabSetResult.Granted -> {
+                if (was != null) undos += { allocator.undoRegrabSet(holder, was) }
+                null
+            }
+            GrabSetResult.Blocked -> HookReply.Deny(releasedByUser(blocked = true))
+            else -> HookReply.Deny(SET_TAKEN)
+        }
     }
 
     // ---- commands with `cdm run` ----
@@ -215,7 +233,7 @@ class SetHookRules(
                 val st = allocator.statusOf(holder, p) as? HolderStatus.Released ?: continue
                 if (st.reason != ReleaseReason.IDLE_TIMEOUT && st.reason != ReleaseReason.EDIT_TIMEOUT) continue
                 when (val g = allocator.tryRegrab(holder, p)) {
-                    is GrabResult.Granted -> {}
+                    is GrabResult.Granted -> undos += { allocator.undoRegrab(holder, p, st) }
                     GrabResult.Blocked -> return Ensured.Stop(HookReply.Deny(releasedByUser(blocked = true)))
                     else -> return Ensured.Stop(
                         HookReply.Deny(

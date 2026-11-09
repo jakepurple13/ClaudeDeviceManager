@@ -224,6 +224,29 @@ class SetHookRulesTest {
         assertNull(allocator.setOf(h))
     }
 
+    @Test fun deniedRunAfterTimeoutTakesNothingBack() = runTest {
+        holdSet()
+        now = t0 + 16.minutes; allocator.tick()
+        val r = bash("cdm run android9 -- adb shell ls").reason()
+        assertTrue("android1" in r && "android2" in r, r)
+        bash("cdm run android1 -- adb -s p3-usb shell ls").reason()
+        bash("adb -s p1-usb shell ls && adb -s p2-usb shell ls").reason()
+        assertNull(allocator.setOf(h))
+        assertTrue(allocator.snapshot().holds.isEmpty())
+        // The timed-out set can still come back.
+        assertNotNull(allocator.releasedSetOf(h))
+        assertIs<HookReply.Rewrite>(bash("cdm run android1 -- adb shell ls"))
+        assertNotNull(allocator.setOf(h))
+    }
+
+    @Test fun deniedRunAfterSingleTimeoutTakesNothingBack() = runTest {
+        bash("adb -s p1-usb shell ls")
+        now = t0 + 16.minutes; allocator.tick()
+        bash("cdm run android1 -- adb -s p3-usb shell ls").reason()
+        assertTrue(allocator.holdingsOf(h).isEmpty())
+        assertEquals("( export ANDROID_SERIAL=p1-usb; adb shell ls )", bash("cdm run android1 -- adb shell ls").cmd())
+    }
+
     @Test fun explicitMemberSerialRegrabsAfterTimeout() = runTest {
         holdSet()
         now = t0 + 16.minutes; allocator.tick()
