@@ -101,7 +101,8 @@ sealed interface AllocatorEvent {
 
     data class Granted(override val at: Instant, val holder: HolderId, val device: DeviceKey) : AllocatorEvent
     data class Released(override val at: Instant, val holder: HolderId, val device: DeviceKey, val reason: ReleaseReason) : AllocatorEvent
-    data class Queued(override val at: Instant, val holder: HolderId, val wants: Wants) : AllocatorEvent
+    /** [set] is the set request when the holder queued for a set ([wants] is then empty). */
+    data class Queued(override val at: Instant, val holder: HolderId, val wants: Wants, val set: SetRequest? = null) : AllocatorEvent
     data class LeftQueue(override val at: Instant, val holder: HolderId) : AllocatorEvent
     data class Blocked(override val at: Instant, val holder: HolderId) : AllocatorEvent
     data class Unblocked(override val at: Instant, val holder: HolderId) : AllocatorEvent

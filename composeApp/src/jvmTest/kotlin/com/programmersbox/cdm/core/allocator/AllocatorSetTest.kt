@@ -68,6 +68,7 @@ class AllocatorSetTest {
         assertEquals(1, a.enqueueSet(h1, threeReq))
         val q = assertIs<HolderStatus.Queued>(a.statusOf(h1))
         assertEquals(threeReq, q.set)
+        assertEquals(threeReq, events.filterIsInstance<AllocatorEvent.Queued>().single { it.holder == h1 }.set)
         a.release(h2, ReleaseReason.SELF_RELEASE)
         val held = assertIs<HolderStatus.HoldingSet>(a.statusOf(h1))
         assertEquals(listOf("android1", "android2", "ios1"), held.set.members.map { it.name })

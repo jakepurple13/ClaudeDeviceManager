@@ -3,11 +3,13 @@ package com.programmersbox.cdm.notify
 import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocatorEvent
 import com.programmersbox.cdm.core.allocator.ReleaseReason
+import com.programmersbox.cdm.core.allocator.SetRequest
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
 import com.programmersbox.cdm.data.NotificationSettings
 import com.programmersbox.cdm.service.DeviceManager
+import com.programmersbox.cdm.ui.setSummary
 import java.nio.file.Path
 import kotlin.time.Duration
 import kotlin.time.Instant
@@ -97,7 +99,7 @@ class Notifier(
         return when (e) {
             is AllocatorEvent.Queued -> {
                 queuedAt[e.holder] = e.at
-                if (on.queued) queued(e.holder, e.wants) else null
+                if (on.queued) queued(e.holder, e.wants, e.set) else null
             }
             is AllocatorEvent.LeftQueue -> {
                 queuedAt.remove(e.holder)
@@ -124,13 +126,14 @@ class Notifier(
         }
     }
 
-    private fun queued(h: HolderId, wants: Wants): SystemNotice {
+    private fun queued(h: HolderId, wants: Wants, set: SetRequest?): SystemNotice {
         val cats = wants.categories
         val what = if (cats.isEmpty() || Category.ANY in cats) "a device" else "a " + cats.joinToString(" or ") { it.id }
         val position = manager.snapshot.value.queue.indexOf(h) + 1
         val body = if (position > 0) "${holder(h)} is #$position in line." else "${holder(h)} is in line."
         val limits = wants.limits.takeIf { it.isNotEmpty() }?.joinToString(prefix = " (", postfix = ")").orEmpty()
-        return SystemNotice("Waiting for $what$limits", body, open = NoticeTarget.Queue(h))
+        val title = if (set != null) "Waiting for ${setSummary(set)}" else "Waiting for $what$limits"
+        return SystemNotice(title, body, open = NoticeTarget.Queue(h))
     }
 
     private fun queueStarted(h: HolderId, d: DeviceKey, waited: Duration) =

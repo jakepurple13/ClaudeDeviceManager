@@ -155,7 +155,7 @@ class Allocator(
         if (existing >= 0) return (existing + 1).also { settleReservation() }
         queue.add(holder)
         released[holder]?.let { r -> req.members.mapNotNull { it.platform }.forEach { r.remove(it) } }
-        emit(AllocatorEvent.Queued(clock(), holder, Wants(emptySet())))
+        emit(AllocatorEvent.Queued(clock(), holder, Wants(emptySet()), req))
         settleReservation()
         return queue.indexOf(holder) + 1
     }
