@@ -26,6 +26,10 @@ data class Timers(val idle: Duration = 15.minutes, val editing: Duration = 5.min
  * member's device (and partner) maps to the holder in [holds]. Releasing one member from the app, or marking it
  * don't-use with release, releases the whole set; [release] with a platform keeps the other members, names unchanged.
  * Hand-off does not apply to set members.
+ *
+ * No starvation: the first queued set (in queue order) **reserves** free devices toward its request (see
+ * [settleReservation]). A reserved device is not a hold, but no one else can take it: not [tryGrab], [tryRegrab],
+ * [tryGrabSet], nor the queue. A pair is reserved as a unit (both keys).
  */
 class Allocator(
     private val clock: () -> Instant,
@@ -44,6 +48,10 @@ class Allocator(
 
     /** Held sets, in grant order. */
     private val sets = LinkedHashMap<HolderId, HeldSet>()
+
+    /** Free devices kept for the first queued set; a pair has both keys here. See [settleReservation]. */
+    private val reservations = LinkedHashMap<DeviceKey, HolderId>()
+    private var settling = false
     private val blockedHolders = LinkedHashSet(blocked)
 
     /** When a queued holder's waiter detached. Absent means attached (or never detached). */
@@ -61,7 +69,10 @@ class Allocator(
         queue.forEach { all[it] = statusOf(it) }
         blockedHolders.forEach { all[it] = HolderStatus.Blocked }
         val held = holdings.filterValues { it.isNotEmpty() }.mapValues { it.value.values.toList() }
-        return AllocatorSnapshot(devices.toList(), holds.toMap(), queue.toList(), all, held, sets = sets.toMap())
+        return AllocatorSnapshot(
+            devices.toList(), holds.toMap(), queue.toList(), all, held,
+            sets = sets.toMap(), reserved = reservations.toMap(),
+        )
     }
 
     /** Blocked, then Queued, then the held set, then the first live hold, then the most recent release, then None. */
@@ -89,6 +100,9 @@ class Allocator(
 
     /** The holder's set, or null if it holds none. */
     fun setOf(holder: HolderId): HeldSet? = sets[holder]
+
+    /** Keys reserved for [holder]'s queued set, both keys of a reserved pair included. */
+    fun reservedFor(holder: HolderId): List<DeviceKey> = reservations.filterValues { it == holder }.keys.toList()
 
     private fun queuedStatus(holder: HolderId): HolderStatus.Queued? {
         val i = queue.indexOf(holder)
@@ -118,30 +132,34 @@ class Allocator(
         if (holder in blockedHolders) return GrabSetResult.Blocked
         if (holdsAnything(holder)) return GrabSetResult.NoneFree
         if (!feasible(req)) return GrabSetResult.Impossible
-        val assigned = SetMatcher.assign(req.members, freeCandidates(), ::listed) ?: return GrabSetResult.NoneFree
-        return GrabSetResult.Granted(grantSet(holder, req, assigned))
+        val assigned = SetMatcher.assign(req.members, freeCandidates(holder), ::listed) ?: return GrabSetResult.NoneFree
+        return GrabSetResult.Granted(grantSet(holder, req, assigned)).also { settleReservation() }
     }
 
     /**
      * Queues [holder] for [req] and returns its 1-based position, or 0 if it is blocked or already holds anything.
      * An already-queued holder keeps its place; its request (set or single) is replaced with [req].
+     * If the entry is the first set, it reserves at once; when free devices already cover [req] it is granted at once
+     * and 0 is returned (it now holds a set).
      */
     fun enqueueSet(holder: HolderId, req: SetRequest): Int {
         if (holder in blockedHolders || holdsAnything(holder)) return 0
         val existing = queue.indexOf(holder)
         queueWants.remove(holder)
         queueSets[holder] = req
-        if (existing >= 0) return existing + 1
+        if (existing >= 0) return (existing + 1).also { settleReservation() }
         queue.add(holder)
         released[holder]?.let { r -> req.members.mapNotNull { it.platform }.forEach { r.remove(it) } }
         emit(AllocatorEvent.Queued(clock(), holder, Wants(emptySet())))
-        return queue.size
+        settleReservation()
+        return queue.indexOf(holder) + 1
     }
 
     fun setDevices(devices: List<AllocDevice>) {
         this.devices = devices.toList()
         devices.forEach { known[it.key] = it }
         devices.forEach { passToQueue(it.key) }
+        settleReservation()
     }
 
     /**
@@ -151,7 +169,11 @@ class Allocator(
      * [Wants.platform] is null: an unflagged grab never adds a second platform. Failing that, grants a free device
      * that fits [wants] on a platform the holder doesn't hold yet. A second platform needs [Wants.platform] set to it.
      */
-    fun tryGrab(holder: HolderId, wants: Wants, specific: DeviceKey? = null): GrabResult {
+    fun tryGrab(holder: HolderId, wants: Wants, specific: DeviceKey? = null): GrabResult =
+        grab(holder, wants, specific).also { settleReservation() }
+
+    /** [tryGrab] without settling: a reserved device counts as not free. */
+    private fun grab(holder: HolderId, wants: Wants, specific: DeviceKey?): GrabResult {
         if (holder in blockedHolders) return GrabResult.Blocked
         if (holder in sets) return GrabResult.NoneFree
         if (specific != null) {
@@ -160,7 +182,7 @@ class Allocator(
             if (holds(holder, d.platform)) return GrabResult.NoneFree
             if (d.dontUse) return GrabResult.DontUse
             holds[d.key]?.let { return GrabResult.HeldByOther(d, it) }
-            if (d.connectedSerials.isEmpty() || !partnerFree(d)) return GrabResult.NoneFree
+            if (d.connectedSerials.isEmpty() || !partnerFree(d) || reservedAgainst(d, holder)) return GrabResult.NoneFree
             return grant(holder, d)
         }
         // A pair hold fits when either side does; the result always reports the primary, matching serialFor.
@@ -170,7 +192,7 @@ class Allocator(
         if (existing != null) return granted(known.getValue(existing.device), holder)
         val free = devices.firstOrNull {
             !it.dontUse && it.connectedSerials.isNotEmpty() && it.key !in holds && wants.fits(it) &&
-                !holds(holder, it.platform) && partnerFree(it)
+                !holds(holder, it.platform) && partnerFree(it) && !reservedAgainst(it, holder)
         }
         return if (free != null) grant(holder, free) else GrabResult.NoneFree
     }
@@ -212,6 +234,7 @@ class Allocator(
             passToQueue(h.device, except = holder)
         }
         freeSet(holder, reason) { platform == null || it.platform == platform }.forEach { passToQueue(it, except = holder) }
+        settleReservation()
     }
 
     /**
@@ -228,6 +251,7 @@ class Allocator(
                 emit(AllocatorEvent.Blocked(clock(), holder))
             }
             freed.forEach { passToQueue(it, except = holder) }
+            settleReservation()
             return
         }
         free(device, holder, ReleaseReason.USER_RELEASE)
@@ -239,6 +263,7 @@ class Allocator(
         }
         passToQueue(device, except = holder)
         others.forEach { passToQueue(it, except = holder) }
+        settleReservation()
     }
 
     /**
@@ -255,6 +280,8 @@ class Allocator(
         if (!usable(primary) || d.partner?.let(::usable) == false) return
         free(primary, old, ReleaseReason.USER_HANDOFF)
         grant(to, d)
+        // The grant may answer [to]'s queued set entry.
+        settleReservation()
     }
 
     /** Resets the idle timer of the holder's [platform] hold only, and clears editing on that hold. */
@@ -290,6 +317,7 @@ class Allocator(
                 passToQueue(st.device, except = holder)
             }
         }
+        settleReservation()
     }
 
     /** Only valid after an idle/edit timeout of the [platform] hold; anything else is [GrabResult.NoneFree]. */
@@ -301,8 +329,8 @@ class Allocator(
         val d = devices.firstOrNull { it.key == st.lastDevice } ?: return GrabResult.NoneFree
         if (d.dontUse) return GrabResult.DontUse
         holds[d.key]?.let { return GrabResult.HeldByOther(d, it) }
-        if (d.connectedSerials.isEmpty() || !partnerFree(d)) return GrabResult.NoneFree
-        return grant(holder, d)
+        if (d.connectedSerials.isEmpty() || !partnerFree(d) || reservedAgainst(d, holder)) return GrabResult.NoneFree
+        return grant(holder, d).also { settleReservation() }
     }
 
     /**
@@ -322,14 +350,19 @@ class Allocator(
         } else {
             passToQueue(device)
         }
+        settleReservation()
     }
 
     fun moveInQueue(holder: HolderId, newIndex: Int) {
         if (!queue.remove(holder)) return
         queue.add(newIndex.coerceIn(0, queue.size), holder)
+        settleReservation()
     }
 
-    fun removeFromQueue(holder: HolderId) = removeFromQueueInternal(holder)
+    fun removeFromQueue(holder: HolderId) {
+        removeFromQueueInternal(holder)
+        settleReservation()
+    }
 
     fun unblock(holder: HolderId) {
         if (blockedHolders.remove(holder)) emit(AllocatorEvent.Unblocked(clock(), holder))
@@ -431,18 +464,33 @@ class Allocator(
      *
      * A queued set, met in queue order, is granted whole when the free devices cover every member. If that leaves
      * [device] free, the walk goes on.
+     *
+     * A reserved device is never offered: a single never gets one, and a set only counts its own reservation.
      */
     private fun passToQueue(device: DeviceKey, except: HolderId? = null) {
         fun sides() = listOfNotNull(device, known[device]?.partner).distinct()
             .mapNotNull { k -> devices.firstOrNull { it.key == k } }
-            .filter { it.key !in holds && !it.dontUse && it.connectedSerials.isNotEmpty() && partnerFree(it) }
+            .filter {
+                it.key !in holds && !it.dontUse && it.connectedSerials.isNotEmpty() && partnerFree(it) &&
+                    it.key !in reservations
+            }
         if (sides().isEmpty()) return
         for (holder in queue.toList()) {
             if (holder == except || holder in blockedHolders || holder !in queue) continue
             val req = queueSets[holder]
             if (req != null) {
                 if (holdsAnything(holder)) continue
-                val assigned = SetMatcher.assign(req.members, freeCandidates(), ::listed) ?: continue
+                val candidates = freeCandidates(holder)
+                val assigned = SetMatcher.assign(req.members, candidates, ::listed)
+                if (assigned == null) {
+                    // The reserving set takes what it can before anyone behind it sees the device.
+                    if (holder == reservingSet()) {
+                        setReservation(holder, SetMatcher.maxPartial(req.members, candidates, ::listed).values)
+                        if (sides().isEmpty()) return
+                    }
+                    continue
+                }
+                if (holder in reservations.values) setReservation(null, emptyList())
                 grantSet(holder, req, assigned)
                 if (sides().isEmpty()) return
                 continue
@@ -467,9 +515,77 @@ class Allocator(
         }
     }
 
-    /** Free, connected, usable devices whose partner (if any) is free and usable too, each pair once. */
-    private fun freeCandidates(): List<AllocDevice> =
-        onePerPair(devices.filter { it.key !in holds && !it.dontUse && it.connectedSerials.isNotEmpty() && partnerFree(it) })
+    /**
+     * Free, connected, usable devices whose partner (if any) is free and usable too, each pair once, leaving out
+     * devices reserved for anyone but [holder]. [holder]'s own reserved devices come first, so a matching keeps them.
+     */
+    private fun freeCandidates(holder: HolderId): List<AllocDevice> {
+        val free = devices.filter {
+            it.key !in holds && !it.dontUse && it.connectedSerials.isNotEmpty() && partnerFree(it) &&
+                !reservedAgainst(it, holder)
+        }
+        val (mine, rest) = free.partition { reservations[it.key] == holder }
+        return onePerPair(mine + rest)
+    }
+
+    /** True when [d] or its partner is reserved for someone other than [holder]. */
+    private fun reservedAgainst(d: AllocDevice, holder: HolderId): Boolean =
+        listOfNotNull(d.key, d.partner).any { k -> reservations[k]?.let { it != holder } == true }
+
+    /**
+     * Recomputes the reservation, after any change that can affect it. Only the first set entry in queue order
+     * reserves, and only when [feasible] (a set no listed devices could meet would hold devices for nothing). Its
+     * reservation is the devices of a maximum partial matching over the free devices that are unreserved or its own.
+     * A full matching grants the set at once, and the next set entry takes over. Devices that leave the reservation
+     * (no longer needed, offline, don't-use, or the set left the queue) go through [passToQueue] when still free.
+     * Repeats until nothing changes, since passing a device on can grant a set.
+     */
+    private fun settleReservation() {
+        if (settling) return
+        settling = true
+        try {
+            // Each pass that changes anything grants a set or a device, so this bound is never reached in practice.
+            repeat(devices.size + queue.size + 2) {
+                val holdsBefore = holds.toMap()
+                val reservedBefore = reservations.toMap()
+                val first = reservingSet()
+                val req = first?.let { queueSets.getValue(it) }
+                val matched = if (first != null && req != null) {
+                    SetMatcher.maxPartial(req.members, freeCandidates(first), ::listed)
+                } else {
+                    emptyMap()
+                }
+                if (first != null && req != null && matched.size == req.members.size) {
+                    setReservation(null, emptyList())
+                    grantSet(first, req, req.members.indices.map { matched.getValue(it) })
+                } else {
+                    setReservation(first, matched.values)
+                }
+                val drop = droppedReservations.filter { it !in reservations && it !in holds }
+                droppedReservations.clear()
+                drop.forEach { passToQueue(it) }
+                if (holds == holdsBefore && reservations == reservedBefore) return
+            }
+        } finally {
+            settling = false
+        }
+    }
+
+    /** The queued set that may reserve: the first set entry in queue order, if [feasible]. */
+    private fun reservingSet(): HolderId? =
+        queue.firstOrNull { it in queueSets && it !in blockedHolders && !holdsAnything(it) }
+            ?.takeIf { feasible(queueSets.getValue(it)) }
+
+    /** Replaces the reservation with [devices] (and their partners) for [holder]; keys that leave it are remembered. */
+    private fun setReservation(holder: HolderId?, devices: Collection<AllocDevice>) {
+        val keys = devices.flatMap { listOfNotNull(it.key, it.partner) }
+        droppedReservations += reservations.keys.filter { it !in keys }
+        reservations.clear()
+        if (holder != null) keys.forEach { reservations[it] = holder }
+    }
+
+    /** Keys that left the reservation and still need to go through [passToQueue]. */
+    private val droppedReservations = LinkedHashSet<DeviceKey>()
 
     /** Grants [assigned] (one device per member of [req], in member order) to [holder] as one set. */
     private fun grantSet(holder: HolderId, req: SetRequest, assigned: List<AllocDevice>): HeldSet {

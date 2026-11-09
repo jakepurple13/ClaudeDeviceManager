@@ -10,6 +10,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
 class AllocatorSetTest {
@@ -75,7 +76,7 @@ class AllocatorSetTest {
     }
 
     @Test fun queuedSingleBehindSetStillServed() {
-        // Without reservations, a set that cannot be met does not stop a single behind it.
+        // A set that no listed devices could meet reserves nothing, so it does not stop a single behind it.
         val a = alloc(a1, a2)
         a.tryGrab(h2, androidPhone)
         a.tryGrab(h3, androidPhone)
@@ -197,5 +198,142 @@ class AllocatorSetTest {
         a.release(h2, ReleaseReason.SELF_RELEASE)
         assertNull(a.setOf(h1))
         assertEquals(HolderStatus.None, a.statusOf(h1))
+    }
+
+    private val h4 = HolderId("s4")
+    private val h5 = HolderId("s5")
+    private val aw = AllocDevice(DeviceKey("AW"), "Pixel Watch", Category.WATCH, false, listOf("aw-usb"))
+    private val androidWatch = Wants(setOf(Category.WATCH), platform = Platform.ANDROID)
+
+    @Test fun firstSetReservesFreedDevices() {
+        val a = alloc(a1, a2)
+        a.tryGrab(h2, androidPhone)
+        a.tryGrab(h4, androidPhone)
+        assertEquals(1, a.enqueueSet(h1, twoAndroid))
+        assertTrue(a.snapshot().reserved.isEmpty())
+        a.release(h2, ReleaseReason.SELF_RELEASE)
+        assertEquals(mapOf(a1.key to h1), a.snapshot().reserved)
+        assertEquals(listOf(a1.key), a.reservedFor(h1))
+        assertEquals(GrabResult.NoneFree, a.tryGrab(h3, androidPhone))
+        assertEquals(GrabResult.NoneFree, a.tryGrab(h3, androidPhone, specific = a1.key))
+        assertIs<HolderStatus.Queued>(a.statusOf(h1))
+        assertTrue(a1.key !in a.snapshot().holds)
+    }
+
+    @Test fun singleBehindSetCanTakeDeviceSetDoesNotNeed() {
+        val a = alloc(a1, a2, aw)
+        a.tryGrab(h2, androidPhone)
+        a.tryGrab(h3, androidWatch)
+        a.enqueueSet(h1, twoAndroid)
+        assertEquals(mapOf(a2.key to h1), a.snapshot().reserved)
+        assertEquals(2, a.enqueue(h4, androidWatch))
+        a.release(h3, ReleaseReason.SELF_RELEASE)
+        assertEquals(h4, a.snapshot().holds[aw.key])
+        assertEquals(mapOf(a2.key to h1), a.snapshot().reserved)
+    }
+
+    @Test fun secondSetDoesNotReserve() {
+        val a = alloc()
+        a.tryGrab(h2, androidPhone)
+        a.tryGrab(h3, iosPhone)
+        a.enqueueSet(h1, twoAndroid)
+        a.enqueueSet(h4, SetRequest(listOf(iosPhone, androidPhone)))
+        assertEquals(mapOf(a2.key to h1), a.snapshot().reserved)
+        a.release(h3, ReleaseReason.SELF_RELEASE)
+        // The second set can't be met (its Android phone is reserved), and it reserves nothing.
+        assertEquals(mapOf(a2.key to h1), a.snapshot().reserved)
+        assertTrue(a.reservedFor(h4).isEmpty())
+        assertIs<HolderStatus.Queued>(a.statusOf(h4))
+        assertIs<GrabResult.Granted>(a.tryGrab(h5, iosPhone))
+        assertEquals(h5, a.snapshot().holds[i1.key])
+    }
+
+    @Test fun reservationDroppedWhenSetRemoved() {
+        val a = alloc(a1, a2)
+        a.tryGrab(h2, androidPhone)
+        a.tryGrab(h3, androidPhone)
+        a.enqueueSet(h1, twoAndroid)
+        assertEquals(2, a.enqueue(h4, androidPhone))
+        a.release(h2, ReleaseReason.SELF_RELEASE)
+        assertEquals(mapOf(a1.key to h1), a.snapshot().reserved)
+        assertTrue(a1.key !in a.snapshot().holds)
+        a.removeFromQueue(h1)
+        assertTrue(a.snapshot().reserved.isEmpty())
+        assertEquals(h4, a.snapshot().holds[a1.key])
+    }
+
+    @Test fun reservedDeviceOfflineLeavesReservationKeepsPlace() {
+        val a = alloc(a1, a2)
+        a.tryGrab(h2, androidPhone)
+        a.tryGrab(h3, androidPhone)
+        a.enqueueSet(h1, twoAndroid)
+        a.enqueue(h4, androidPhone)
+        a.release(h2, ReleaseReason.SELF_RELEASE)
+        assertEquals(mapOf(a1.key to h1), a.snapshot().reserved)
+        a.setDevices(listOf(a1.copy(connectedSerials = emptyList()), a2))
+        assertTrue(a.snapshot().reserved.isEmpty())
+        assertEquals(1, assertIs<HolderStatus.Queued>(a.statusOf(h1)).position)
+        // Back online: reserved again, not handed to the single behind.
+        a.setDevices(listOf(a1, a2))
+        assertEquals(mapOf(a1.key to h1), a.snapshot().reserved)
+        assertTrue(a1.key !in a.snapshot().holds)
+        // Don't-use leaves the reservation the same way.
+        a.setDontUse(a1.key, true, releaseNow = false)
+        assertTrue(a.snapshot().reserved.isEmpty())
+        assertEquals(1, assertIs<HolderStatus.Queued>(a.statusOf(h1)).position)
+    }
+
+    @Test fun setGrantedFromReservedPlusFreed() {
+        val a = alloc(a1, a2)
+        a.tryGrab(h2, androidPhone)
+        a.tryGrab(h3, androidPhone)
+        a.enqueueSet(h1, twoAndroid)
+        a.enqueue(h4, androidPhone)
+        a.release(h2, ReleaseReason.SELF_RELEASE)
+        a.release(h3, ReleaseReason.SELF_RELEASE)
+        val held = assertIs<HolderStatus.HoldingSet>(a.statusOf(h1))
+        assertEquals(setOf(a1.key, a2.key), held.set.members.map { it.device }.toSet())
+        assertTrue(a.snapshot().reserved.isEmpty())
+        assertTrue(a.reservedFor(h1).isEmpty())
+        assertEquals(1, assertIs<HolderStatus.Queued>(a.statusOf(h4)).position)
+    }
+
+    @Test fun reservedPairHeldAsUnit() {
+        val a = alloc(a1, pw, pi)
+        a.tryGrab(h2, androidPhone)
+        a.enqueueSet(h1, SetRequest(listOf(androidPhone, iosPhone)))
+        assertEquals(mapOf(phoneKey to h1, watchKey to h1), a.snapshot().reserved)
+        assertEquals(GrabResult.NoneFree, a.tryGrab(h3, iosWatch))
+        assertEquals(GrabResult.NoneFree, a.tryGrab(h3, iosPhone))
+        a.release(h2, ReleaseReason.SELF_RELEASE)
+        val held = assertIs<HolderStatus.HoldingSet>(a.statusOf(h1))
+        assertEquals(SetMember("ios1", Platform.IOS, phoneKey, watchKey), held.set.members[1])
+        assertTrue(a.snapshot().reserved.isEmpty())
+    }
+
+    @Test fun movingAnotherSetFirstMovesTheReservation() {
+        val a = alloc()
+        a.tryGrab(h2, androidPhone)
+        a.tryGrab(h3, iosPhone)
+        a.enqueueSet(h1, twoAndroid)
+        a.enqueueSet(h4, SetRequest(listOf(androidPhone, iosPhone)))
+        assertEquals(mapOf(a2.key to h1), a.snapshot().reserved)
+        a.moveInQueue(h4, 0)
+        assertEquals(mapOf(a2.key to h4), a.snapshot().reserved)
+    }
+
+    @Test fun queueGraceExpiryDropsReservation() {
+        var t = now
+        val a = Allocator(clock = { t }).also { it.setDevices(listOf(a1, a2)) }
+        a.tryGrab(h2, androidPhone)
+        a.tryGrab(h3, androidPhone)
+        a.enqueueSet(h1, twoAndroid)
+        a.enqueue(h4, androidPhone)
+        a.release(h2, ReleaseReason.SELF_RELEASE)
+        a.detachWaiter(h1)
+        t = now + 3.minutes
+        a.tick()
+        assertTrue(a.snapshot().reserved.isEmpty())
+        assertEquals(h4, a.snapshot().holds[a1.key])
     }
 }
