@@ -322,6 +322,34 @@ class AllocatorSetTest {
         assertEquals(mapOf(a2.key to h4), a.snapshot().reserved)
     }
 
+    @Test fun reEnqueueAsSingleDropsReservationToQueue() {
+        val a = alloc(a1, a2)
+        a.tryGrab(h2, androidPhone)
+        a.tryGrab(h3, androidPhone)
+        a.enqueueSet(h1, twoAndroid)
+        a.enqueue(h4, androidPhone)
+        a.release(h2, ReleaseReason.SELF_RELEASE)
+        assertEquals(mapOf(a1.key to h1), a.snapshot().reserved)
+        // h1 keeps its place as a single; the freed phone goes through the queue to it at once (so 0: not queued).
+        assertEquals(0, a.enqueue(h1, androidPhone))
+        assertIs<HolderStatus.Holding>(a.statusOf(h1))
+        assertEquals(1, assertIs<HolderStatus.Queued>(a.statusOf(h4)).position)
+        assertTrue(a.snapshot().reserved.isEmpty())
+        assertEquals(h1, a.snapshot().holds[a1.key])
+    }
+
+    @Test fun reEnqueueAsSingleHandsReservationToNextSet() {
+        val a = alloc()
+        a.tryGrab(h2, androidPhone)
+        a.tryGrab(h3, iosPhone)
+        a.enqueueSet(h1, twoAndroid)
+        a.enqueueSet(h4, SetRequest(listOf(androidPhone, iosPhone)))
+        assertEquals(mapOf(a2.key to h1), a.snapshot().reserved)
+        a.enqueue(h1, iosPhone)
+        assertEquals(mapOf(a2.key to h4), a.snapshot().reserved)
+        assertTrue(a2.key !in a.snapshot().holds)
+    }
+
     @Test fun queueGraceExpiryDropsReservation() {
         var t = now
         val a = Allocator(clock = { t }).also { it.setDevices(listOf(a1, a2)) }

@@ -201,7 +201,8 @@ class Allocator(
      * Returns the 1-based queue position, or 0 if the holder is blocked, or already has what [wants] asks for: with
      * [Wants.platform] set, a hold on that platform; without it, a hold that fits [wants] (or a hold on every platform).
      * A queued holder is only ever granted a device of a platform it doesn't hold yet.
-     * An already-queued holder keeps its place; its wanted categories are replaced with [wants].
+     * An already-queued holder keeps its place; its wanted categories are replaced with [wants]. A set entry turned
+     * single drops its reservation; if a freed device is granted to the holder right away, 0 is returned.
      */
     fun enqueue(holder: HolderId, wants: Wants): Int {
         if (holder in blockedHolders || holder in sets) return 0
@@ -215,13 +216,16 @@ class Allocator(
         if (existing >= 0) {
             queueSets.remove(holder)
             queueWants[holder] = wants
-            return existing + 1
+            // A set entry turned single gives up its reservation; the device may now go to this holder.
+            settleReservation()
+            return queue.indexOf(holder) + 1
         }
         queue.add(holder)
         queueWants[holder] = wants
         released[holder]?.let { r -> platformsOf(wants).forEach { r.remove(it) } }
         emit(AllocatorEvent.Queued(clock(), holder, wants))
-        return queue.size
+        settleReservation()
+        return queue.indexOf(holder) + 1
     }
 
     /**
