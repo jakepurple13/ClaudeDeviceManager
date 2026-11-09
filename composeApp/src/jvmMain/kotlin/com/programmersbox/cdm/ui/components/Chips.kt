@@ -38,6 +38,8 @@ enum class DotStatus(val color: Color) {
     InUse(Color(0xFFE0B84A)),
     DontUse(Color(0xFF777777)),
     Offline(Color(0xFFFFE39A)),
+    /** Set aside for a queued device set. */
+    Reserved(Color(0xFF8AB4F8)),
 }
 
 @Composable
@@ -54,6 +56,7 @@ enum class ChipStyle(val container: Color, val content: Color) {
     Tablet(Color(0xFF23364A), Color(0xFFB8D8FF)),
     DontUse(Color(0xFF4A2A2A), Color(0xFFFFB4B4)),
     Offline(Color(0xFF4A4224), Color(0xFFFFE39A)),
+    Reserved(Color(0xFF243552), Color(0xFFB8D0FF)),
 }
 
 fun chipStyleFor(category: Category): ChipStyle = when (category) {

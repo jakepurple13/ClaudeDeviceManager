@@ -3,7 +3,10 @@ package com.programmersbox.cdm.ui
 import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
+import com.programmersbox.cdm.core.allocator.HeldSet
 import com.programmersbox.cdm.core.allocator.HolderStatus
+import com.programmersbox.cdm.core.allocator.SetMember
+import com.programmersbox.cdm.core.allocator.SetRequest
 import com.programmersbox.cdm.core.allocator.Timers
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
@@ -255,5 +258,72 @@ class UiModelsTest {
             listOf(WaitReason("iPhone 16", "held by session #a41f (idle 7m, releases in ≤8m)")),
             waitReasons(q, world(queued, emptyList())),
         )
+    }
+
+    private val qa = DeviceKey("A1")
+    private val qi = DeviceKey("I1")
+    private val setHolder = HolderId("5e7a0000")
+    private val pixel = AllocDevice(qa, "Pixel 8", Category.PHONE, false, listOf("s-A1"))
+    private val iphone = AllocDevice(qi, "iPhone 16", Category.PHONE, false, listOf("s-I1"), platform = Platform.IOS)
+    private val androidPhone = Wants(setOf(Category.PHONE), Platform.ANDROID)
+    private val iosPhone = Wants(setOf(Category.PHONE), Platform.IOS)
+
+    @Test
+    fun deviceRowShowsReservedState() {
+        val q = HolderId("77c20000")
+        val snap = AllocatorSnapshot(
+            devices = listOf(pixel),
+            holds = emptyMap(),
+            queue = listOf(q),
+            statuses = mapOf(q to HolderStatus.Queued(1, Wants.ANY, SetRequest(listOf(androidPhone, iosPhone)))),
+            reserved = mapOf(qa to q),
+        )
+        val row = deviceRows(world(snap, listOf(tracked(qa, Category.PHONE)))).single()
+        assertEquals(DeviceState.RESERVED, row.state)
+        assertEquals("session #77c2", row.reservedFor)
+        assertEquals(null, row.holderLabel)
+    }
+
+    @Test
+    fun deviceRowShowsMemberName() {
+        val member = SetMember("android1", Platform.ANDROID, qa)
+        val ios = SetMember("ios1", Platform.IOS, qi)
+        val held = HeldSet(listOf(member, ios), now - 5.minutes, now - 1.minutes, editing = false)
+        val snap = AllocatorSnapshot(
+            devices = listOf(pixel, iphone),
+            holds = mapOf(qa to setHolder, qi to setHolder),
+            queue = emptyList(),
+            statuses = mapOf(setHolder to HolderStatus.HoldingSet(held)),
+            sets = mapOf(setHolder to held),
+        )
+        val rows = deviceRows(world(snap, listOf(tracked(qa, Category.PHONE), tracked(qi, Category.PHONE))))
+        assertEquals(listOf("android1", "ios1"), rows.map { it.memberName })
+        assertEquals(DeviceState.IN_USE, rows[0].state)
+        assertEquals("idle 1m", rows[0].timerLabel)
+        assertEquals(5.minutes, rows[0].heldFor)
+    }
+
+    @Test
+    fun queueRowSummarisesSet() {
+        val q = HolderId("77c20000")
+        val req = SetRequest(listOf(androidPhone, iosPhone, androidPhone))
+        val snap = AllocatorSnapshot(emptyList(), emptyMap(), listOf(q), mapOf(q to HolderStatus.Queued(1, Wants.ANY, req)))
+        assertEquals("2 × Android phone, 1 × iOS phone", queueRows(world(snap, emptyList())).single().setSummary)
+        assertEquals("2 × Android phone, 1 × iOS phone", setSummary(req))
+    }
+
+    @Test
+    fun queueRowCountsReserved() {
+        val q = HolderId("77c20000")
+        val req = SetRequest(listOf(androidPhone, iosPhone, androidPhone))
+        val snap = AllocatorSnapshot(
+            devices = listOf(pixel, iphone), holds = emptyMap(), queue = listOf(q),
+            statuses = mapOf(q to HolderStatus.Queued(1, Wants.ANY, req)),
+            reserved = mapOf(qa to q),
+        )
+        val row = queueRows(world(snap, emptyList())).single()
+        assertEquals(1, row.reservedCount)
+        assertEquals(3, row.memberCount)
+        assertEquals("1 of 3 reserved", row.reservedText)
     }
 }

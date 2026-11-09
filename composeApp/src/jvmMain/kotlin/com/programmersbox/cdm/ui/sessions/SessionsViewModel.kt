@@ -11,6 +11,7 @@ import com.programmersbox.cdm.ui.World
 import com.programmersbox.cdm.ui.deviceName
 import com.programmersbox.cdm.ui.holderLabel
 import com.programmersbox.cdm.ui.holdingsOf
+import com.programmersbox.cdm.ui.reservedCountOf
 import com.programmersbox.cdm.ui.short
 import com.programmersbox.cdm.ui.timerLabel
 import kotlin.time.Instant
@@ -31,7 +32,13 @@ data class SessionHolderRow(
     /** "Pixel 8 · idle 1m", "#2 in queue", "ended 12m ago", ... */
     val detail: String,
     val lastCommand: String?,
+    /** The devices of a held set under their names (`android1`); empty unless the holder holds a set. */
+    val members: List<SetMemberRow> = emptyList(),
+    /** One timer for the whole set ("idle 1m"); null unless the holder holds a set. */
+    val timerLabel: String? = null,
 )
+
+data class SetMemberRow(val name: String, val device: String)
 
 data class SessionGroup(
     val sessionId: String,
@@ -96,17 +103,20 @@ private fun holderRow(h: HolderId, w: World): SessionHolderRow {
     val st = w.snapshot.statuses[h]
     // Up to two holds (one per platform), each with its own timer, joined by " + ".
     val held = w.holdingsOf(h).take(2).joinToString(" + ") { "${w.deviceName(it.device)} · ${w.timerLabel(it)}" }
+    val set = (st as? HolderStatus.HoldingSet)?.set
     val (state, detail) = when {
+        set != null -> HolderState.HOLDING to "${set.members.size} devices · ${w.timerLabel(set)}"
         st is HolderStatus.Blocked -> HolderState.BLOCKED to "blocked · cdm acquire refuses until unblocked"
         st is HolderStatus.Holding -> HolderState.HOLDING to held
         // Queued for one platform while holding the other: the held device and its timer still show.
-        st is HolderStatus.Queued -> HolderState.WAITING to listOf("#${st.position} in queue", held).filter { it.isNotEmpty() }.joinToString(" · ")
+        st is HolderStatus.Queued -> HolderState.WAITING to listOf("#${st.position} in queue", st.set?.let { "${w.reservedCountOf(h)} of ${it.members.size} reserved" }.orEmpty(), held).filter { it.isNotEmpty() }.joinToString(" · ")
         info?.ended == true -> HolderState.ENDED to "ended ${short(w.now - info.lastSeen)} ago"
         st is HolderStatus.Released -> HolderState.IDLE to "idle · ${released(st.reason)}"
         else -> HolderState.IDLE to (info?.let { "idle · seen ${short(w.now - it.lastSeen)} ago" } ?: "idle")
     }
     val name = if (h.agentId == HolderId.MAIN) "main" else info?.agentType ?: h.agentId
-    return SessionHolderRow(h, name, state, detail, info?.lastDeviceCommand)
+    val members = set?.members?.map { SetMemberRow(it.name, w.deviceName(it.device)) }.orEmpty()
+    return SessionHolderRow(h, name, state, detail, info?.lastDeviceCommand, members, set?.let { w.timerLabel(it) })
 }
 
 private fun released(r: ReleaseReason) = when (r) {

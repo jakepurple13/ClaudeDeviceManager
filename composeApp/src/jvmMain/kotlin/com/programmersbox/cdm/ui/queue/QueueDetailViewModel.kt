@@ -29,6 +29,8 @@ data class QueueDetailState(
     val position: Int = 0,
     /** What it wants, as the queue card's chips read: "phone, iOS, real only"; "any" when nothing is set. */
     val wantsText: String = "any",
+    /** "1 of 3 reserved" while a device set collects its members; null for a single device. */
+    val reservedText: String? = null,
     val queuedAt: Instant? = null,
     val reasons: List<WaitReason> = emptyList(),
     val handOff: List<DeviceRef> = emptyList(),
@@ -49,7 +51,9 @@ class QueueDetailViewModel(
                 label = w.labelOf(holder),
                 cwd = w.info[holder]?.cwd.orEmpty(),
                 position = row?.position ?: 0,
-                wantsText = row?.chipLabels?.joinToString(", ")?.ifBlank { null } ?: "any",
+                wantsText = row?.setSummary?.let { "set of ${it}" }
+                    ?: row?.chipLabels?.joinToString(", ")?.ifBlank { null } ?: "any",
+                reservedText = row?.reservedText,
                 queuedAt = w.queuedAt(holder),
                 reasons = if (row != null) waitReasons(holder, w) else emptyList(),
                 handOff = if (row != null) handOffTargets(holder, w) else emptyList(),

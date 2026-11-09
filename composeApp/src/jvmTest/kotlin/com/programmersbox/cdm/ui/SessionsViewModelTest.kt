@@ -3,7 +3,9 @@ package com.programmersbox.cdm.ui
 import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.allocator.AllocDevice
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
+import com.programmersbox.cdm.core.allocator.HeldSet
 import com.programmersbox.cdm.core.allocator.HolderStatus
+import com.programmersbox.cdm.core.allocator.SetMember
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.DeviceKey
 import com.programmersbox.cdm.core.model.HolderId
@@ -157,5 +159,32 @@ class SessionsViewModelTest {
         val row = rowFor(snapWith(mapOf(s1Main to queued), listOf(android), queue = listOf(s1Main)))
         assertEquals(HolderState.WAITING, row.state)
         assertEquals("#1 in queue · Pixel 8 · idle 1m", row.detail)
+    }
+
+    @Test
+    fun sessionsGroupSetMembers() = runBlocking {
+        val ios = DeviceKey("I")
+        val held = HeldSet(
+            listOf(SetMember("android1", Platform.ANDROID, phone), SetMember("ios1", Platform.IOS, ios)),
+            t, t - 1.minutes, editing = false,
+        )
+        val snap = AllocatorSnapshot(
+            devices = listOf(
+                AllocDevice(phone, "Pixel 8", Category.PHONE, false, listOf("p-usb")),
+                AllocDevice(ios, "iPhone 16", Category.PHONE, false, listOf("i"), platform = Platform.IOS),
+            ),
+            holds = mapOf(phone to s1Main, ios to s1Main),
+            queue = emptyList(),
+            statuses = mapOf(s1Main to HolderStatus.HoldingSet(held)),
+            sets = mapOf(s1Main to held),
+        )
+        val manager = RecordingManager(MutableStateFlow(snap), MutableStateFlow(mapOf(s1Main to info(s1Main, t))))
+        val vm = SessionsViewModel(testActions(manager), testSources(manager)).also { vms += it }
+
+        val row = withTimeout(5_000) { vm.uiState.mapNotNull { it.groups }.first() }.single().holders.single()
+
+        assertEquals(HolderState.HOLDING, row.state)
+        assertEquals(listOf("android1" to "Pixel 8", "ios1" to "iPhone 16"), row.members.map { it.name to it.device })
+        assertEquals("idle 1m", row.timerLabel)
     }
 }

@@ -123,6 +123,17 @@ private fun HolderLine(row: SessionHolderRow, indent: Boolean, onUnblock: (Holde
                 SmallButton("Unblock", onClick = { onUnblock(row.holder) })
             }
         }
+        // A held set: its devices under their names, one row each, under the single shared timer in the detail.
+        AnimatedRows(row.members, key = { it.name }) { m ->
+            Row(
+                Modifier.padding(start = if (indent) 32.dp else 14.dp, top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Chip(m.name, ChipStyle.Neutral)
+                Muted(m.device, maxLines = 1)
+            }
+        }
         AnimatedValue(row.lastCommand) { Muted("last: $it", Modifier.padding(start = if (indent) 14.dp else 0.dp, top = 1.dp), maxLines = 1) }
     }
 }

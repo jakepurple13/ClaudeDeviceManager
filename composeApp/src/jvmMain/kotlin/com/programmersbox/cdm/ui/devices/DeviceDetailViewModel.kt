@@ -35,6 +35,8 @@ data class HolderCard(
     /** "held 12m · last device command 1m ago · releases if idle 14m more". */
     val timing: String,
     val lastCommand: String?,
+    /** The device's name in the set that holds it (`android1`); null when it is held on its own. */
+    val memberName: String? = null,
 )
 
 data class DeviceDetailState(
@@ -90,7 +92,10 @@ class DeviceDetailViewModel(
                 "last device command ${short(w.now - st.lastActivity)} ago",
                 if (st.editing) "editing · releases in ${minutesCeil(w.releasesIn(st))}" else "releases if idle ${minutesCeil(w.releasesIn(st))} more",
             ).joinToString(" · ")
-            HolderCard(h, w.labelOf(h), info?.cwd.orEmpty(), info?.agentType, timing, info?.lastDeviceCommand)
+            HolderCard(
+                h, w.labelOf(h), info?.cwd.orEmpty(), info?.agentType, timing, info?.lastDeviceCommand,
+                memberName = w.snapshot.sets[h]?.members?.firstOrNull { it.device == key || it.partner == key }?.name,
+            )
         }
         val commands = w.activity.filter { it.kind == "command" && it.deviceKey == key.hardwareSerial }.take(RECENT_COMMANDS)
         return DeviceDetailState(

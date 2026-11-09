@@ -2,7 +2,12 @@ package com.programmersbox.cdm.ui
 
 import androidx.lifecycle.viewModelScope
 import com.programmersbox.cdm.core.allocator.AllocatorSnapshot
+import com.programmersbox.cdm.core.allocator.HeldSet
 import com.programmersbox.cdm.core.allocator.HolderStatus
+import com.programmersbox.cdm.core.allocator.SetMember
+import com.programmersbox.cdm.core.allocator.AllocDevice
+import com.programmersbox.cdm.core.model.DeviceKey
+import kotlin.time.Instant
 import com.programmersbox.cdm.core.allocator.Wants
 import com.programmersbox.cdm.core.model.Category
 import com.programmersbox.cdm.core.model.HolderId
@@ -110,5 +115,28 @@ class QueueViewModelTest {
         queue.closeForTest()
         detail.closeForTest()
         detailB.closeForTest()
+    }
+
+    @Test
+    fun handOffDisabledForSetMember() = runBlocking {
+        val t = Instant.fromEpochMilliseconds(1_700_000_000_000)
+        val k1 = DeviceKey("K1")
+        val k2 = DeviceKey("K2")
+        val owner = HolderId("owner")
+        val held = HeldSet(listOf(SetMember("android1", Platform.ANDROID, k1)), t, t, editing = false)
+        val snap = AllocatorSnapshot(
+            devices = listOf(
+                AllocDevice(k1, "Pixel 8", Category.PHONE, false, listOf("s1")),
+                AllocDevice(k2, "Pixel 7", Category.PHONE, false, listOf("s2")),
+            ),
+            holds = mapOf(k1 to owner, k2 to HolderId("single")),
+            queue = listOf(a),
+            statuses = mapOf(a to HolderStatus.Queued(1, Wants(setOf(Category.PHONE))), owner to HolderStatus.HoldingSet(held)),
+            sets = mapOf(owner to held),
+        )
+        val m = RecordingManager(MutableStateFlow(snap))
+        val vm = QueueDetailViewModel(a, testActions(m), testSources(m))
+        val state = withTimeout(5_000) { vm.uiState.first { it.loaded } }
+        assertEquals(listOf("Pixel 8" to true, "Pixel 7" to false), state.handOff.map { it.name to it.partOfSet })
     }
 }
