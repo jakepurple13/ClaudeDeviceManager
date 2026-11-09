@@ -367,12 +367,19 @@ class DeviceManagerService(
                 allocator.statusOf(holder) == HolderStatus.Blocked -> return@locked AcquireResult.Blocked
                 allocator.setOf(holder) != null || allocator.holdingsOf(holder).isNotEmpty() ->
                     return@locked AcquireResult.Refused(ALREADY_HOLDING)
-                !allocator.feasible(r) -> return@locked AcquireResult.Refused(INFEASIBLE)
+                // The new request replaces any earlier one, so a refused one leaves the queue (and its reservation).
+                !allocator.feasible(r) -> {
+                    allocator.removeFromQueue(holder)
+                    return@locked AcquireResult.Refused(INFEASIBLE)
+                }
             }
             when (val g = allocator.tryGrabSet(holder, r)) {
                 is GrabSetResult.Granted -> grantedSet(g.set)
                 GrabSetResult.Blocked -> AcquireResult.Blocked
-                GrabSetResult.Impossible -> AcquireResult.Refused(INFEASIBLE)
+                GrabSetResult.Impossible -> {
+                    allocator.removeFromQueue(holder)
+                    AcquireResult.Refused(INFEASIBLE)
+                }
                 GrabSetResult.NoneFree -> {
                     // 0: granted at once from the reservation (or nothing to queue for).
                     if (allocator.enqueueSet(holder, r) == 0) {

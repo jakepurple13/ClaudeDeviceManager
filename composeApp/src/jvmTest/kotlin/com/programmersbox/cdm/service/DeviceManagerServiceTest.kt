@@ -541,6 +541,18 @@ class DeviceManagerServiceTest {
         assertEquals(HolderStatus.None, s.status(h1))
     }
 
+    @Test fun infeasibleSetRequestLeavesTheQueue() = runTest {
+        val s = started()
+        s.acquire(h2, "/w", setOf(Category.PHONE), 1.minutes) {}
+        val req = com.programmersbox.cdm.core.allocator.SetRequest(List(2) { Wants(setOf(Category.ANY), Platform.ANDROID) })
+        assertEquals(AcquireResult.TimedOut(1), s.acquireSet(h1, "/w", req, 1.seconds) {})
+        val tablets = com.programmersbox.cdm.core.allocator.SetRequest(List(2) { Wants(setOf(Category.TABLET), Platform.ANDROID) })
+        assertEquals(AcquireResult.Refused(infeasibleMsg), s.acquireSet(h1, "/w", tablets, 1.minutes) {})
+        assertEquals(HolderStatus.None, s.status(h1))
+        assertTrue(h1 !in s.snapshot.value.queue)
+        assertEquals(null, s.snapshot.value.reserved[DeviceKey("W")])
+    }
+
     @Test fun acquireSetWaitsThenGrants() = runTest {
         val s = started()
         s.acquire(h2, "/w", setOf(Category.PHONE), 1.minutes) {}
