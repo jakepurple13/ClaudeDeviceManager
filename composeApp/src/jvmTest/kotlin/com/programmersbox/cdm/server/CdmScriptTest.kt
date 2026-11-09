@@ -312,7 +312,7 @@ class CdmScriptTest {
                     listOf(
                         com.programmersbox.cdm.service.GrantedMember("android1", Platform.ANDROID, "SER1", "Pixel 8", null),
                         com.programmersbox.cdm.service.GrantedMember("android2", Platform.ANDROID, "SER2", "Galaxy S23", null),
-                        com.programmersbox.cdm.service.GrantedMember("ios1", Platform.IOS, "UDID-1", "iPhone 15", null),
+                        com.programmersbox.cdm.service.GrantedMember("ios1", Platform.IOS, "UDID-1", "iPhone 15", "W-UDID"),
                     ),
                 )
             }
@@ -325,9 +325,34 @@ class CdmScriptTest {
                     "Got your devices:\n" +
                     "  android1  Pixel 8 (SER1)\n" +
                     "  android2  Galaxy S23 (SER2)\n" +
-                    "  ios1      iPhone 15 (UDID-1)\n" +
+                    "  ios1      iPhone 15 (UDID-1) + watch (W-UDID)\n" +
                     "Run commands on one device with `cdm run <name> -- <command>`, for example `cdm run android2 -- adb shell input tap 100 200`.\n" +
                     "For iOS, still pass \$CDM_IOS_UDID: `cdm run ios1 -- xcrun simctl launch \$CDM_IOS_UDID com.example.app`.\n",
+                r.out,
+            )
+        }
+    }
+
+    @Test
+    fun androidOnlySetPrintsNoIosHint() {
+        val m = FakeManager().apply {
+            acquireSetImpl = { _, _, _, _, _ ->
+                AcquireResult.GrantedSet(
+                    listOf(
+                        com.programmersbox.cdm.service.GrantedMember("android1", Platform.ANDROID, "SER1", "Pixel 8", null),
+                        com.programmersbox.cdm.service.GrantedMember("android2", Platform.ANDROID, "SER2", "Galaxy S23", null),
+                    ),
+                )
+            }
+        }
+        withServer(m) { pf ->
+            val r = run(pf, "acquire", *base, "--android", "2")
+            assertEquals(0, r.code, r.out)
+            assertEquals(
+                "Got your devices:\n" +
+                    "  android1  Pixel 8 (SER1)\n" +
+                    "  android2  Galaxy S23 (SER2)\n" +
+                    "Run commands on one device with `cdm run <name> -- <command>`, for example `cdm run android2 -- adb shell input tap 100 200`.\n",
                 r.out,
             )
         }

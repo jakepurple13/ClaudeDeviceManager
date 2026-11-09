@@ -198,16 +198,22 @@ case "$cmd" in
             rest="${line#GRANTED }"; plat="${rest%% *}"; rest="${rest#* }"
             say_grant "$plat" "${rest%% *}" "${rest#* }"; exit 0 ;;
           MEMBER\ *)
-            # MEMBER <name> <platform> <serial> <device name…>; collected until DONE.
+            # MEMBER <name> <platform> <serial> <device name…> [pair=<udid>]; collected until DONE.
             members+=("${line#MEMBER }") ;;
           DONE)
             echo "Got your devices:"
+            any_ios=0
             for mem in "${members[@]}"; do
-              mname="${mem%% *}"; mrest="${mem#* }"; mrest="${mrest#* }"; mserial="${mrest%% *}"; mdev="${mrest#* }"
-              printf '  %-9s %s (%s)\n' "$mname" "$mdev" "$mserial"
+              mpair=""
+              case "$mem" in *" pair="*) mpair="${mem##* pair=}"; mem="${mem% pair=*}" ;; esac
+              mname="${mem%% *}"; mrest="${mem#* }"; mplat="${mrest%% *}"; mrest="${mrest#* }"; mserial="${mrest%% *}"; mdev="${mrest#* }"
+              [ "$mplat" = "ios" ] && any_ios=1
+              printf '  %-9s %s (%s)%s\n' "$mname" "$mdev" "$mserial" "${mpair:+ + watch ($mpair)}"
             done
             echo 'Run commands on one device with `cdm run <name> -- <command>`, for example `cdm run android2 -- adb shell input tap 100 200`.'
-            echo 'For iOS, still pass $CDM_IOS_UDID: `cdm run ios1 -- xcrun simctl launch $CDM_IOS_UDID com.example.app`.'
+            if [ "$any_ios" = 1 ]; then
+              echo 'For iOS, still pass $CDM_IOS_UDID: `cdm run ios1 -- xcrun simctl launch $CDM_IOS_UDID com.example.app`.'
+            fi
             exit 0 ;;
           REFUSED\ *) echo "Device Manager refused the request: ${line#REFUSED }"; exit 2 ;;
           TIMEOUT\ *) echo "Still queued at position ${line#TIMEOUT }. $again"; exit 0 ;;

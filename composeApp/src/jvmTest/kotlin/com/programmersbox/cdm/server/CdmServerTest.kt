@@ -342,7 +342,7 @@ class CdmServerTest {
         }
         app(m) {
             assertEquals(
-                "QUEUED 1\nMEMBER android1 android SER-A Pixel 8\nMEMBER ios1 ios UDID-1 iPhone 16 Pro\nDONE\n",
+                "QUEUED 1\nMEMBER android1 android SER-A Pixel 8\nMEMBER ios1 ios UDID-1 iPhone 16 Pro pair=W-UDID\nDONE\n",
                 client.post("/cdm/acquire?holder=s:main&cwd=/x&member=android:1&member=ios:1").bodyAsText(),
             )
             m.acquireSetImpl = { _, _, _, _, _ -> AcquireResult.Refused("You already hold devices. Run `cdm release` first.") }

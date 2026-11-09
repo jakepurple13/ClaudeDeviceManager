@@ -322,7 +322,7 @@ private suspend fun ApplicationCall.respondAcquire(
 
 /**
  * The result lines of the `cdm` wire protocol. A set grant is one `MEMBER <name> <platform> <serial> <device name>`
- * line per member, then `DONE`. A refusal is normally answered as HTTP 400 before streaming; mid-stream it is
+ * line per member (with a trailing ` pair=<udid>` for a paired watch), then `DONE`. A refusal is normally answered as HTTP 400 before streaming; mid-stream it is
  * `REFUSED <message>`.
  */
 private fun AcquireResult.wireLines(): List<String> = when (this) {
@@ -330,7 +330,9 @@ private fun AcquireResult.wireLines(): List<String> = when (this) {
     is AcquireResult.TimedOut -> listOf("TIMEOUT $position")
     AcquireResult.Blocked -> listOf("BLOCKED")
     AcquireResult.Removed -> listOf("REMOVED")
-    is AcquireResult.GrantedSet -> members.map { "MEMBER ${it.name} ${it.platform.wire} ${it.serial} ${it.deviceName}" } + "DONE"
+    is AcquireResult.GrantedSet -> members.map {
+        "MEMBER ${it.name} ${it.platform.wire} ${it.serial} ${it.deviceName}" + it.pairSerial?.let { p -> " pair=$p" }.orEmpty()
+    } + "DONE"
     is AcquireResult.Refused -> listOf("REFUSED $message")
 }
 
