@@ -63,6 +63,9 @@ class Allocator(
     /** Last release per holder and platform; the most recent release is last. */
     private val released = LinkedHashMap<HolderId, LinkedHashMap<Platform, HolderStatus.Released>>()
 
+    /** Sets that timed out, per holder, kept for [tryRegrabSet]. See [releasedSetOf]. */
+    private val releasedSets = HashMap<HolderId, ReleasedSet>()
+
     fun snapshot(): AllocatorSnapshot {
         val all = LinkedHashMap<HolderId, HolderStatus>()
         (holdings.keys + sets.keys + released.keys).forEach { all[it] = statusOf(it) }
@@ -129,6 +132,7 @@ class Allocator(
      * (see [feasible]).
      */
     fun tryGrabSet(holder: HolderId, req: SetRequest): GrabSetResult {
+        releasedSets.remove(holder)
         if (holder in blockedHolders) return GrabSetResult.Blocked
         if (holdsAnything(holder)) return GrabSetResult.NoneFree
         if (!feasible(req)) return GrabSetResult.Impossible
@@ -143,6 +147,7 @@ class Allocator(
      * and 0 is returned (it now holds a set).
      */
     fun enqueueSet(holder: HolderId, req: SetRequest): Int {
+        releasedSets.remove(holder)
         if (holder in blockedHolders || holdsAnything(holder)) return 0
         val existing = queue.indexOf(holder)
         queueWants.remove(holder)
@@ -231,8 +236,10 @@ class Allocator(
     /**
      * Releases the holder's hold on [platform], or every hold when [platform] is null. For a set, releases that
      * platform's members (the rest stay held under their names), or the whole set when [platform] is null.
+     * Any release by the holder drops its timed-out set record ([releasedSetOf]).
      */
     fun release(holder: HolderId, reason: ReleaseReason, platform: Platform? = null) {
+        releasedSets.remove(holder)
         holdingsOf(holder).filter { platform == null || it.platform == platform }.forEach { h ->
             free(h.device, holder, reason)
             passToQueue(h.device, except = holder)
@@ -288,16 +295,54 @@ class Allocator(
         settleReservation()
     }
 
-    /** Resets the idle timer of the holder's [platform] hold only, and clears editing on that hold. */
+    /**
+     * Resets the idle timer of the holder's [platform] hold only, and clears editing on that hold. For a set holder
+     * with a member on [platform], resets the whole set's timer instead (see [recordSetActivity]).
+     */
     fun recordDeviceActivity(holder: HolderId, platform: Platform) {
+        if (sets[holder]?.members?.any { it.platform == platform } == true) recordSetActivity(holder)
         val m = holdings[holder] ?: return
         m[platform]?.let { m[platform] = it.copy(lastActivity = clock(), editing = false) }
     }
 
-    /** Switches every hold of the holder to the editing timer. */
+    /** Switches every hold of the holder, and its set, to the editing timer. */
     fun recordEdit(holder: HolderId) {
+        sets[holder]?.let { sets[holder] = it.copy(editing = true) }
         val m = holdings[holder] ?: return
         m.replaceAll { _, h -> h.copy(editing = true) }
+    }
+
+    /** Resets the idle timer of the holder's whole set and clears its editing flag. */
+    fun recordSetActivity(holder: HolderId) {
+        sets[holder]?.let { sets[holder] = it.copy(lastActivity = clock(), editing = false) }
+    }
+
+    /**
+     * The holder's set as it was when it timed out, or null. Cleared when the holder acquires again ([tryGrabSet],
+     * [enqueueSet]), regrabs it, releases, or ends.
+     */
+    fun releasedSetOf(holder: HolderId): ReleasedSet? = releasedSets[holder]
+
+    /**
+     * Only valid after an idle/edit timeout of the holder's set: regrabs exactly the former member devices (with their
+     * partners) under the same names, all or nothing. If any member is unlisted, offline, don't-use, held, or reserved
+     * for someone else, nothing is granted, the [releasedSetOf] record stays, and [GrabSetResult.NoneFree] is returned.
+     * Anything else (no timed-out set, or the holder holds something) is [GrabSetResult.NoneFree] too.
+     */
+    fun tryRegrabSet(holder: HolderId): GrabSetResult {
+        if (holder in blockedHolders) return GrabSetResult.Blocked
+        if (holdsAnything(holder)) return GrabSetResult.NoneFree
+        val rs = releasedSets[holder] ?: return GrabSetResult.NoneFree
+        if (rs.reason != ReleaseReason.IDLE_TIMEOUT && rs.reason != ReleaseReason.EDIT_TIMEOUT) return GrabSetResult.NoneFree
+        val free = rs.members.all { m ->
+            // A device re-paired since the timeout is not the same member any more.
+            listed(m.device)?.partner == m.partner && listOfNotNull(m.device, m.partner).all { k ->
+                usable(k) && k !in holds && reservations[k]?.let { it == holder } != false
+            }
+        }
+        if (!free) return GrabSetResult.NoneFree
+        releasedSets.remove(holder)
+        return GrabSetResult.Granted(grantMembers(holder, rs.members)).also { settleReservation() }
     }
 
     fun attachWaiter(holder: HolderId) {
@@ -309,7 +354,10 @@ class Allocator(
         if (holder in queue) detachedAt[holder] = clock()
     }
 
-    /** Expires detached queue spots, then releases holds past their idle/editing timeout. */
+    /**
+     * Expires detached queue spots, then releases holds past their idle/editing timeout. A set times out as a unit:
+     * every member is released and the set is recorded for [releasedSetOf]; its devices go through the queue.
+     */
     fun tick() {
         val now = clock()
         val t = timers()
@@ -321,13 +369,25 @@ class Allocator(
                 passToQueue(st.device, except = holder)
             }
         }
+        sets.toList().forEach { (holder, set) ->
+            val limit = if (set.editing) t.editing else t.idle
+            if (now - set.lastActivity > limit) {
+                val reason = if (set.editing) ReleaseReason.EDIT_TIMEOUT else ReleaseReason.IDLE_TIMEOUT
+                val freed = freeSet(holder, reason) { true }
+                releasedSets[holder] = ReleasedSet(reason, set.members)
+                freed.forEach { passToQueue(it, except = holder) }
+            }
+        }
         settleReservation()
     }
 
-    /** Only valid after an idle/edit timeout of the [platform] hold; anything else is [GrabResult.NoneFree]. */
+    /**
+     * Only valid after an idle/edit timeout of the [platform] hold; anything else is [GrabResult.NoneFree]. A timed-out
+     * set comes back only whole, through [tryRegrabSet], so its members are [GrabResult.NoneFree] here.
+     */
     fun tryRegrab(holder: HolderId, platform: Platform): GrabResult {
         if (holder in blockedHolders) return GrabResult.Blocked
-        if (holder in sets || holds(holder, platform)) return GrabResult.NoneFree
+        if (holder in sets || holder in releasedSets || holds(holder, platform)) return GrabResult.NoneFree
         val st = released[holder]?.get(platform) ?: return GrabResult.NoneFree
         if (st.reason != ReleaseReason.IDLE_TIMEOUT && st.reason != ReleaseReason.EDIT_TIMEOUT) return GrabResult.NoneFree
         val d = devices.firstOrNull { it.key == st.lastDevice } ?: return GrabResult.NoneFree
@@ -378,10 +438,11 @@ class Allocator(
         holdings.remove(holder)
         sets.remove(holder)
         released.remove(holder)
+        releasedSets.remove(holder)
     }
 
     fun endSession(sessionId: String) {
-        val all = (holds.values + queue + holdings.keys + sets.keys + released.keys).filter { it.sessionId == sessionId }.toSet()
+        val all = (holds.values + queue + holdings.keys + sets.keys + released.keys + releasedSets.keys).filter { it.sessionId == sessionId }.toSet()
         all.forEach { endHolder(it, ReleaseReason.SESSION_END) }
     }
 
@@ -593,12 +654,17 @@ class Allocator(
 
     /** Grants [assigned] (one device per member of [req], in member order) to [holder] as one set. */
     private fun grantSet(holder: HolderId, req: SetRequest, assigned: List<AllocDevice>): HeldSet {
-        removeFromQueueInternal(holder, emitEvent = false)
-        val now = clock()
         val members = SetMatcher.names(req.members).mapIndexed { i, name ->
             val d = assigned[i]
             SetMember(name, req.members[i].platform!!, d.key, d.partner)
         }
+        return grantMembers(holder, members)
+    }
+
+    /** Grants [members] (devices and partners) to [holder] as one set, with a fresh timer. */
+    private fun grantMembers(holder: HolderId, members: List<SetMember>): HeldSet {
+        removeFromQueueInternal(holder, emitEvent = false)
+        val now = clock()
         val set = HeldSet(members, since = now, lastActivity = now, editing = false)
         sets[holder] = set
         members.forEach { m ->
