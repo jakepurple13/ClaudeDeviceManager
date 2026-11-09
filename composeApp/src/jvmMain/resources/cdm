@@ -13,13 +13,63 @@ holder="" cwd="" category="" platform="" virtual="" device=""
 specs=() devices=()  # --android/--ios occurrences as "<platform>:<value>"; every --device
 usage="Usage: cdm acquire [--category phone|watch|tablet|phone,watch|any] [--ios|--android] [--real|--virtual] [--device <serial|name>] [--android [N][:cat]] [--ios [N][:cat]] … | cdm run <name|all> -- <command> | cdm release [--ios|--android] | cdm status | cdm devices"
 
-# cdm run needs no holder: the hook rewrites it into a pinned command. Without the hook, run the command as is.
+# Sets $port and $base, retrying for $1 seconds (default RETRY_SECONDS) while the port file or app is missing.
+# Returns 1 if it never answers.
+connect() {
+  local deadline=$((SECONDS + ${1:-$RETRY_SECONDS}))
+  while :; do
+    port=""
+    [ -f "$PORT_FILE" ] && port="$(tr -d '[:space:]' < "$PORT_FILE")"
+    if [ -n "$port" ] && [ "$(curl -s --max-time 2 "http://127.0.0.1:$port/cdm/ping" 2>/dev/null | tr -d '[:space:]')" = "cdm-ok" ]; then
+      base="http://127.0.0.1:$port/cdm"
+      return 0
+    fi
+    [ "$SECONDS" -ge "$deadline" ] && return 1
+    sleep 1
+  done
+}
+
+# cdm run needs no holder: the hook rewrites it into a pinned command. A `cdm run` the hook never saw (inside a
+# script, or `bash -c`) resolves its device from the CDM_ANDROID<N>_SERIAL / CDM_IOS<N>_UDID variables the hook
+# exports to every command of a set holder. Without those and without the app, run the command as is.
 if [ "$cmd" = "run" ]; then
   rest=("$@")
   split=-1
   for i in "${!rest[@]}"; do [ "${rest[$i]}" = "--" ] && { split=$i; break; }; done
   if [ "$split" -lt 0 ] || [ "$split" -eq $((${#rest[@]} - 1)) ] || [ "$split" -eq 0 ]; then echo "$usage"; exit 2; fi
-  echo "Device Manager not running; running without a device lock." >&2
+  name="${rest[0]}"
+  member_vars=()
+  while IFS= read -r v; do
+    case "$v" in CDM_ANDROID[0-9]*_SERIAL|CDM_IOS[0-9]*_UDID) member_vars+=("$v") ;; esac
+  done < <(compgen -e)
+  unknown() { echo "Unknown device name $name." >&2; exit 2; }
+  has_var() { local v; for v in ${member_vars[@]+"${member_vars[@]}"}; do [ "$v" = "$1" ] && return 0; done; return 1; }
+  if [ ${#member_vars[@]} -gt 0 ]; then
+    upper="$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
+    case "$upper" in *[!A-Z0-9]*) [ "$name" = "all" ] || unknown ;; esac
+    if [ "$name" = "all" ]; then
+      # Every Android member, in member order, as one comma list; iOS commands must name their member.
+      list=""
+      for v in $(printf '%s\n' ${member_vars[@]+"${member_vars[@]}"} | grep '^CDM_ANDROID' | sed 's/^CDM_ANDROID\([0-9]*\)_SERIAL$/\1 &/' | sort -n | cut -d' ' -f2); do
+        list="${list:+$list,}${!v}"
+      done
+      [ -n "$list" ] && export ANDROID_SERIAL="$list"
+      unset CDM_IOS_UDID CDM_IOS_PAIR_UDID
+    elif has_var "CDM_${upper}_SERIAL"; then
+      v="CDM_${upper}_SERIAL"; export ANDROID_SERIAL="${!v}"
+    elif has_var "CDM_${upper}_UDID"; then
+      v="CDM_${upper}_UDID"; export CDM_IOS_UDID="${!v}"
+      pv="CDM_${upper}_PAIR_UDID"
+      if [ -n "${!pv:-}" ]; then export CDM_IOS_PAIR_UDID="${!pv}"; else unset CDM_IOS_PAIR_UDID; fi
+    else
+      unknown
+    fi
+  elif ! connect 0; then
+    echo "Device Manager not running; running without a device lock." >&2
+  else
+    # A single holder: android1 / ios1 are its pinned devices, already in ANDROID_SERIAL / CDM_IOS_UDID.
+    case "$name" in android1|ios1|all) ;; *) unknown ;; esac
+  fi
   exec "${rest[@]:$((split + 1))}"
 fi
 while [ $# -gt 0 ]; do
@@ -86,20 +136,6 @@ not_running() {
   exit 0
 }
 
-# Sets $port and $base, retrying for RETRY_SECONDS while the port file or app is missing. Returns 1 if it never answers.
-connect() {
-  local deadline=$((SECONDS + RETRY_SECONDS))
-  while :; do
-    port=""
-    [ -f "$PORT_FILE" ] && port="$(tr -d '[:space:]' < "$PORT_FILE")"
-    if [ -n "$port" ] && [ "$(curl -s --max-time 2 "http://127.0.0.1:$port/cdm/ping" 2>/dev/null | tr -d '[:space:]')" = "cdm-ok" ]; then
-      base="http://127.0.0.1:$port/cdm"
-      return 0
-    fi
-    [ "$SECONDS" -ge "$deadline" ] && return 1
-    sleep 1
-  done
-}
 connect || not_running
 
 # curl -G turns --data-urlencode pairs into a properly escaped query string.

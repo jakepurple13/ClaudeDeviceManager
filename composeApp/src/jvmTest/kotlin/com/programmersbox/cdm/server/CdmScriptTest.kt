@@ -383,6 +383,88 @@ class CdmScriptTest {
         assertEquals("Device Manager not running; running without a device lock.\n", err)
     }
 
+    private class Split(val code: Int, val out: String, val err: String)
+
+    /** Runs the script with [env] added (as a set holder's command gets them from the hook) and no app listening. */
+    private fun runWithEnv(env: Map<String, String>, vararg args: String, portFile: Path = dir.resolve("nope")): Split {
+        val pb = ProcessBuilder(listOf(script.toString()) + args)
+        pb.environment()["CDM_PORT_FILE"] = portFile.toString()
+        pb.environment()["CDM_RETRY_SECONDS"] = "5"
+        listOf("ANDROID_SERIAL", "CDM_IOS_UDID", "CDM_IOS_PAIR_UDID").forEach { pb.environment().remove(it) }
+        pb.environment().keys.filter { it.matches(Regex("CDM_(ANDROID|IOS)\\d+_.*")) }.forEach { pb.environment().remove(it) }
+        pb.environment().putAll(env)
+        val q = pb.start()
+        val out = q.inputStream.bufferedReader().readText()
+        val err = q.errorStream.bufferedReader().readText()
+        assertTrue(q.waitFor(60, TimeUnit.SECONDS))
+        return Split(q.exitValue(), out, err)
+    }
+
+    private val setEnv = mapOf(
+        "ANDROID_SERIAL" to "use-cdm-run",
+        "CDM_IOS_UDID" to "use-cdm-run",
+        "CDM_ANDROID1_SERIAL" to "SER1",
+        "CDM_ANDROID2_SERIAL" to "SER2",
+        "CDM_IOS1_UDID" to "UDID-1",
+        "CDM_IOS1_PAIR_UDID" to "WATCH-1",
+        "CDM_IOS2_UDID" to "UDID-2",
+    )
+
+    /** A `cdm run` inside a script never reaches the hook: it resolves the member from the exported variables. */
+    @Test
+    fun runInsideScriptUsesMemberVariables() {
+        val echo = arrayOf("sh", "-c", "echo \$ANDROID_SERIAL \${CDM_IOS_UDID:-none} \${CDM_IOS_PAIR_UDID:-none}")
+        val a2 = runWithEnv(setEnv, "run", "android2", "--", *echo)
+        assertEquals(0, a2.code, a2.err)
+        assertEquals("SER2 use-cdm-run none\n", a2.out)
+        assertEquals("", a2.err)
+        assertEquals("use-cdm-run UDID-1 WATCH-1\n", runWithEnv(setEnv, "run", "ios1", "--", *echo).out)
+        assertEquals("use-cdm-run UDID-2 none\n", runWithEnv(setEnv + ("CDM_IOS_PAIR_UDID" to "X"), "run", "ios2", "--", *echo).out)
+        assertEquals("SER1,SER2 none none\n", runWithEnv(setEnv, "run", "all", "--", *echo).out)
+        val ten = runWithEnv(setEnv + ("CDM_ANDROID10_SERIAL" to "SER10"), "run", "all", "--", *echo)
+        assertEquals("SER1,SER2,SER10 none none\n", ten.out)
+        // macOS's bash 3.2 too.
+        val sys = java.io.File("/bin/bash")
+        if (sys.exists()) {
+            val pb = ProcessBuilder(listOf(sys.path, script.toString(), "run", "all", "--", *echo))
+            pb.environment()["CDM_PORT_FILE"] = dir.resolve("nope").toString()
+            listOf("ANDROID_SERIAL", "CDM_IOS_UDID", "CDM_IOS_PAIR_UDID").forEach { pb.environment().remove(it) }
+            pb.environment().putAll(setEnv)
+            val p = pb.redirectErrorStream(true).start()
+            val out = p.inputStream.bufferedReader().readText()
+            assertTrue(p.waitFor(60, TimeUnit.SECONDS))
+            assertEquals("SER1,SER2 none none\n", out)
+        }
+    }
+
+    @Test
+    fun runInsideScriptUnknownNameExits2() {
+        val r = runWithEnv(setEnv, "run", "android3", "--", "echo", "hi")
+        assertEquals(2, r.code)
+        assertEquals("", r.out)
+        assertEquals("Unknown device name android3.\n", r.err)
+    }
+
+    @Test
+    fun runWithoutVariablesOrAppKeepsOldMessage() {
+        val r = runWithEnv(mapOf("ANDROID_SERIAL" to "SER1"), "run", "android1", "--", "sh", "-c", "echo \$ANDROID_SERIAL")
+        assertEquals(0, r.code, r.err)
+        assertEquals("SER1\n", r.out)
+        assertEquals("Device Manager not running; running without a device lock.\n", r.err)
+    }
+
+    @Test
+    fun runSingleHolderWithAppRunningKeepsPin() {
+        withServer(FakeManager()) { pf ->
+            val r = runWithEnv(mapOf("ANDROID_SERIAL" to "SER1"), "run", "android1", "--", "sh", "-c", "echo \$ANDROID_SERIAL", portFile = pf)
+            assertEquals("SER1\n", r.out)
+            assertEquals("", r.err)
+            val bad = runWithEnv(mapOf("ANDROID_SERIAL" to "SER1"), "run", "android2", "--", "echo", "hi", portFile = pf)
+            assertEquals(2, bad.code)
+            assertEquals("Unknown device name android2.\n", bad.err)
+        }
+    }
+
     @Test
     fun runMissingDashDashExits2() {
         val r = run(dir.resolve("nope"), "run", "android1", "echo", "hi")
