@@ -35,7 +35,7 @@ class SetHookRules(
 ) {
     suspend fun decide(holder: HolderId, cwd: String, command: String): HookReply? {
         val runs = CommandClassifier.cdmRuns(command)
-        // A `cdm run` the parser didn't take as one (`/usr/local/bin/cdm run …`): the script would run it unpinned.
+        // A `cdm run` the parser didn't take as one: the script would run it unpinned.
         val runKinds = CommandClassifier.classifyAll(command).count { it == CommandKind.Cdm("run") }
         if (runKinds != runs.size) return HookReply.Deny(USAGE)
         val setHolder = allocator.setOf(holder) != null || allocator.releasedSetOf(holder) != null
@@ -131,7 +131,7 @@ class SetHookRules(
         for (r in runs) {
             val raw = command.substring(r.start, r.end).trim()
             if (raw.startsWith("(") || raw.startsWith("{") || unbalancedClose(r.rest)) return HookReply.Deny(GROUPED)
-            if (CommandClassifier.unquotedWords(raw).firstOrNull() != "cdm") return HookReply.Deny(WRAPPED)
+            if (CommandClassifier.unquotedWords(raw).firstOrNull()?.substringAfterLast('/') != "cdm") return HookReply.Deny(WRAPPED)
             if (r.target.isEmpty() || r.rest.isEmpty()) return HookReply.Deny(USAGE)
             // A comment comments out the rest of its line, so the subshell closes on a new line. Text after the segment
             // on that line was part of the comment, and would run after the rewrite.

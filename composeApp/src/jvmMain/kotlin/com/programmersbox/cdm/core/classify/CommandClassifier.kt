@@ -423,7 +423,8 @@ object CommandClassifier {
             val seg = command.substring(s, e)
             val start = prefixLength(seg)
             val cdmEnd = tokenEnd(seg, start)
-            if (unquote(seg.substring(start, cdmEnd)) != "cdm") continue
+            // `cdm`, or any path to it (`/usr/local/bin/cdm`), like the identity rewrite.
+            if (unquote(seg.substring(start, cdmEnd)).substringAfterLast('/') != "cdm") continue
             val runStart = skipWs(seg, cdmEnd)
             val runEnd = tokenEnd(seg, runStart)
             if (unquote(seg.substring(runStart, runEnd)) != "run") continue

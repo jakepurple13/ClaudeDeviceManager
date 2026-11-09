@@ -297,7 +297,22 @@ class SetHookRulesTest {
         bash("ANDROID_SERIAL=p3-usb ./x.sh && cdm run android1 -- adb shell ls").reason()
         assertEquals(HookDecider.AFFECTS_OTHERS, bash("adb disconnect 10.0.0.9:5555 && cdm run android1 -- adb shell ls").reason())
         assertEquals(HookDecider.AFFECTS_OTHERS, bash("adb kill-server; cdm run android1 -- adb shell ls").reason())
-        assertTrue("cdm run <name>" in bash("/usr/local/bin/cdm run android1 -- adb shell ls").reason())
+    }
+
+    @Test fun pathFormCdmRunAccepted() = runTest {
+        holdSet()
+        assertEquals(
+            "( export ANDROID_SERIAL=p2-usb; ${vars}adb shell ls )",
+            bash("/usr/local/bin/cdm run android2 -- adb shell ls").cmd(),
+        )
+        assertEquals(
+            "( export ANDROID_SERIAL=p1-usb; ${vars}adb shell ls )",
+            bash("composeApp/src/jvmMain/resources/cdm run android1 -- adb shell ls").cmd(),
+        )
+        val wrapped = "Run `cdm run` directly, not through sudo/env or a VAR= prefix."
+        assertEquals(wrapped, bash("sudo /usr/local/bin/cdm run android1 -- adb shell ls").reason())
+        assertEquals(wrapped, bash("env ./cdm run android1 -- adb shell ls").reason())
+        assertEquals(wrapped, bash("FOO=1 ./cdm run android1 -- adb shell ls").reason())
     }
 
     private val memberVarDeny = "Don't set the CDM_ANDROID<N>/CDM_IOS<N> variables; Device Manager exports them for your devices."
